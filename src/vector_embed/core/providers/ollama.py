@@ -71,6 +71,11 @@ class OllamaProvider:
         self._dim: int | None = None
         self.tokens_seen = 0  # prompt tokens reported by Ollama while embedding
 
+    @property
+    def client(self) -> ClientLike:
+        """The underlying Ollama client (shared with the vision captioner)."""
+        return self._client
+
     # ------------------------------------------------------------------ plumbing
     def _call(self, fn: Callable[[], Response]) -> Response:
         """Run a client call, retrying transient failures and translating the rest."""

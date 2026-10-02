@@ -18,6 +18,7 @@ from typing import Any, NamedTuple, Self
 _MAX_ATTEMPTS = 3
 _FAR_FUTURE = 1e18
 STATE_FILENAME = "state.sqlite"
+CHAT_LOCK = "chat"  # held while a chat session is active; the indexing worker never runs then
 
 _SCHEMA_V1 = """
 CREATE TABLE manifest(
