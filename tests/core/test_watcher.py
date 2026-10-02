@@ -1,3 +1,4 @@
+import json
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -393,22 +394,46 @@ class TestHelpers:
         assert "queue           : 1 total, 1 due" in text
         assert "last reconcile  : never" in text
 
-    def test_unload_model_posts_keep_alive_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        sent: dict[str, object] = {}
+    @staticmethod
+    def fake_ollama(
+        monkeypatch: pytest.MonkeyPatch, resident: list[dict[str, object]]
+    ) -> list[tuple[str, bytes | None]]:
+        sent: list[tuple[str, bytes | None]] = []
 
         class Response:
+            def __init__(self, payload: object) -> None:
+                self._payload = payload
+
             def read(self) -> bytes:
-                return b"{}"
+                return json.dumps(self._payload).encode()
 
         def fake_urlopen(request: object, timeout: float) -> Response:
-            sent["url"] = request.full_url  # type: ignore[attr-defined]
-            sent["body"] = request.data  # type: ignore[attr-defined]
-            return Response()
+            url = request.full_url  # type: ignore[attr-defined]
+            sent.append((url, request.data))  # type: ignore[attr-defined]
+            return Response({"models": resident} if url.endswith("/api/ps") else {})
 
         monkeypatch.setattr(watcher.urllib.request, "urlopen", fake_urlopen)
+        return sent
+
+    def test_unload_model_posts_keep_alive_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sent = self.fake_ollama(monkeypatch, [{"model": "m:latest", "size_vram": 5}])
         watcher.unload_model("http://host:1/", "m")
-        assert sent["url"] == "http://host:1/api/embed"
-        assert b'"keep_alive": 0' in sent["body"]  # type: ignore[operator]
+        assert [url for url, _ in sent] == ["http://host:1/api/ps", "http://host:1/api/embed"]
+        body = json.loads(sent[1][1] or b"")
+        assert body["keep_alive"] == 0
+        assert "options" not in body
+
+    def test_unload_model_keeps_a_cpu_runner_on_cpu(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sent = self.fake_ollama(monkeypatch, [{"model": "m", "size_vram": 0}])
+        watcher.unload_model("http://host:1", "m")
+        assert json.loads(sent[1][1] or b"")["options"] == {"num_gpu": 0}
+
+    def test_unload_model_does_not_load_what_is_not_resident(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sent = self.fake_ollama(monkeypatch, [{"model": "other", "size_vram": 5}])
+        watcher.unload_model("http://host:1", "m")
+        assert [url for url, _ in sent] == ["http://host:1/api/ps"]
 
     def test_unload_model_swallows_connection_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def refuse(*_a: object, **_k: object) -> None:

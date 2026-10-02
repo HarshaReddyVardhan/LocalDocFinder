@@ -120,14 +120,32 @@ class TestEmbeddings:
         client = FakeOllamaClient()
         provider = make(client)
         provider.warm_embedder(cpu=True)
+        client.loaded = [provider.embed_model]
+        client.loaded_on_cpu = {provider.embed_model}
         provider.unload_embedder()
-        warm, unload = (c[1] for c in client.calls)
+        warm, unload = (c[1] for c in client.calls if c[0] == "embed")
         assert warm["options"]["num_gpu"] == 0
         assert unload["keep_alive"] == 0
+        assert unload["options"]["num_gpu"] == 0  # matches how it was loaded: no second runner
+
+    def test_unload_does_not_load_a_model_that_is_not_resident(self) -> None:
+        client = FakeOllamaClient()
+        make(client).unload_embedder()
+        assert [name for name, _ in client.calls] == ["ps"]
+
+    def test_unload_of_a_gpu_resident_embedder_asks_for_gpu(self) -> None:
+        client = FakeOllamaClient()
+        provider = make(client)
+        client.loaded = [provider.embed_model + ":latest"]
+        provider.unload_embedder()
+        embed = next(kw for name, kw in client.calls if name == "embed")
+        assert "num_gpu" not in embed["options"]
+        assert embed["keep_alive"] == 0
 
     def test_warm_and_unload_swallow_provider_errors(self) -> None:
         client = FakeOllamaClient()
         client.failures = [ollama.ResponseError("nope", 400)] * 2
+        client.loaded = ["whatever"]
         provider = make(client)
         provider.warm_embedder()
         provider.unload_embedder()

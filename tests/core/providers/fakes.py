@@ -23,6 +23,7 @@ class FakeOllamaClient:
         self.chat_json_reply = '{"ok": true}'
         self.chat_json_fn: Callable[[dict[str, Any]], str] | None = None  # reply per request
         self.loaded: list[str] = []
+        self.loaded_on_cpu: set[str] = set()  # resident models with no VRAM
 
     def _maybe_fail(self) -> None:
         if self.failures:
@@ -66,7 +67,12 @@ class FakeOllamaClient:
     def ps(self) -> ollama.ProcessResponse:
         self.calls.append(("ps", {}))
         return ollama.ProcessResponse(
-            models=[ollama.ProcessResponse.Model(model=name) for name in self.loaded]
+            models=[
+                ollama.ProcessResponse.Model(
+                    model=name, size_vram=0 if name in self.loaded_on_cpu else 1_000_000
+                )
+                for name in self.loaded
+            ]
         )
 
     def list(self) -> ollama.ListResponse:

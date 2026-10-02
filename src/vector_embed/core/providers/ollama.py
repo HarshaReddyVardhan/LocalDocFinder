@@ -15,6 +15,7 @@ import httpx
 import numpy as np
 import ollama
 
+from vector_embed.core.model_names import same_model
 from vector_embed.core.providers.base import (
     CAP_COMPLETION,
     CAP_EMBEDDING,
@@ -181,9 +182,18 @@ class OllamaProvider:
             logger.debug("ollama: embedder warm-up failed", exc_info=True)
 
     def unload_embedder(self) -> None:
-        """Release the embedder's VRAM now (``keep_alive=0``)."""
+        """Release the embedder's VRAM now (``keep_alive=0``).
+
+        Does nothing when the embedder is not resident: the request that frees a model would
+        otherwise load it first. When it is resident the same GPU/CPU placement is requested, so
+        Ollama reuses the runner instead of starting a second one.
+        """
         try:
-            self._embed_batch(["x"], cpu=False, keep_alive=0)
+            resident = self._resident(self._embedding.model)
+            if resident is None:
+                return
+            on_cpu = not getattr(resident, "size_vram", 0)
+            self._embed_batch(["x"], cpu=on_cpu, keep_alive=0)
         except ProviderError:
             logger.debug("ollama: embedder unload failed", exc_info=True)
 
@@ -280,6 +290,11 @@ class OllamaProvider:
         """Names of models currently resident (``ollama ps``)."""
         response = self._call(self._client.ps)
         return [m.model for m in response.models]
+
+    def _resident(self, model: str) -> Response | None:
+        """The ``ollama ps`` entry for ``model``, or ``None`` when it is not loaded."""
+        response = self._call(self._client.ps)
+        return next((m for m in response.models if same_model(str(m.model), model)), None)
 
     def unload_all(self) -> None:
         for name in self.loaded_models():
