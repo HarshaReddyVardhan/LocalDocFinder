@@ -130,8 +130,19 @@ class AskSkill(Skill):
     ui_hint = UI_PANEL
     cli_positional = "question"
 
-    def prepare(self, question: str, limit: int | None = None, session: bool = False) -> AskRun:
-        """Retrieve and pack sources; nothing is generated until ``deltas()`` is read."""
+    def prepare(
+        self,
+        question: str,
+        limit: int | None = None,
+        session: bool = False,
+        *,
+        outbound: bool = False,
+    ) -> AskRun:
+        """Retrieve and pack sources; nothing is generated until ``deltas()`` is read.
+
+        ``outbound`` means the answer will be handed to a cloud-hosted caller (MCP), so files
+        under the never-send rules are kept out even though the model itself is local.
+        """
         ctx = self.ctx
         chat_cfg = ctx.settings.chat
         gateway = gateway_of(ctx)
@@ -148,18 +159,18 @@ class AskSkill(Skill):
             limit=limit or chat_cfg.retrieve_chunks,
             force_cpu=True,  # the GPU belongs to the LLM
         )
-        candidates, withheld = self._without_private(candidates, gateway)
+        candidates, withheld = self._without_private(candidates, gateway, outbound)
         sources = build_sources(candidates, chat_cfg.context_token_budget)
         code = chat_cfg.code_routing and is_code_heavy(sources)
         role = ROLE_CODE_CHAT if code else ROLE_CHAT
         return AskRun(gateway, parsed.text or question, sources, role, session, withheld=withheld)
 
     def _without_private(
-        self, candidates: list[Candidate], gateway: LlmGateway
+        self, candidates: list[Candidate], gateway: LlmGateway, outbound: bool
     ) -> tuple[list[Candidate], int]:
         """Cloud requests never include files under the never-send rules."""
         privacy = privacy_of(self.ctx)
-        if privacy is None or not gateway.will_use_cloud(ROLE_CHAT):
+        if privacy is None or not (outbound or gateway.will_use_cloud(ROLE_CHAT)):
             return candidates, 0
         kept = [c for c in candidates if not privacy.is_never_send(c.row["path"])]
         blocked = {c.row["path"] for c in candidates} - {c.row["path"] for c in kept}

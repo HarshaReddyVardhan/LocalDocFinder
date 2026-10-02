@@ -15,7 +15,7 @@ from typing import Any
 
 from pydantic.fields import FieldInfo
 
-from vector_embed import watcher, worker
+from vector_embed import mcp_server, watcher, worker
 from vector_embed.cli_cloud import CloudCommandError, add_cloud_parsers, run_cloud, run_keys
 from vector_embed.core import runtime
 from vector_embed.core.doctor import format_checks, run_doctor
@@ -182,6 +182,13 @@ def cmd_eval(settings: Settings, args: argparse.Namespace) -> int:
     return EXIT_OK if all(not r.error for r in results) else EXIT_ERROR
 
 
+def cmd_mcp(settings: Settings) -> int:
+    """stdout belongs to the MCP protocol, so logs go to stderr and the log file only."""
+    configure_logging("mcp", runtime.log_dir(settings), "INFO")
+    mcp_server.serve(settings)
+    return EXIT_OK
+
+
 def cmd_health(settings: Settings) -> int:
     provider = runtime.build_provider(settings)
     with StateDb(settings.storage.data_dir) as state:
@@ -232,6 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--corpus", nargs="+", help="directories to index instead of the spec's")
     evaluate.add_argument("--reuse", action="store_true", help="reuse indexes from a previous run")
     add_cloud_parsers(sub)
+    sub.add_parser("mcp", help="serve search, ask and match to MCP clients over stdio")
     sub.add_parser("doctor", help="check the environment and explain any problem")
     sub.add_parser("status", help="index and queue state")
     return parser
@@ -284,6 +292,7 @@ def _dispatch(args: argparse.Namespace, settings: Settings) -> int:
         "models": lambda: cmd_models(settings, args),
         "health": lambda: cmd_health(settings),
         "eval": lambda: cmd_eval(settings, args),
+        "mcp": lambda: cmd_mcp(settings),
         "keys": lambda: run_keys(args, settings, KeyringStore(), out),
         "cloud": lambda: run_cloud(args, settings, KeyringStore(), out),
         "doctor": lambda: cmd_doctor(settings),

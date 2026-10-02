@@ -164,8 +164,15 @@ def build_skill_context(
     state: StateDb,
     fullscreen: Callable[[], bool] = lambda: False,
     keys: KeyStore | None = None,
+    *,
+    owner: str = "app",
+    allow_cloud: bool = True,
 ) -> SkillContext:
-    """Context for read-side skills (search, ask, ...): read-only store, local provider."""
+    """Context for read-side skills (search, ask, ...): read-only store, local provider.
+
+    ``owner`` names this process in the chat lock; ``allow_cloud=False`` keeps every model call
+    on the local machine (used by front-ends whose caller is not the user, such as MCP).
+    """
     provider = build_provider(settings)
     power = PowerGate(settings.power)
     power.update()
@@ -177,12 +184,14 @@ def build_skill_context(
         state,
         power,
         fullscreen=fullscreen,
+        owner=owner,
         refresh_seconds=settings.models.refresh_seconds,
     )
     store = open_read_only_store(settings, state)
     scope = build_scope(settings)
     cloud = build_cloud(settings, state, scope, registry, keys)
-    gateway.router = cloud.router
+    if allow_cloud:
+        gateway.router = cloud.router
     cache: list[ExtractorSet] = []
 
     def extractors() -> ExtractorSet:  # built on first use: OCR setup is not free

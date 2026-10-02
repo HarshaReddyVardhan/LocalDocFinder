@@ -35,6 +35,7 @@ dependencies = [
     "winrt-Windows.Storage; sys_platform == 'win32'",
     "winrt-Windows.Storage.Streams; sys_platform == 'win32'",
     "winrt-Windows.Globalization; sys_platform == 'win32'",
+    "mcp>=2,<3",
 ]
 
 [project.scripts]
