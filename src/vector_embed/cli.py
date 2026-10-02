@@ -19,6 +19,13 @@ from vector_embed import watcher, worker
 from vector_embed.cli_cloud import CloudCommandError, add_cloud_parsers, run_cloud, run_keys
 from vector_embed.core import runtime
 from vector_embed.core.doctor import format_checks, run_doctor
+from vector_embed.core.evaluation import (
+    EvalSpec,
+    EvaluationError,
+    Evaluator,
+    format_results,
+    load_spec,
+)
 from vector_embed.core.extractors.ocr import WindowsOcr
 from vector_embed.core.health import collect_health, format_health
 from vector_embed.core.logging_setup import configure_logging
@@ -26,6 +33,7 @@ from vector_embed.core.models.hardware import probe_hardware
 from vector_embed.core.models.manager import ModelChangeError, ModelManager
 from vector_embed.core.models.report import format_report
 from vector_embed.core.providers.base import ProviderError
+from vector_embed.core.providers.ollama import OllamaProvider
 from vector_embed.core.secrets import KeyringStore, KeyStoreError
 from vector_embed.core.settings import SETTINGS_FILENAME, Settings, SettingsError, load_settings
 from vector_embed.core.skills.base import Skill, load_skills
@@ -144,6 +152,36 @@ def cmd_models(settings: Settings, args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_eval(settings: Settings, args: argparse.Namespace) -> int:
+    """Compare embedding models on your own queries (recall@10, MRR, speed)."""
+    spec_path = Path(args.spec)
+    spec = load_spec(spec_path)
+    models = tuple(args.models) if args.models else spec.models
+    if not models:
+        raise EvaluationError("name at least one model with --models or in the spec")
+    if args.corpus:
+        spec = EvalSpec(tuple(Path(c) for c in args.corpus), spec.models, spec.queries)
+
+    def factory(model: str) -> OllamaProvider:
+        return OllamaProvider(
+            settings.embedding.model_copy(update={"model": model}), host=settings.ollama_host
+        )
+
+    evaluator = Evaluator(
+        settings,
+        runtime.build_scope(settings),
+        factory,
+        settings.storage.data_dir / "eval",
+        exclude=[spec_path],
+    )
+    results = []
+    for model in models:
+        err(f"evaluating {model} ...")
+        results.append(evaluator.evaluate(model, spec, reuse=args.reuse))
+    out(format_results(results))
+    return EXIT_OK if all(not r.error for r in results) else EXIT_ERROR
+
+
 def cmd_health(settings: Settings) -> int:
     provider = runtime.build_provider(settings)
     with StateDb(settings.storage.data_dir) as state:
@@ -188,6 +226,11 @@ def build_parser() -> argparse.ArgumentParser:
     models.add_argument("--embedder", metavar="MODEL", help="switch the embedder (re-index needed)")
     models.add_argument("--yes", action="store_true", help="confirm the re-index for --embedder")
     sub.add_parser("health", help="queue, VRAM, loaded models and cloud spend")
+    evaluate = sub.add_parser("eval", help="compare embedding models on your own queries")
+    evaluate.add_argument("--spec", default="eval/queries.yaml", help="queries file")
+    evaluate.add_argument("--models", nargs="+", help="models to compare (default: the spec's)")
+    evaluate.add_argument("--corpus", nargs="+", help="directories to index instead of the spec's")
+    evaluate.add_argument("--reuse", action="store_true", help="reuse indexes from a previous run")
     add_cloud_parsers(sub)
     sub.add_parser("doctor", help="check the environment and explain any problem")
     sub.add_parser("status", help="index and queue state")
@@ -200,6 +243,7 @@ _ERRORS: tuple[tuple[type[Exception], int, str], ...] = (
     (ProviderError, EXIT_ERROR, "model provider error: {}"),
     (ModelChangeError, EXIT_USAGE, "{}"),
     (CloudCommandError, EXIT_USAGE, "{}"),
+    (EvaluationError, EXIT_USAGE, "{}"),
     (KeyStoreError, EXIT_ERROR, "{}"),
     (RuntimeError, EXIT_ERROR, "{}"),  # skill-level errors, e.g. search disabled on battery
 )
@@ -239,6 +283,7 @@ def _dispatch(args: argparse.Namespace, settings: Settings) -> int:
         "index": lambda: worker.main([]),  # reached only through ``ve --data-dir X index``
         "models": lambda: cmd_models(settings, args),
         "health": lambda: cmd_health(settings),
+        "eval": lambda: cmd_eval(settings, args),
         "keys": lambda: run_keys(args, settings, KeyringStore(), out),
         "cloud": lambda: run_cloud(args, settings, KeyringStore(), out),
         "doctor": lambda: cmd_doctor(settings),
