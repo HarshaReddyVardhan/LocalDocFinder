@@ -166,3 +166,80 @@ class TestMasking:
         ):
             assert secret not in masked
         assert masked.count("REMOVED") == 7
+
+
+class TestDetectorGaps:
+    @pytest.mark.parametrize(
+        "text",
+        ["SSN 123 45 6789", "SSN 123.45.6789", "ssn: 123-45-6789", "SSN 123 - 45 - 6789"],
+    )
+    def test_ssn_with_spaces_or_dots(self, text: str) -> None:
+        assert kinds(text) == ["ssn"]
+
+    def test_separated_ssn_shapes_still_skip_invalid_areas(self) -> None:
+        assert kinds("ref 000 12 3456 and 666.12.3456") == []
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "DL: S1234567",
+            "dl S1234567",
+            "Driving licence number: D1234567",
+            "Driving License D1234567",
+            "driver licence no. D1234567",
+        ],
+    )
+    def test_more_licence_labels(self, text: str) -> None:
+        assert kinds(text) == ["drivers_license"]
+
+    @pytest.mark.parametrize(
+        "text", ["passport no: k1234567", "Passport: K 1234567", "PASSPORT NUMBER n9876543"]
+    )
+    def test_lowercase_and_spaced_passports(self, text: str) -> None:
+        assert kinds(text) == ["passport"]
+
+    @pytest.mark.parametrize(
+        "secret",
+        [
+            "sk_live_" + "a1B2c3D4e5F6g7H8i9J0k1L2",
+            "sk_test_" + "a1B2c3D4e5F6g7H8i9J0k1L2",
+            "AIza" + "SyA-abcdefghijklmnopqrstuvwxyz01234",
+            "github_pat_" + "11ABCDEFG0abcdefghij_abcdefghijklmnopqrstuvwxyz",
+            "glpat-" + "abcdefghij0123456789",
+            "hf_" + "abcdefghijklmnopqrstuvwxyzABCDEF",
+            "ghs_" + "b" * 36,
+            "DefaultEndpointsProtocol=https;AccountKey=" + "abcd1234efgh5678ijkl9012mnop3456==",
+        ],
+    )
+    def test_more_key_formats(self, secret: str) -> None:
+        assert "secret" in kinds(f"config {secret} end")
+
+    def test_aadhaar_pan_and_ni_shaped_text_needs_a_label(self) -> None:
+        base = "23456789012"
+        check = next(str(c) for c in range(10) if d.verhoeff_valid(base + str(c)))
+        assert kinds(f"order {base + check} shipped") == []
+        assert kinds("part ABCPE1234F in stock") == []
+        assert kinds("batch AB 12 34 56 C") == []
+        assert kinds(f"UID {base + check}") == ["aadhaar"]
+        assert kinds("Permanent Account Number ABCPE1234F") == ["pan"]
+        assert kinds("NINO AB123456C") == ["ni_number"]
+
+    def test_overlapping_findings_merge_into_one_span(self) -> None:
+        text = "tax id 123-45-6789012 end"  # a longer digit run swallowing an SSN-shaped prefix
+        findings = detect_sensitive(text)
+        masked = mask_sensitive(text).text
+        assert all(
+            not (a.start < b.end and b.start < a.end)
+            for a in findings
+            for b in findings
+            if a is not b
+        )
+        assert "6789012" not in masked
+        assert "6789" not in masked.replace("[", "")
+
+    def test_partial_overlap_leaves_no_digits_behind(self) -> None:
+        # a card number whose tail is also a labelled account number
+        text = "Account number: 4111111111111111 and more"
+        masked = mask_sensitive(text).text
+        assert "4111" not in masked
+        assert "1111" not in masked

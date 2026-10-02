@@ -102,9 +102,15 @@ _SSN_LABEL = re.compile(r"\b(ssn|social\s+security)\b", re.I)
 _SIN_LABEL = re.compile(r"\b(sin|social\s+insurance)\b", re.I)
 _PASSPORT_LABEL = re.compile(r"passport(?:\s*(?:no\.?|number|num|#))?\s*[:#-]?\s*$", re.I)
 _DL_LABEL = re.compile(
-    r"(driver'?s?\s+licen[cs]e|licen[cs]e\s*(?:no\.?|number|#)|\bdl\s*(?:no\.?|number|#))"
+    r"(driver'?s?\s+licen[cs]e|driving\s+licen[cs]e|licen[cs]e\s*(?:no\.?|number|#)|"
+    r"\bdl\b\s*(?:no\.?|number|#)?)(?:\s*(?:no\.?|number|num|#))?"
     r"\s*[:#-]?\s*$",
     re.I,
+)
+_AADHAAR_LABEL = re.compile(r"\b(aadhaar|aadhar|uidai|uid)\b[^\n]{0,15}$", re.I)
+_PAN_LABEL = re.compile(r"\b(pan|permanent\s+account(?:\s+number)?)\b[^\n]{0,15}$", re.I)
+_NI_LABEL = re.compile(
+    r"\b(ni|nino|national\s+insurance)\b(?:\s+(?:no\.?|number|num|#))?[^\n]{0,10}$", re.I
 )
 _TAX_LABEL = re.compile(r"\b(tin|ein|itin|tax\s+id|tax\s+identification)\b[^\n]{0,15}$", re.I)
 _ACCOUNT_LABEL = re.compile(
@@ -112,7 +118,7 @@ _ACCOUNT_LABEL = re.compile(
 )
 _ROUTING_LABEL = re.compile(r"\b(routing|aba)\b[^\n]{0,15}$", re.I)
 
-_SSN = re.compile(r"\b(\d{3})-(\d{2})-(\d{4})\b")
+_SSN = re.compile(r"\b(\d{3})\s?[-. ]\s?(\d{2})\s?[-. ]\s?(\d{4})\b")  # dashes, dots or spaces
 _NINE_DIGITS = re.compile(r"\b\d{9}\b")
 _CARD = re.compile(
     r"\b(?:\d{4}[ -]?){3}\d{1,7}\b"  # 4-4-4-4 style, up to 19 digits
@@ -125,14 +131,18 @@ _AADHAAR = re.compile(r"\b[2-9]\d{3}[ -]?\d{4}[ -]?\d{4}\b")
 _PAN = re.compile(r"\b[A-Z]{3}[ABCFGHLJPT][A-Z]\d{4}[A-Z]\b")
 _NI = re.compile(r"\b[A-CEGHJ-PR-TW-Z][A-CEGHJ-NPR-TW-Z]\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-D]\b")
 _SIN_NUMBER = re.compile(r"\b\d{3}[ -]?\d{3}[ -]?\d{3}\b")
-_PASSPORT_VALUE = re.compile(r"\b[A-Z0-9]{6,9}\b")
+# "K1234567" or "K 1234567" (a letter prefix may be spaced off); "no 123..." is the label's "no".
+_PASSPORT_VALUE = re.compile(r"\b(?:(?!no\b)[A-Z]{1,2} \d{6,9}|[A-Z0-9]{6,9})\b", re.I)
 _DL_VALUE = re.compile(r"\b[A-Z0-9][A-Z0-9 -]{4,18}[A-Z0-9]\b")
 _TAX_VALUE = re.compile(r"\b(?:\d{2}-\d{7}|\d{3}-\d{2}-\d{4}|\d{9})\b")
 _IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{4}){2,7}(?:[ ]?[A-Z0-9]{1,4})?\b")
 _ACCOUNT_VALUE = re.compile(r"\b\d{8,17}\b")
 _SECRET = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
-    r"|\bsk-[A-Za-z0-9_-]{20,}\b|\bghp_[A-Za-z0-9]{30,}\b|\bAKIA[0-9A-Z]{16}\b"
+    r"|\bsk-[A-Za-z0-9_-]{20,}\b|\bgh[pousr]_[A-Za-z0-9]{30,}\b|\bAKIA[0-9A-Z]{16}\b"
+    r"|\bsk_(?:live|test)_[A-Za-z0-9]{16,}\b|\bAIza[0-9A-Za-z_-]{30,}\b"
+    r"|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bglpat-[A-Za-z0-9_-]{20,}\b|\bhf_[A-Za-z0-9]{30,}\b"
+    r"|\bAccountKey=[A-Za-z0-9+/=]{20,}"
     r"|\bxox[baprs]-[A-Za-z0-9-]{10,}\b|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
     r"|(?i:\b(?:api[_-]?key|secret|token|password|passwd)\b)\s*[:=]\s*['\"]?[^\s'\"]{8,}"
 )
@@ -179,7 +189,7 @@ def _aadhaar(text: str) -> list[Finding]:
     return [
         Finding("aadhaar", m.start(), m.end(), m.group())
         for m in _AADHAAR.finditer(text)
-        if verhoeff_valid(_digits(m.group()))
+        if verhoeff_valid(_digits(m.group())) and _has_label(text, m.start(), _AADHAAR_LABEL)
     ]
 
 
@@ -217,8 +227,8 @@ _DETECTORS: tuple[Callable[[str], list[Finding]], ...] = (
     _ssn,
     _cards,
     _aadhaar,
-    _regex("pan", _PAN),
-    _regex("ni_number", _NI),
+    lambda t: _after_label(t, _PAN_LABEL, _PAN, "pan", needs_digit=False),
+    lambda t: _after_label(t, _NI_LABEL, _NI, "ni_number", needs_digit=False),
     _sin,
     lambda t: _after_label(t, _PASSPORT_LABEL, _PASSPORT_VALUE, "passport"),
     lambda t: _after_label(t, _DL_LABEL, _DL_VALUE, "drivers_license"),
@@ -231,14 +241,20 @@ _DETECTORS: tuple[Callable[[str], list[Finding]], ...] = (
 
 
 def detect_sensitive(text: str) -> list[Finding]:
-    """Non-overlapping findings in order of position; the longest match wins an overlap."""
+    """Non-overlapping findings in order of position.
+
+    Findings that overlap are merged into one span covering all of them, so no digit of either
+    is left behind; the merged span keeps the kind of its longest member.
+    """
     candidates = [f for detector in _DETECTORS for f in detector(text)]
     candidates.sort(key=lambda f: (f.start, -(f.end - f.start)))
-    chosen: list[Finding] = []
+    merged: list[Finding] = []
     for finding in candidates:
-        if chosen and finding.start < chosen[-1].end:
-            if finding.end - finding.start > chosen[-1].end - chosen[-1].start:
-                chosen[-1] = finding
+        if not merged or finding.start >= merged[-1].end:
+            merged.append(finding)
             continue
-        chosen.append(finding)
-    return chosen
+        last = merged[-1]
+        end = max(last.end, finding.end)
+        kind = finding.kind if finding.end - finding.start > last.end - last.start else last.kind
+        merged[-1] = Finding(kind, last.start, end, text[last.start : end])
+    return merged
