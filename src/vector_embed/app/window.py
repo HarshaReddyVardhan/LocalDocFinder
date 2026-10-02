@@ -18,7 +18,9 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPlainTextEdit,
+    QPushButton,
     QSplitter,
     QStackedWidget,
     QTextBrowser,
@@ -29,6 +31,7 @@ from PySide6.QtWidgets import (
 from vector_embed.app.assistant import (
     AssistantService,
     ChatState,
+    CloudPreview,
     Delta,
     Event,
     Failed,
@@ -74,6 +77,20 @@ QLabel#mode { color:#4c7dff; font-weight:bold; padding:0 8px; }
 """
 
 PANE_PREVIEW, PANE_IMAGE, PANE_ANSWER = 0, 1, 2
+
+
+def confirm_cloud_dialog(preview: CloudPreview) -> bool:
+    """Show the privacy badge and let the user inspect the exact text before anything is sent."""
+    box = QMessageBox()
+    box.setWindowTitle("Answer better with the cloud?")
+    note = f"\n{preview.shield}" if preview.shield else ""
+    box.setText(preview.badge + note)
+    box.setInformativeText("Nothing is sent until you press Send.")
+    box.setDetailedText(preview.text)  # the "View what will be sent" panel
+    send = box.addButton("Send", QMessageBox.ButtonRole.AcceptRole)
+    box.addButton(QMessageBox.StandardButton.Cancel)
+    box.exec()
+    return box.clickedButton() is send
 
 
 class Mode(enum.Enum):
@@ -175,6 +192,8 @@ class SearchWindow(QWidget):
         self._models = models
         self._pick_file = pick_file
         self._jd_text = ""
+        self._last_text = ""
+        self.cloud_confirm: Callable[[CloudPreview], bool] = confirm_cloud_dialog
         self._launcher = launcher
         self._thumbs_dir = thumbs_dir
         self._generation = 0
@@ -227,8 +246,7 @@ class SearchWindow(QWidget):
         self.pane.addWidget(self.preview)
         self.pane.addWidget(self.image)
         self.pane.addWidget(self.answer)
-        self.status = QLabel("")
-        self.status.setObjectName("status")
+        bottom = self._build_bottom_bar()
 
         split = QSplitter()
         split.addWidget(self.list)
@@ -251,7 +269,19 @@ class SearchWindow(QWidget):
         layout.setContentsMargins(10, 10, 10, 6)
         layout.addLayout(top)
         layout.addWidget(self.body, 1)
-        layout.addWidget(self.status)
+        layout.addLayout(bottom)
+
+    def _build_bottom_bar(self) -> QHBoxLayout:
+        """Status line plus the "Answer better" button (hidden unless a cloud is configured)."""
+        self.status = QLabel("")
+        self.status.setObjectName("status")
+        self.cloud_button = QPushButton("Answer better ☁")
+        self.cloud_button.setVisible(False)
+        self.cloud_button.clicked.connect(self.answer_better)
+        bottom = QHBoxLayout()
+        bottom.addWidget(self.status, 1)
+        bottom.addWidget(self.cloud_button)
+        return bottom
 
     # ------------------------------------------------------------------ modes
     @property
@@ -291,6 +321,7 @@ class SearchWindow(QWidget):
         self.mode_label.setText(self._mode.value.upper())
         self.input.setPlaceholderText(PLACEHOLDERS[self._mode.value])
         self.body.setCurrentIndex(self._body_index())
+        self.cloud_button.setVisible(self._cloud_possible())
         if self.models_panel is not None:
             if self._mode is Mode.MODELS:
                 self.models_panel.activate()
@@ -303,6 +334,15 @@ class SearchWindow(QWidget):
             self.answer.clear()
             self._answer_text = ""
         self.input.setFocus()
+
+    def _cloud_possible(self) -> bool:
+        """The cloud button shows in Ask/Chat when a provider with a key is configured."""
+        if self._assistant is None or self._mode not in (Mode.ASK, Mode.CHAT):
+            return False
+        try:
+            return self._assistant.cloud_available()
+        except Exception:  # building the context can fail (no index yet); the button is optional
+            return False
 
     def _body_index(self) -> int:
         if self._mode is Mode.MATCH:
@@ -393,6 +433,7 @@ class SearchWindow(QWidget):
         if not text or self._assistant is None:
             return
         self._generation += 1
+        self._last_text = text
         self._answer_text = ""
         self.answer.clear()
         self.status.setText("thinking…")
@@ -403,6 +444,38 @@ class SearchWindow(QWidget):
             self._answer_text = f"**You:** {text}\n\n"
             events = self._assistant.chat(text, self._chat)
             self.input.clear()
+        self._pool.start(_StreamJob(self._generation, events, self._signals))
+
+    def answer_better(self) -> None:
+        """Re-ask the last question in the cloud, after showing exactly what would be sent."""
+        assistant = self._assistant
+        if assistant is None or not self._last_text or self._mode not in (Mode.ASK, Mode.CHAT):
+            return
+        question = self._last_text
+        try:
+            if self._mode is Mode.ASK:
+                preview = assistant.cloud_preview_ask(question)
+            else:
+                preview = assistant.cloud_preview_chat(question, self._chat)
+        except (
+            Exception
+        ) as exc:  # preview failures (e.g. private pinned file) are shown, not raised
+            self.status.setText(str(exc))
+            return
+        if preview is None:
+            self.status.setText("no cloud provider is configured (see: ve keys set)")
+            return
+        if not self.cloud_confirm(preview):
+            self.status.setText("cancelled: nothing was sent")
+            return
+        self._generation += 1
+        self._answer_text = ""
+        self.answer.clear()
+        self.status.setText(f"asking {preview.destination}…")
+        if self._mode is Mode.ASK:
+            events = assistant.escalated(assistant.ask(question))
+        else:
+            events = assistant.escalated(assistant.chat(question, self._chat))
         self._pool.start(_StreamJob(self._generation, events, self._signals))
 
     def _on_event(self, generation: int, event: Event) -> None:
