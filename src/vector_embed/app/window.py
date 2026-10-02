@@ -9,7 +9,8 @@ pane appear only outside Search. Models, health and settings live in the Setting
 """
 
 import enum
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
@@ -57,6 +58,7 @@ EXPANDED_HEIGHT = 520
 POPUP_WIDTH = 820
 DEBOUNCE_MS = 180
 MAINTAIN_MS = 15_000
+STREAM_STOP_WAIT_SECONDS = 10.0  # how long ending a chat waits for the answer to stop
 SCRATCH_MIN_CHARS = 200  # pasted text longer than this (or multi-line) becomes a scratch document
 PLACEHOLDERS = {
     "search": "Search your files…   ? to ask   ·   Tab for modes",
@@ -134,20 +136,36 @@ class _WarmJob(QRunnable):
 
 
 class _StreamJob(QRunnable):
-    """Runs an assistant generator off the UI thread, forwarding each event."""
+    """Runs an assistant generator off the UI thread, forwarding each event.
 
-    def __init__(self, generation: int, events: object, signals: _Signals) -> None:
+    ``cancel`` stops it at the next event and closes the generator, which closes the HTTP stream so
+    the model stops generating; ``finished`` lets a caller wait before unloading the model.
+    """
+
+    def __init__(self, generation: int, events: Iterator[Event], signals: _Signals) -> None:
         super().__init__()
         self._generation = generation
         self._events = events
         self._signals = signals
+        self._cancelled = threading.Event()
+        self.finished = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
 
     def run(self) -> None:
         try:
-            for event in self._events:  # type: ignore[attr-defined]
+            for event in self._events:
+                if self._cancelled.is_set():
+                    break
                 self._signals.streamed.emit(self._generation, event)
         except Exception as exc:  # unexpected: show it rather than die silently in the pool
             self._signals.streamed.emit(self._generation, Failed(f"{type(exc).__name__}: {exc}"))
+        finally:
+            close = getattr(self._events, "close", None)
+            if callable(close):
+                close()
+            self.finished.set()
 
 
 class _CallJob(QRunnable):
@@ -192,6 +210,7 @@ class SearchWindow(QWidget):
         self._launcher = launcher
         self._thumbs_dir = thumbs_dir
         self._generation = 0
+        self._stream_job: _StreamJob | None = None
         self._results: list[SearchResult] = []
         self._sources: list[Source] = []
         self._project: str | None = None
@@ -291,6 +310,8 @@ class SearchWindow(QWidget):
         leaving_chat = self._mode is Mode.CHAT
         self._mode = mode
         self._generation += 1  # invalidates anything still streaming
+        if not leaving_chat:  # ending a chat cancels the stream itself, and waits for it
+            self._cancel_stream()
         self.list.clear()
         self._apply_mode()
         if leaving_chat:
@@ -338,9 +359,28 @@ class SearchWindow(QWidget):
         self.status.setText("loading the chat model…")
         self._pool.start(_CallJob(self._signals, self._assistant.begin_chat, "chat model ready"))
 
+    def _start_stream(self, events: Iterator[Event]) -> None:
+        self._cancel_stream()
+        self._stream_job = _StreamJob(self._generation, events, self._signals)
+        self._pool.start(self._stream_job)
+
+    def _cancel_stream(self) -> _StreamJob | None:
+        job, self._stream_job = self._stream_job, None
+        if job is not None:
+            job.cancel()
+        return job
+
     def _end_chat(self, reason: str) -> None:
+        stopping = self._cancel_stream()  # the answer must stop before its model is unloaded
         if self._assistant is not None:
-            self._pool.start(_CallJob(self._signals, lambda: self._assistant.end_chat(reason), ""))
+            assistant = self._assistant
+
+            def end() -> None:
+                if stopping is not None:
+                    stopping.finished.wait(STREAM_STOP_WAIT_SECONDS)
+                assistant.end_chat(reason)
+
+            self._pool.start(_CallJob(self._signals, end, ""))
         self._chat.reset()
 
     def _set_status(self, text: str) -> None:
@@ -426,7 +466,7 @@ class SearchWindow(QWidget):
             self._answer_text = f"**You:** {text}\n\n"
             events = self._assistant.chat(text, self._chat)
             self.input.clear()
-        self._pool.start(_StreamJob(self._generation, events, self._signals))
+        self._start_stream(events)
 
     def answer_better(self) -> None:
         """Re-ask the last question in the cloud, after showing exactly what would be sent."""
@@ -458,7 +498,7 @@ class SearchWindow(QWidget):
             events = assistant.escalated(assistant.ask(question))
         else:
             events = assistant.escalated(assistant.chat(question, self._chat))
-        self._pool.start(_StreamJob(self._generation, events, self._signals))
+        self._start_stream(events)
 
     def _on_event(self, generation: int, event: Event) -> None:
         if generation != self._generation:

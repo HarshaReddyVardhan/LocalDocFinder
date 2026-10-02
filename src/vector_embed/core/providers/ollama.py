@@ -238,6 +238,12 @@ class OllamaProvider:
                     yield ChatChunk(text)
         except _TRANSIENT as exc:
             raise ProviderUnavailableError(f"ollama stream interrupted: {exc}") from exc
+        finally:
+            # Closing the reader closes the HTTP stream, which tells Ollama to stop generating
+            # when the caller abandons the iterator early.
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
 
     def chat_json(
         self,

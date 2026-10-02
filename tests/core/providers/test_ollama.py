@@ -215,6 +215,25 @@ class TestChat:
         with pytest.raises(ProviderUnavailableError):
             list(make(client).stream_chat(self.messages, "m"))
 
+    def test_abandoning_the_stream_closes_the_http_reader(self) -> None:
+        client = FakeOllamaClient()
+        closed: list[int] = []
+
+        def reader() -> object:
+            try:
+                for piece in ("a", "b", "c"):
+                    yield ollama.ChatResponse(
+                        message=ollama.Message(role="assistant", content=piece)
+                    )
+            finally:
+                closed.append(1)
+
+        client.chat = lambda **_kw: reader()  # type: ignore[method-assign]
+        stream = make(client).stream_chat(self.messages, "m")
+        assert next(stream).text == "a"
+        stream.close()
+        assert closed == [1]
+
     def test_chat_json_parses_and_reports_usage(self) -> None:
         client = FakeOllamaClient()
         client.chat_json_reply = json.dumps({"a": 1})

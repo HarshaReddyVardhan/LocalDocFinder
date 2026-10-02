@@ -1,3 +1,4 @@
+import threading
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -11,7 +12,7 @@ from tests.core.app.test_app import FakeService, result
 
 from vector_embed.app.assistant import ChatState, Delta, Event, Failed, Finished
 from vector_embed.app.controller import Launcher
-from vector_embed.app.window import Mode, SearchWindow
+from vector_embed.app.window import Mode, SearchWindow, _Signals, _StreamJob
 from vector_embed.core.rag import Source
 
 
@@ -312,3 +313,53 @@ class TestChat:
         window.set_mode(Mode.CHAT)
         wait_for(qapp, lambda: "gpu on fire" in window.status.text())
         assert "gpu on fire" in window.status.text()
+
+
+class TestStreamCancellation:
+    def test_cancelling_closes_the_generator_so_the_http_stream_closes(
+        self, qapp: QApplication
+    ) -> None:
+        closed: list[int] = []
+
+        def endless() -> Iterator[Event]:
+            try:
+                while True:
+                    yield Delta("x")
+            finally:
+                closed.append(1)
+
+        signals = _Signals()
+        job = _StreamJob(1, endless(), signals)
+        signals.streamed.connect(lambda _generation, _event: job.cancel())
+        job.run()
+        assert closed == [1]
+        assert job.finished.is_set()
+
+    def test_ending_a_chat_waits_for_the_answer_to_stop_before_unloading(
+        self, qapp: QApplication, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, assistant, _ = parts
+        release = threading.Event()
+        closed = threading.Event()
+
+        def slow_chat(message: str, state: ChatState) -> Iterator[Event]:
+            try:
+                yield Delta("first ")
+                release.wait(5)
+                yield Delta("second")
+            finally:
+                closed.set()
+
+        assistant.chat = slow_chat  # type: ignore[method-assign]
+        window.set_mode(Mode.CHAT)
+        wait_for(qapp, lambda: "begin" in kinds(assistant))
+        window.input.setText("hello")
+        window.submit()
+        wait_for(qapp, lambda: "first" in window.answer.toPlainText())
+        window.set_mode(Mode.SEARCH)
+        wait_for(qapp, lambda: False, timeout=0.3)
+        assert "end" not in kinds(assistant)  # the model must not be unloaded under a live stream
+        release.set()
+        wait_for(qapp, lambda: "end" in kinds(assistant))
+        assert closed.is_set()
+        assert "second" not in window.answer.toPlainText()
