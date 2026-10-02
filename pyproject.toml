@@ -71,7 +71,11 @@ extend-exclude = [
 select = [
     "E", "W", "F", "I", "B", "UP", "SIM", "C4", "PTH", "RET", "PL", "RUF", "S", "T20", "N", "ANN",
 ]
-ignore = ["PLR2004", "S101"]  # magic-value compares in tests/guards; assert is fine under pytest
+ignore = [
+    "PLR2004",  # magic-value compares in tests/guards
+    "S101",  # assert is fine under pytest and for narrowing
+    "PLC0415",  # heavy imports (lancedb, ollama, PySide6) are deliberately lazy
+]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S", "ANN", "PLR0913"]
@@ -87,7 +91,7 @@ files = ["src"]
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-module = ["pathspec.*", "lancedb.*", "pynvml.*", "winrt.*", "imagehash.*", "fitz.*"]
+module = ["pathspec.*", "pyarrow.*", "lancedb.*", "pynvml.*", "winrt.*", "imagehash.*", "fitz.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------- pytest
