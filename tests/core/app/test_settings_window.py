@@ -334,10 +334,26 @@ def test_delete_my_data_stops_everything_schedules_the_wipe_and_quits(
     env: Env, keys: FakeKeys, models: ModelsController, autostart: list[bool]
 ) -> None:
     window, steps, deleted, quits = deleting_window(env, keys, models, autostart, confirm=True)
+    set_setting(
+        env.data_dir / "settings.toml",
+        ["cloud", "providers", "x"],
+        CloudProviderSettings(base_url="https://x.test/v1").model_dump(mode="json"),
+    )
+    keys.set("x", "sk-secret")
     window.about.delete_data.click()
+    assert keys.get("x") is None  # stored API keys go with the data
     assert steps == ["autostart False", "stop"]
     assert deleted == [env.data_dir]
     assert quits == [1]
+
+
+def test_delete_my_data_refuses_a_foreign_folder_before_stopping_anything(
+    env: Env, keys: FakeKeys, models: ModelsController, autostart: list[bool]
+) -> None:
+    window, steps, deleted, quits = deleting_window(env, keys, models, autostart, confirm=True)
+    env.state.data_dir = env.data_dir / "elsewhere"  # simulate a state db pointing elsewhere
+    window.about.delete_data.click()
+    assert (steps, deleted, quits) == ([], [], [])
 
 
 def test_delete_my_data_needs_confirmation(

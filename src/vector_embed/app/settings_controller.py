@@ -6,7 +6,11 @@ from importlib import metadata
 from pathlib import Path
 
 from vector_embed.app.hotkey import parse_hotkey
-from vector_embed.core.lifecycle import schedule_data_deletion, stop_other_instances
+from vector_embed.core.lifecycle import (
+    ensure_data_folder,
+    schedule_data_deletion,
+    stop_other_instances,
+)
 from vector_embed.core.models.benchmark import BenchResult, load_results
 from vector_embed.core.secrets import KeyStore
 from vector_embed.core.settings import Settings, SettingsError, load_settings
@@ -127,6 +131,10 @@ class SettingsController:
     # ------------------------------------------------------------------ data
     def delete_my_data(self) -> None:
         """Stop everything, then remove the data folder once this process has exited."""
+        data_dir = self._state.data_dir  # the folder actually in use, not a guessed one
+        ensure_data_folder(data_dir)  # before anything is stopped or removed
         self._apply_autostart(False)  # so nothing restarts at the next logon
         self._stop_others()
-        self._schedule_deletion(self._path.parent)
+        for provider in self.settings().cloud.providers:
+            self._keys.delete(provider)
+        self._schedule_deletion(data_dir)

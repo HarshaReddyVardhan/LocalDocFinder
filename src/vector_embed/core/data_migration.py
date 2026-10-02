@@ -8,11 +8,13 @@ import logging
 import shutil
 from pathlib import Path
 
+from vector_embed.core.store.sqlite import STATE_FILENAME
+
 logger = logging.getLogger(__name__)
 
 # Everything Velopack puts in the install folder; never data, never moved.
 _INSTALLER_ENTRIES = frozenset({"current", "packages", "update.exe", "sq.version", ".betaid"})
-_DATA_MARKERS = ("state.db", "settings.toml")
+_DATA_MARKERS = (STATE_FILENAME, "settings.toml")
 
 
 def migrate_legacy_data(legacy_dir: Path, data_dir: Path) -> bool:

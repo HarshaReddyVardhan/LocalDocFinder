@@ -6,6 +6,7 @@ import pytest
 
 from vector_embed.core import lifecycle
 from vector_embed.core.autostart import Autostart
+from vector_embed.core.store.sqlite import STATE_FILENAME
 
 
 class FakeProcess:
@@ -49,6 +50,12 @@ def test_stops_other_copies_but_not_itself_or_strangers() -> None:
     assert stop([me, watcher, other]) == 1
     assert watcher.terminated
     assert not (me.terminated or other.terminated)
+
+
+def test_stops_the_cli_too() -> None:
+    cli = FakeProcess(4, "ve.exe")
+    assert stop([cli]) == 1
+    assert cli.terminated
 
 
 def test_stubborn_processes_are_killed() -> None:
@@ -99,12 +106,23 @@ def test_start_watcher_survives_a_launch_failure() -> None:
 def test_data_deletion_waits_for_this_process_then_removes_the_folder(tmp_path: Path) -> None:
     calls: list[list[str]] = []
     target = tmp_path / "it's data"
+    target.mkdir()
+    (target / STATE_FILENAME).write_text("")
     lifecycle.schedule_data_deletion(target, pid=4242, spawn=lambda argv, **_kw: calls.append(argv))
     script = calls[0][-1]
     assert "Wait-Process -Id 4242" in script
     assert "Remove-Item -LiteralPath" in script
     assert "it''s data" in script  # single quotes are doubled for PowerShell
     assert "-Recurse -Force" in script
+    assert "-ErrorAction Stop" in script  # a failed delete is retried, not hidden
+
+
+def test_data_deletion_refuses_a_folder_without_the_state_database(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    (tmp_path / "notes.txt").write_text("my own files")
+    with pytest.raises(lifecycle.DataDeletionRefusedError):
+        lifecycle.schedule_data_deletion(tmp_path, spawn=lambda argv, **_kw: calls.append(argv))
+    assert calls == []
 
 
 class RecordingAutostart(Autostart):

@@ -47,5 +47,5 @@ Start-Sleep -Seconds 8
 Check "app folder removed after uninstall" (-not (Test-Path $exe))
 Check "startup tasks removed after uninstall" (($(Get-ScheduledTask -TaskName "VectorEmbed*" -ErrorAction SilentlyContinue) | Measure-Object).Count -eq 0)
 Check "no VectorEmbed.exe still running" (-not (Get-Process VectorEmbed -ErrorAction SilentlyContinue))
-Check "user data survives uninstall" (Test-Path (Join-Path $dataRoot "state.db"))
+Check "user data survives uninstall" (Test-Path (Join-Path $dataRoot state.sqlite))
 Note "Done."
