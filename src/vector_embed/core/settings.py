@@ -443,7 +443,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="VE_",
         env_nested_delimiter="__",
-        env_file=".env",
+        env_file=None,  # chosen per load: only the settings folder's .env, never the cwd's
         env_file_encoding="utf-8",
         extra="ignore",  # a shared .env may hold unrelated keys; TOML keys are checked in load
         frozen=True,
@@ -522,7 +522,10 @@ def load_settings(path: Path | None = None) -> Settings:
         unknown = sorted(set(data) - set(Settings.model_fields))
         if unknown:
             raise SettingsError(f"unknown settings keys in {toml_path}: {', '.join(unknown)}")
-        return Settings(**data)
+        # A repo's own .env must not steer the app (an Ollama host or cloud URL, for instance),
+        # so only the .env beside settings.toml counts.
+        # ``_env_file`` is a runtime option of pydantic-settings that its stubs do not declare.
+        return Settings(**{**data, "_env_file": toml_path.parent / ".env"})
     except ValueError as exc:  # pydantic.ValidationError subclasses ValueError
         if isinstance(exc, SettingsError):
             raise

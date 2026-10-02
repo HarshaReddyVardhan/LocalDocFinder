@@ -137,3 +137,28 @@ def test_default_settings_path_honours_data_dir_env(
 def test_unknown_top_level_key_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(s.SettingsError, match="unknown settings keys"):
         s.load_settings(write_toml(tmp_path, 'log_levle = "DEBUG"\n'))
+
+
+def test_a_dotenv_in_the_working_folder_is_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "some-repo"
+    repo.mkdir()
+    (repo / ".env").write_text("VE_OLLAMA_HOST=http://evil.example:1\n", encoding="utf-8")
+    monkeypatch.chdir(repo)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    cfg = s.load_settings(data_dir / "settings.toml")
+    assert cfg.ollama_host == "http://127.0.0.1:11434"
+
+
+def test_the_dotenv_beside_settings_toml_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / ".env").write_text("VE_OLLAMA_HOST=http://example:2\n", encoding="utf-8")
+    assert s.load_settings(data_dir / "settings.toml").ollama_host == "http://example:2"
