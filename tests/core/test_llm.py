@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from tests.core.providers.fakes import FakeOllamaClient
@@ -9,9 +10,17 @@ from vector_embed.core.models.catalog import load_catalog
 from vector_embed.core.models.hardware import Hardware
 from vector_embed.core.models.registry import ModelRegistry
 from vector_embed.core.power import PowerGate
+from vector_embed.core.privacy.policy import PrivacyFilter
 from vector_embed.core.providers.base import Message
 from vector_embed.core.providers.ollama import OllamaProvider
-from vector_embed.core.settings import ChatSettings, EmbeddingSettings, PowerSettings
+from vector_embed.core.scope import ScopePolicy
+from vector_embed.core.settings import (
+    ChatSettings,
+    EmbeddingSettings,
+    PowerSettings,
+    PrivacySettings,
+    ScopeSettings,
+)
 from vector_embed.core.store.sqlite import CHAT_LOCK, StateDb
 
 GPU = Hardware("RTX 2070", 8192, 7000, 32000, 16000, 8, True)
@@ -175,6 +184,29 @@ class TestLease:
         gw.touch()
         gw.touch()
         assert renewals == [1]
+
+
+class TestLocalFilter:
+    ID_MESSAGES: ClassVar[list[Message]] = [Message("user", "My SSN 123-45-6789 please summarise")]
+
+    def test_local_models_see_ids_when_the_option_is_off(self, world: World) -> None:
+        list(world.gateway.stream(self.ID_MESSAGES))
+        assert "123-45-6789" in str(world.calls("chat")[0]["messages"])
+
+    def test_the_option_masks_ids_for_local_models_too(self, world: World) -> None:
+        privacy = PrivacyFilter(PrivacySettings(), ScopePolicy(ScopeSettings()))
+        world.gateway.local_filter = privacy.mask_ids
+        list(world.gateway.stream(self.ID_MESSAGES))
+        sent = str(world.calls("chat")[0]["messages"])
+        assert "123-45-6789" not in sent
+        assert "[SSN REMOVED]" in sent
+
+    def test_json_calls_are_masked_too(self, world: World) -> None:
+        privacy = PrivacyFilter(PrivacySettings(), ScopePolicy(ScopeSettings()))
+        world.gateway.local_filter = privacy.mask_ids
+        world.client.chat_json_reply = "{}"
+        world.gateway.chat_json(self.ID_MESSAGES, {"type": "object"})
+        assert "123-45-6789" not in str(world.calls("chat")[0]["messages"])
 
 
 class TestSessionPinning:

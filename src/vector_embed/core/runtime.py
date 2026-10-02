@@ -197,6 +197,8 @@ def build_skill_context(
     cloud = build_cloud(settings, state, scope, registry, keys, doc_types=store.doc_types_for)
     if allow_cloud:
         gateway.router = cloud.router
+    if settings.privacy.mask_ids_locally:
+        gateway.local_filter = cloud.privacy.mask_ids
     cache: list[ExtractorSet] = []
 
     def extractors() -> ExtractorSet:  # built on first use: OCR setup is not free

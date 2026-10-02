@@ -94,6 +94,8 @@ class LlmGateway:
         self._lease_renewed = 0.0
         self.session_active = False
         self.router: TargetRouter | None = None
+        # Optional rewrite of what a *local* model is sent (e.g. mask IDs); cloud has its own.
+        self.local_filter: Callable[[list[Message]], list[Message]] | None = None
 
     # ------------------------------------------------------------------ model choice
     def target(self, role: str = ROLE_CHAT, *, local_only: bool = False) -> ChatTarget:
@@ -231,6 +233,9 @@ class LlmGateway:
         except ProviderError:
             logger.debug("llm: embedder unload failed", exc_info=True)
 
+    def _for_local(self, messages: list[Message]) -> list[Message]:
+        return self.local_filter(messages) if self.local_filter is not None else messages
+
     def prewarm(self, role: str = ROLE_CHAT) -> None:
         """Start loading the model while the user is still typing."""
         target = self.target(role)
@@ -254,6 +259,7 @@ class LlmGateway:
         if target.local:
             self._free_embedder()
             self._loaded.add(target.model)
+            messages = self._for_local(messages)
         options = self.options(session=session)
         try:
             with self._local_lease(target):
@@ -278,6 +284,7 @@ class LlmGateway:
         if target.local:
             self._free_embedder()
             self._loaded.add(target.model)
+            messages = self._for_local(messages)
         with self._local_lease(target):
             result = target.provider.chat_json(
                 messages, target.model, schema, self.options(session=session)

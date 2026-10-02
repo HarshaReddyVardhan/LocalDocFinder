@@ -6,6 +6,7 @@ from tests.core.providers.fakes import FakeOllamaClient
 from vector_embed.core import runtime
 from vector_embed.core.doctypes.base import PROTOTYPE_TEXTS
 from vector_embed.core.providers.ollama import OllamaProvider
+from vector_embed.core.secrets import MemoryKeyStore
 from vector_embed.core.settings import ImageSettings, ScopeSettings, Settings, StorageSettings
 from vector_embed.core.store.sqlite import StateDb
 
@@ -177,3 +178,14 @@ class TestCloudWiring:
             assert isinstance(gateway, LlmGateway)
             assert gateway.router is ctx.extras["cloud"].router
             assert isinstance(ctx.extras["privacy"], PrivacyFilter)
+
+
+def test_mask_ids_locally_installs_the_local_filter(tmp_path: Path) -> None:
+    from vector_embed.core.settings import PrivacySettings
+
+    for enabled in (False, True):
+        settings = make_settings(tmp_path, privacy=PrivacySettings(mask_ids_locally=enabled))
+        with StateDb(settings.storage.data_dir) as state:
+            ctx = runtime.build_skill_context(settings, state, keys=MemoryKeyStore())
+            gateway = ctx.extras["llm"]
+            assert (gateway.local_filter is not None) is enabled

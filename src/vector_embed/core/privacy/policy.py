@@ -145,6 +145,11 @@ class PrivacyFilter:
         with self._names_lock:
             self._learned_names.clear()
 
+    @staticmethod
+    def mask_ids(messages: list[Message]) -> list[Message]:
+        """IDs masked, nothing else changed: the "mask IDs for local models too" option."""
+        return [Message(m.role, mask_sensitive(m.content).text) for m in messages]
+
     # ------------------------------------------------------------------ transparency
     @staticmethod
     def preview(outbound: Outbound) -> str:
