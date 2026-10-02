@@ -10,6 +10,8 @@ dependencies = [
     "pathspec>=0.12",
     "psutil>=5.9",
     "ollama>=0.4",
+    "openai>=1.40",
+    "keyring>=25",
     "lancedb",
     "pyarrow",
     "numpy",
