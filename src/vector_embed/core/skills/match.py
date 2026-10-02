@@ -14,7 +14,7 @@ from vector_embed.core.documents import DocumentLoader
 from vector_embed.core.match.pipeline import DocumentScore, MatchPipeline, MatchRun
 from vector_embed.core.match.recall import select_top
 from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_MATCH_SCORER
-from vector_embed.core.skills.ask import gateway_of
+from vector_embed.core.skills.ask import gateway_of, privacy_of
 from vector_embed.core.skills.base import (
     UI_TABLE,
     Skill,
@@ -72,7 +72,17 @@ class MatchSkill(Skill):
 
     def _read(self, params: MatchInput) -> str:
         if params.jd_file:
-            return self.pipeline._loader.load(Path(params.jd_file)).text
+            document = self.pipeline._loader.load(Path(params.jd_file))
+            privacy = privacy_of(self.ctx)
+            if (
+                privacy is not None
+                and privacy.is_never_send(document.path, document.doc_type or None)
+                and self.pipeline.gateway.will_use_cloud(ROLE_MATCH_SCORER)
+            ):
+                raise RuntimeError(
+                    f"{Path(document.path).name} is private and cannot be sent to a cloud model"
+                )
+            return document.text
         if params.jd and params.jd.strip():
             return params.jd
         raise RuntimeError("provide the text to match with --jd-file or --jd")

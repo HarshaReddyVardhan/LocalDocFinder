@@ -249,6 +249,15 @@ class LanceStore:
             for part in _batches(listed):
                 table.delete("path IN (" + ",".join(sql_quote(p) for p in part) + ")")
 
+    def doc_types_for(self, paths: Sequence[str]) -> dict[str, str]:
+        """The stored document type of each indexed path (paths never indexed are absent)."""
+        found: dict[str, str] = {}
+        for part in _batches(list(paths)):
+            listed = ",".join(sql_quote(p) for p in part)
+            for row in self.scan(DOCUMENTS, ["path", "doc_type"], f"path IN ({listed})", len(part)):
+                found[row["path"]] = row["doc_type"]
+        return found
+
     def delete_prefix(self, prefix: str) -> list[str]:
         """Remove every indexed path under a directory; returns the removed paths."""
         paths = self._state.manifest_under(prefix)

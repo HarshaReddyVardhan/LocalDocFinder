@@ -54,13 +54,14 @@ class DocumentLoader:
         if rows and rows[0]["full_text"]:
             row = rows[0]
             return LoadedDocument(key, row["title"], row["full_text"], row["doc_type"], True)
-        return self._extract(target)
+        stored_type = rows[0]["doc_type"] if rows else ""  # keep the type the index knows
+        return self._extract(target, stored_type)
 
-    def _extract(self, target: Path) -> LoadedDocument:
+    def _extract(self, target: Path, doc_type: str = "") -> LoadedDocument:
         try:
             chunks = self._extractors().extract(target)
         except ExtractError as exc:
             raise DocumentError(f"cannot read {target.name}: {exc}") from exc
         text = "\n".join(c.text for c in chunks if c.kind != "outline")
         first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
-        return LoadedDocument(str(target), first[:120] or target.name, text, "", False)
+        return LoadedDocument(str(target), first[:120] or target.name, text, doc_type, False)

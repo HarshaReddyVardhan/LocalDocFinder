@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,30 @@ class TestNeverSend:
         assert f.is_never_send(home / "docs" / "bill.pdf", doc_type="invoice")
         assert not f.is_never_send(home / "docs" / "resume.pdf", doc_type="resume")
         assert not f.is_never_send(home / ".claude" / "plans" / "plan.md")
+
+    def test_stored_doc_type_is_looked_up_when_the_caller_does_not_know_it(self) -> None:
+        stored = {"D:/docs/bill.pdf": "invoice", "D:/docs/cv.pdf": "resume"}
+        lookups: list[list[str]] = []
+
+        def lookup(paths: Sequence[str]) -> dict[str, str]:
+            lookups.append(list(paths))
+            return {p: stored[p] for p in paths if p in stored}
+
+        f = PrivacyFilter(
+            PrivacySettings(never_send_doc_types=frozenset({"invoice"})),
+            ScopePolicy(ScopeSettings()),
+            lookup,
+        )
+        assert f.is_never_send("D:/docs/bill.pdf")
+        assert not f.is_never_send("D:/docs/cv.pdf")
+        assert not f.is_never_send("D:/docs/unindexed.pdf")
+
+    def test_no_lookup_is_made_when_no_type_is_blocked(self) -> None:
+        def lookup(paths: Sequence[str]) -> dict[str, str]:
+            raise AssertionError("the index must not be queried for nothing")
+
+        f = PrivacyFilter(PrivacySettings(), ScopePolicy(ScopeSettings()), lookup)
+        assert not f.is_never_send("D:/docs/bill.pdf")
 
     def test_custom_globs(self) -> None:
         f = make(never_send_globs=("**/private/**",))

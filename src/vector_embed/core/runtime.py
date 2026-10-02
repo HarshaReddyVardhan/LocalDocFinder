@@ -22,7 +22,7 @@ from vector_embed.core.llm import LlmGateway
 from vector_embed.core.models.catalog import load_catalog
 from vector_embed.core.models.registry import ModelRegistry
 from vector_embed.core.power import PowerGate
-from vector_embed.core.privacy.policy import PrivacyFilter
+from vector_embed.core.privacy.policy import DocTypeLookup, PrivacyFilter
 from vector_embed.core.projects import Projects
 from vector_embed.core.providers.ollama import OllamaProvider
 from vector_embed.core.providers.openai_compat import OpenAICompatibleProvider
@@ -142,9 +142,11 @@ def build_cloud(
     scope: ScopePolicy,
     registry: ModelRegistry,
     keys: KeyStore | None = None,
+    *,
+    doc_types: DocTypeLookup | None = None,
 ) -> CloudContext:
     """Cloud wiring. With no provider configured (the default) nothing can leave the machine."""
-    privacy = PrivacyFilter(settings.privacy, scope)
+    privacy = PrivacyFilter(settings.privacy, scope, doc_types)
     consent = CloudConsent()
     provider: CloudChatProvider | None = None
     active = settings.cloud.active
@@ -192,7 +194,7 @@ def build_skill_context(
     )
     store = open_read_only_store(settings, state)
     scope = build_scope(settings)
-    cloud = build_cloud(settings, state, scope, registry, keys)
+    cloud = build_cloud(settings, state, scope, registry, keys, doc_types=store.doc_types_for)
     if allow_cloud:
         gateway.router = cloud.router
     cache: list[ExtractorSet] = []

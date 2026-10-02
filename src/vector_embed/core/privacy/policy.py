@@ -9,6 +9,7 @@ inspect it ("View what will be sent") before consenting.
 import re
 import threading
 from collections import Counter
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -63,10 +64,19 @@ def _source_at(text: str, position: int) -> str:
     return best_name
 
 
+DocTypeLookup = Callable[[Sequence[str]], dict[str, str]]
+
+
 class PrivacyFilter:
-    def __init__(self, settings: PrivacySettings, scope: ScopePolicy) -> None:
+    def __init__(
+        self,
+        settings: PrivacySettings,
+        scope: ScopePolicy,
+        doc_types: DocTypeLookup | None = None,
+    ) -> None:
         self._settings = settings
         self._scope = scope
+        self._doc_types = doc_types  # path -> stored document type, for never_send_doc_types
         self._never_send = tuple(glob_to_regex(g) for g in settings.never_send_globs)
         # Names met in earlier requests: a name restored into an answer is real text in the next
         # turn's history, and must still be masked there.
@@ -78,10 +88,19 @@ class PrivacyFilter:
         """True for secrets, files matching the never-send globs, and blocked document types."""
         if self._scope.is_secret(path):
             return True
+        if doc_type is None:
+            doc_type = self._stored_doc_type(path)
         if doc_type is not None and doc_type in self._settings.never_send_doc_types:
             return True
         posix = Path(path).as_posix().lower()
         return any(regex.match(posix) for regex in self._never_send)
+
+    def _stored_doc_type(self, path: str | Path) -> str | None:
+        """The indexed type of ``path``, looked up only when a type is actually blocked."""
+        if not self._settings.never_send_doc_types or self._doc_types is None:
+            return None
+        key = str(path)
+        return self._doc_types([key]).get(key)
 
     # ------------------------------------------------------------------ filtering
     def prepare(self, messages: list[Message]) -> Outbound:

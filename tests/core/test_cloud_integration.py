@@ -16,6 +16,8 @@ from vector_embed.core.providers.base import Message
 from vector_embed.core.skills.ask import AskInput, AskSkill
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.skills.chat import ChatInput, ChatSkill
+from vector_embed.core.skills.match import MatchInput, MatchSkill
+from vector_embed.core.store.lance import sql_quote
 
 JD = "Senior backend engineer. Requirements: Python, PostgreSQL. Nice to have: Kubernetes, AWS."
 PUBLIC_NOTE = (
@@ -105,6 +107,37 @@ CODE_PRIVATE = """def retry_payment_secretly(charge):
 """
 
 
+class TestBlockedDocTypes:
+    def test_a_blocked_document_type_never_reaches_the_cloud(
+        self, env: Env, chat: Chat, cloud: CloudRig, skill_ctx: SkillContext
+    ) -> None:
+        env.indexer.index_paths(
+            [
+                write(env, "retries.md", "# Retries\n\nWe retry failed payments with backoff.\n"),
+                write(env, "billing.md", "# Billing\n\nWe retry failed payments invoice 4411.\n"),
+            ]
+        )
+        env.store.maintain()
+        env.store.documents.update(  # type: ignore[union-attr]
+            where=f"path = {sql_quote(str(env.root / 'billing.md'))}",
+            values={"doc_type": "invoice"},
+        )
+        skill_ctx.extras["privacy"] = PrivacyFilter(
+            env.settings.privacy.model_copy(
+                update={"never_send_doc_types": frozenset({"invoice"})}
+            ),
+            env.scope,
+            env.store.doc_types_for,
+        )
+        cloud.inner.reply = ["Backoff [1]."]
+        run = AskSkill(skill_ctx).prepare("how do we retry failed payments")
+        list(run.deltas())
+        sent = sent_text(cloud.inner)
+        assert "retry failed payments with backoff" in sent
+        assert "invoice 4411" not in sent
+        assert run.result.withheld == 1
+
+
 class TestCodeRouting:
     def test_code_chat_to_the_cloud_never_carries_private_files(
         self, env: Env, chat: Chat, cloud: CloudRig, skill_ctx: SkillContext
@@ -190,6 +223,25 @@ class TestChat:
         sent = sent_text(cloud.inner)
         assert "retry failed payments with backoff" in sent
         assert "secret strategy" not in sent
+
+
+class TestPrivateJobDescription:
+    def test_a_private_jd_file_cannot_be_scored_in_the_cloud(
+        self, env: Env, chat: Chat, cloud: CloudRig, skill_ctx: SkillContext
+    ) -> None:
+        jd = write(env, ".claude/projects/demo/memory/jd.md", JD)
+        skill = MatchSkill(skill_ctx)
+        with pytest.raises(RuntimeError, match="private"):
+            skill.prepare(MatchInput(jd_file=jd, top=1))
+        assert cloud.inner.sent == []
+
+    def test_the_same_file_is_fine_for_a_local_model(
+        self, env: Env, chat: Chat, cloud: CloudRig, skill_ctx: SkillContext
+    ) -> None:
+        cloud.router._settings = cloud.router._settings.model_copy(update={"routing": {}})
+        jd = write(env, ".claude/projects/demo/memory/jd.md", JD)
+        run = MatchSkill(skill_ctx).prepare(MatchInput(jd_file=jd, top=1))
+        assert run.jd_text.startswith("Senior backend engineer")
 
 
 class TestMatch:
