@@ -9,6 +9,7 @@ the answer shown to the user. City and country are never touched; they matter fo
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 
 from vector_embed.core.privacy.detectors import Finding, detect_sensitive
 
@@ -45,6 +46,7 @@ _ADDRESS = re.compile(
 )
 _NAME_LABEL = re.compile(r"(?im)^\s*(?:full\s+)?name\s*[:\-]\s*(.+)$")
 _NAME_LINE = re.compile(r"^[A-Z][a-z]+(?:[ '-][A-Z][a-z.]+){1,3}$")
+_NAME_LINE_CAPS = re.compile(r"^[A-Z]{2,}(?:[ '-][A-Z][A-Z.]*){1,3}$")
 _MIN_PHONE_DIGITS = 10
 _NAME_SCAN_LINES = 5
 
@@ -75,12 +77,54 @@ _SECTION_WORDS = frozenset(
         "resume",
     ]
 )
+# Job-title lines look like names ("Senior Software Engineer"); a person's name has none of these.
+_TITLE_WORDS = frozenset(
+    [
+        "engineer",
+        "developer",
+        "manager",
+        "director",
+        "analyst",
+        "consultant",
+        "architect",
+        "designer",
+        "scientist",
+        "administrator",
+        "specialist",
+        "lead",
+        "intern",
+        "officer",
+        "president",
+        "senior",
+        "junior",
+        "principal",
+        "staff",
+        "software",
+        "data",
+        "product",
+        "project",
+        "backend",
+        "frontend",
+        "fullstack",
+        "devops",
+        "cloud",
+        "machine",
+        "learning",
+        "technical",
+        "head",
+        "founder",
+        "associate",
+        "assistant",
+        "coordinator",
+    ]
+)
 _BLOCK_START = re.compile(r"^(?:Resume \(|=== )")
 
 
 def _looks_like_a_name(line: str) -> bool:
     words = {w.lower().strip(".") for w in line.split()}
-    return bool(_NAME_LINE.fullmatch(line)) and not words & _SECTION_WORDS
+    shaped = bool(_NAME_LINE.fullmatch(line) or _NAME_LINE_CAPS.fullmatch(line))
+    return shaped and not words & (_SECTION_WORDS | _TITLE_WORDS)
 
 
 def _heading_names(text: str) -> list[str]:
@@ -113,27 +157,44 @@ class Redaction:
 
 
 class PersonalRedactor:
-    """Reversible redaction; one instance per request so numbering stays consistent."""
+    """Reversible redaction; one instance per request so numbering stays consistent.
+
+    Names found in any text it has seen (``learn``) are replaced everywhere, in every later call,
+    so a name that appears in an early message is still masked when it recurs in a later one.
+    """
 
     def __init__(self, known_names: Iterable[str] = ()) -> None:
-        self._known = [n for n in known_names if n.strip()]
+        self._names_seen: dict[str, str] = {}  # lowercase -> as first written
         self._mapping: dict[str, str] = {}
         self._reverse: dict[str, str] = {}
         self._counts: dict[str, int] = {}
+        for name in known_names:
+            self._remember(name)
+
+    def _remember(self, name: str) -> None:
+        cleaned = " ".join(name.split())
+        if cleaned:
+            self._names_seen.setdefault(cleaned.lower(), cleaned)
+
+    @property
+    def known_names(self) -> list[str]:
+        """Every name this redactor will replace."""
+        return list(self._names_seen.values())
 
     @property
     def mapping(self) -> dict[str, str]:
         """Every placeholder handed out so far and the value it stands for."""
         return dict(self._mapping)
 
-    def _placeholder(self, kind: str, original: str) -> str:
-        existing = self._reverse.get(original)
+    def _placeholder(self, kind: str, original: str, key: str | None = None) -> str:
+        lookup = key if key is not None else original
+        existing = self._reverse.get(lookup)
         if existing is not None:
             return existing
         self._counts[kind] = self._counts.get(kind, 0) + 1
         placeholder = f"[{kind}_{self._counts[kind]}]"
         self._mapping[placeholder] = original
-        self._reverse[original] = placeholder
+        self._reverse[lookup] = placeholder
         return placeholder
 
     def _sub(self, text: str, pattern: re.Pattern[str], kind: str) -> str:
@@ -148,14 +209,22 @@ class PersonalRedactor:
 
         return _PHONE.sub(replace, text)
 
-    def _names(self, text: str) -> str:
-        names = list(self._known)
+    def _name_placeholder(self, name: str, _match: re.Match[str]) -> str:
+        return self._placeholder("NAME", name, key=name.lower())
+
+    def learn(self, text: str) -> None:
+        """Note the names in ``text`` without changing it (call on every message first)."""
         for match in _NAME_LABEL.finditer(text):
-            names.append(match.group(1).strip())
-        names.extend(_heading_names(text))
-        for name in sorted(set(names), key=len, reverse=True):
-            placeholder = self._placeholder("NAME", name)
-            text = text.replace(name, placeholder)
+            self._remember(match.group(1).strip())
+        for name in _heading_names(text):
+            self._remember(name)
+
+    def _names(self, text: str) -> str:
+        self.learn(text)
+        for name in sorted(self._names_seen.values(), key=len, reverse=True):
+            # Whole words only ("Ann" must not eat "Annual"), any capitalisation ("JANE DOE").
+            pattern = re.compile(rf"(?<!\w){re.escape(name)}(?!\w)", re.IGNORECASE)
+            text = pattern.sub(partial(self._name_placeholder, name), text)
         return text
 
     def redact(self, text: str) -> Redaction:

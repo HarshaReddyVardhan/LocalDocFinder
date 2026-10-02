@@ -135,3 +135,37 @@ class TestTransparency:
         outbound = make().prepare(empty)
         assert outbound.findings == []
         assert outbound.tokens >= 0
+
+
+class TestNamesAcrossTurns:
+    @staticmethod
+    def make() -> PrivacyFilter:
+        settings = PrivacySettings(redact_personal=True)
+        return PrivacyFilter(settings, ScopePolicy(ScopeSettings()))
+
+    def test_a_name_in_an_earlier_message_is_masked_even_if_found_in_a_later_one(self) -> None:
+        outbound = self.make().prepare(
+            [
+                Message("user", "How strong is Priya Nair for the role?"),
+                Message("system", "Name: Priya Nair\nSkills: Python"),
+            ]
+        )
+        assert all("Priya Nair" not in m.content for m in outbound.messages)
+
+    def test_later_turns_still_mask_a_name_that_was_restored_into_the_history(self) -> None:
+        policy = self.make()
+        first = policy.prepare([Message("system", "Name: Priya Nair\nSkills: Python")])
+        answer = first.restore("[NAME_1] is a strong fit.")
+        assert "Priya Nair" in answer  # the user sees the real name
+        # turn two: no resume block this time, but the history now carries the real name
+        second = policy.prepare(
+            [Message("assistant", answer), Message("user", "What about Priya Nair's Go skills?")]
+        )
+        assert all("Priya Nair" not in m.content for m in second.messages)
+
+    def test_a_new_chat_can_start_clean(self) -> None:
+        policy = self.make()
+        policy.prepare([Message("system", "Name: Priya Nair\nx")])
+        policy.forget_names()
+        fresh = policy.prepare([Message("user", "Is Priya Nair a good fit?")])
+        assert "Priya Nair" in fresh.messages[0].content  # nothing remembered from before

@@ -7,6 +7,7 @@ inspect it ("View what will be sent") before consenting.
 """
 
 import re
+import threading
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +19,7 @@ from vector_embed.core.scope import ScopePolicy, glob_to_regex
 from vector_embed.core.settings import PrivacySettings
 from vector_embed.core.tokens import estimate_tokens
 
+_MAX_LEARNED_NAMES = 200
 _SOURCE_MARKERS = (
     re.compile(r"Resume \(([^)]+)\)"),
     re.compile(r"=== (.+?) ==="),
@@ -66,6 +68,10 @@ class PrivacyFilter:
         self._settings = settings
         self._scope = scope
         self._never_send = tuple(glob_to_regex(g) for g in settings.never_send_globs)
+        # Names met in earlier requests: a name restored into an answer is real text in the next
+        # turn's history, and must still be masked there.
+        self._learned_names: dict[str, str] = {}
+        self._names_lock = threading.Lock()
 
     # ------------------------------------------------------------------ never-send rules
     def is_never_send(self, path: str | Path, doc_type: str | None = None) -> bool:
@@ -81,9 +87,7 @@ class PrivacyFilter:
     def prepare(self, messages: list[Message]) -> Outbound:
         """Mask IDs everywhere; optionally redact personal details. Never alters the originals."""
         outbound = Outbound(messages=[])
-        redactor = (
-            PersonalRedactor(self._settings.known_names) if self._settings.redact_personal else None
-        )
+        redactor = self._new_redactor(messages)
         for message in messages:
             masked = mask_sensitive(message.content)
             outbound.findings.extend(
@@ -96,7 +100,31 @@ class PrivacyFilter:
         if redactor is not None:
             outbound.placeholders = redactor.mapping
             outbound.personal_redacted = len(outbound.placeholders)
+            self._remember_names(redactor)
         return outbound
+
+    def _new_redactor(self, messages: list[Message]) -> PersonalRedactor | None:
+        """A redactor that already knows every name in this request and in earlier ones."""
+        if not self._settings.redact_personal:
+            return None
+        with self._names_lock:
+            earlier = list(self._learned_names.values())
+        redactor = PersonalRedactor([*self._settings.known_names, *earlier])
+        for message in messages:  # first pass: a name in a late message still masks an early one
+            redactor.learn(message.content)
+        return redactor
+
+    def _remember_names(self, redactor: PersonalRedactor) -> None:
+        with self._names_lock:
+            for name in redactor.known_names:
+                if len(self._learned_names) >= _MAX_LEARNED_NAMES:
+                    break
+                self._learned_names.setdefault(name.lower(), name)
+
+    def forget_names(self) -> None:
+        """Drop the names remembered between requests (a new chat starts clean)."""
+        with self._names_lock:
+            self._learned_names.clear()
 
     # ------------------------------------------------------------------ transparency
     @staticmethod

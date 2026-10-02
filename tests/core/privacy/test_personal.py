@@ -76,3 +76,35 @@ def test_numbering_is_per_redactor_instance() -> None:
     second = PersonalRedactor().redact("b@y.com")
     assert first.text == second.text == "[EMAIL_1]"
     assert first.mapping != second.mapping
+
+
+def test_names_are_matched_as_whole_words_in_any_case() -> None:
+    redactor = PersonalRedactor(["Ann Lee"])
+    result = redactor.redact("ANN LEE applied. Annual review for Ann Lee and ann lee.")
+    assert "Annual review" in result.text  # "Ann" inside a longer word is not a name
+    assert "ANN LEE" not in result.text
+    assert "ann lee" not in result.text
+    assert result.text.count("[NAME_1]") == 3
+    assert result.restore("[NAME_1]") == "Ann Lee"
+
+
+def test_all_caps_heading_is_a_name() -> None:
+    result = redact_personal("JANE DOE\nPython developer\nWork Experience\nAcme")
+    assert "JANE DOE" not in result.text
+    assert "Python developer" in result.text
+
+
+def test_job_title_lines_are_not_names() -> None:
+    for title in ("Senior Software Engineer", "Product Manager", "DATA SCIENTIST"):
+        assert redact_personal(f"{title}\nBuilt things").text.startswith(title)
+
+
+def test_a_name_found_later_still_masks_an_earlier_occurrence() -> None:
+    redactor = PersonalRedactor()
+    redactor.learn("Name: Priya Nair\nrest")
+    assert "Priya Nair" not in redactor.redact("Earlier message mentioning Priya Nair.").text
+
+
+def test_unused_known_names_do_not_consume_placeholder_numbers() -> None:
+    result = redact_personal("Email jane@example.com", ["Nobody Here"])
+    assert result.mapping == {"[EMAIL_1]": "jane@example.com"}

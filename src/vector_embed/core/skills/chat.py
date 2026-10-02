@@ -14,7 +14,7 @@ from pathlib import Path
 from pydantic import Field
 
 from vector_embed.core.documents import DocumentError, DocumentLoader, LoadedDocument
-from vector_embed.core.llm import ChatBlockedError, LlmGateway
+from vector_embed.core.llm import ChatBlockedError, ChatTarget, LlmGateway, NoChatModelError
 from vector_embed.core.models.catalog import ROLE_CHAT
 from vector_embed.core.privacy.policy import PrivacyFilter
 from vector_embed.core.providers.base import Message
@@ -137,11 +137,17 @@ class ChatSkill(Skill):
         return docs, str(context.get("scratch", ""))
 
     # ------------------------------------------------------------------ prompt
-    def build_prompt(self, session_id: int, message: str) -> tuple[list[Message], list[str]]:
-        """Messages for the model (pinned context first) and the titles that had to be cut."""
+    def build_prompt(
+        self, session_id: int, message: str, target: ChatTarget | None = None
+    ) -> tuple[list[Message], list[str]]:
+        """Messages for the model (pinned context first) and the titles that had to be cut.
+
+        ``target`` is the route the reply will be sent to; the privacy rules are applied for that
+        exact route. Without it the current route is looked up.
+        """
         cfg = self.ctx.settings.chat
         docs, scratch = self._pinned(session_id)
-        cloud = self._gateway.will_use_cloud(ROLE_CHAT)
+        cloud = self._gateway.will_use_cloud(ROLE_CHAT) if target is None else not target.local
         privacy = privacy_of(self.ctx)
         if cloud and privacy is not None:
             private = [d.path for d in docs if privacy.is_never_send(d.path, d.doc_type or None)]
@@ -179,17 +185,30 @@ class ChatSkill(Skill):
     # ------------------------------------------------------------------ turns
     def turn(self, params: ChatInput) -> tuple[ChatTurn, Iterator[str]]:
         session_id = params.session or self.open_session(params.message, params.pin, params.scratch)
-        messages, cut = self.build_prompt(session_id, params.message)
+        target = self._target()
+        messages, cut = self.build_prompt(session_id, params.message, target)
         turn = ChatTurn(session_id, truncated=cut)
         keep = params.keep_loaded or self._gateway.session_active
-        return turn, self._generate(turn, messages, params.message, keep)
+        return turn, self._generate(turn, messages, params.message, keep, target)
+
+    def _target(self) -> ChatTarget | None:
+        """The route decided once per turn; ``None`` lets the stream raise the usual error."""
+        try:
+            return self._gateway.target(ROLE_CHAT)
+        except (ChatBlockedError, NoChatModelError):
+            return None
 
     def _generate(
-        self, turn: ChatTurn, messages: list[Message], user_text: str, keep: bool
+        self,
+        turn: ChatTurn,
+        messages: list[Message],
+        user_text: str,
+        keep: bool,
+        target: ChatTarget | None = None,
     ) -> Iterator[str]:
         parts: list[str] = []
         try:
-            for chunk in self._gateway.stream(messages, ROLE_CHAT, session=keep):
+            for chunk in self._gateway.stream(messages, ROLE_CHAT, session=keep, target=target):
                 if chunk.text:
                     parts.append(chunk.text)
                     yield chunk.text

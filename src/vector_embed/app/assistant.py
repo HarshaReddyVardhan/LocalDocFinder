@@ -10,7 +10,7 @@ from vector_embed.core.models.catalog import ROLE_CHAT
 from vector_embed.core.providers.base import Message, ProviderError
 from vector_embed.core.rag import Source, build_messages
 from vector_embed.core.runtime import CloudContext
-from vector_embed.core.skills.ask import AskSkill, gateway_of
+from vector_embed.core.skills.ask import AskSkill, gateway_of, privacy_of
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.skills.chat import ChatInput, ChatSkill
 
@@ -99,6 +99,9 @@ class AssistantService:
     def end_chat(self, reason: str = "closed") -> None:
         if self._ctx is not None and self.gateway.session_active:
             self.gateway.end_chat(reason)
+        privacy = privacy_of(self._ctx) if self._ctx is not None else None
+        if privacy is not None:
+            privacy.forget_names()  # the next chat must not inherit this one's masked names
 
     def maintain(self) -> str | None:
         """Poll idle/unplug/fullscreen conditions; returns why the model was unloaded."""
