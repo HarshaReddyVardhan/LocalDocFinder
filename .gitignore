@@ -36,3 +36,4 @@ Releases/
 packaging/*.ico
 src/vector_embed/update_source.txt
 .tools/
+scripts/sandbox/result.txt
