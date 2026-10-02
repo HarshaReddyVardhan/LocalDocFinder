@@ -11,7 +11,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QSystemTrayIcon
 
 from vector_embed.app.assistant import AssistantService
 from vector_embed.app.controller import Launcher, SearchService
@@ -28,12 +28,18 @@ from vector_embed.core import runtime
 from vector_embed.core.autostart import Autostart
 from vector_embed.core.idle import SystemActivity
 from vector_embed.core.lifecycle import start_watcher
-from vector_embed.core.logging_setup import configure_logging
+from vector_embed.core.logging_setup import configure_logging, install_excepthooks
 from vector_embed.core.models.catalog import load_catalog
 from vector_embed.core.models.hardware import probe_hardware
-from vector_embed.core.process import is_frozen
+from vector_embed.core.process import is_frozen, single_instance
 from vector_embed.core.secrets import KeyringStore
-from vector_embed.core.settings import SETTINGS_FILENAME, Settings, SettingsError, load_settings
+from vector_embed.core.settings import (
+    SETTINGS_FILENAME,
+    Settings,
+    SettingsError,
+    default_data_dir,
+    load_settings,
+)
 from vector_embed.core.setup.flow import SETUP_COMPLETED_KEY
 from vector_embed.core.setup.wiring import FlowBuilder, build_flow
 from vector_embed.core.skills.base import SkillContext
@@ -41,6 +47,9 @@ from vector_embed.core.store.sqlite import StateDb
 from vector_embed.core.updates import Updater, resolve_source
 
 logger = logging.getLogger("app")
+
+EXIT_OK = 0
+EXIT_BAD_SETTINGS = 2
 
 
 def tray_icon() -> QIcon:
@@ -175,16 +184,44 @@ def hotkey_applier(hotkey: HotkeyFilter, tray: QSystemTrayIcon) -> Callable[[str
     return apply
 
 
+def show_settings_error(message: str) -> None:
+    QMessageBox.critical(None, "Vector Embed", message)
+
+
+def load_settings_or_report(show: Callable[[str], None] | None = None) -> Settings | None:
+    """The settings, or ``None`` after telling the user why the app cannot start."""
+    try:
+        return load_settings()
+    except SettingsError as exc:
+        logger.error("settings are invalid: %s", exc)
+        (show or show_settings_error)(
+            f"Vector Embed cannot start because its settings are invalid.\n\n{exc}"
+        )
+        return None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--show", action="store_true", help="show the window immediately")
     parser.add_argument("--setup", action="store_true", help="run the setup wizard now")
     args = parser.parse_args(argv)
-    settings = load_settings()
-    configure_logging("app", runtime.log_dir(settings), settings.log_level)
-
+    install_excepthooks()
+    # Logging first, so even a settings failure leaves a trace; reconfigured once settings load.
+    configure_logging("app", default_data_dir() / runtime.LOGS_DIRNAME)
     app = QApplication(sys.argv[:1])
     app.setQuitOnLastWindowClosed(False)
+    settings = load_settings_or_report()
+    if settings is None:
+        return EXIT_BAD_SETTINGS
+    configure_logging("app", runtime.log_dir(settings), settings.log_level)
+    with single_instance("app", settings.storage.data_dir) as acquired:
+        if not acquired:
+            logger.info("another copy of the app is already running")
+            return EXIT_OK
+        return run_app(app, settings, args)
+
+
+def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> int:
     with StateDb(settings.storage.data_dir) as state:
         context = make_context_factory(settings, state)
         updater = Updater(resolve_source(settings.updates.repo_url), state=state)

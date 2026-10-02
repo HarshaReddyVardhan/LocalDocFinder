@@ -3,8 +3,10 @@
 import json
 import logging
 import sys
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from types import TracebackType
 from typing import Any
 
 _STANDARD_ATTRS = set(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {
@@ -58,3 +60,28 @@ def configure_logging(name: str, log_dir: Path | None, level: str = "INFO") -> N
     for handler in handlers:
         handler._vector_embed = True  # type: ignore[attr-defined]  # marker for reconfiguration
         root.addHandler(handler)
+
+
+def install_excepthooks() -> None:
+    """Send uncaught exceptions to the log; the windowed exe has no stderr to show them on."""
+    logger = logging.getLogger("uncaught")
+
+    def on_main_thread(
+        exc_type: type[BaseException], exc: BaseException, tb: TracebackType | None
+    ) -> None:
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
+        logger.critical("uncaught exception", exc_info=(exc_type, exc, tb))
+
+    def on_other_thread(args: threading.ExceptHookArgs) -> None:
+        if args.exc_type is SystemExit or args.exc_value is None:
+            return
+        logger.critical(
+            "uncaught exception in thread %s",
+            args.thread.name if args.thread else "?",
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    sys.excepthook = on_main_thread
+    threading.excepthook = on_other_thread

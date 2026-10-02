@@ -403,6 +403,7 @@ def test_main_runs_the_event_loop(
     qapp: QApplication, env: Env, monkeypatch: pytest.MonkeyPatch, hotkey_ok: bool
 ) -> None:
     monkeypatch.setattr(app_main, "load_settings", lambda: env.settings)
+    monkeypatch.setattr(app_main, "install_excepthooks", lambda: None)
     monkeypatch.setattr(app_main, "configure_logging", lambda *_a, **_k: None)
     monkeypatch.setattr(app_main, "QApplication", lambda _argv: qapp)
     monkeypatch.setattr(qapp, "exec", lambda: 7)
@@ -424,6 +425,7 @@ def test_main_survives_an_invalid_hotkey(
         update={"search": env.settings.search.model_copy(update={"hotkey": "ctrl+banana"})}
     )
     monkeypatch.setattr(app_main, "load_settings", lambda: settings)
+    monkeypatch.setattr(app_main, "install_excepthooks", lambda: None)
     monkeypatch.setattr(app_main, "configure_logging", lambda *_a, **_k: None)
     monkeypatch.setattr(app_main, "QApplication", lambda _argv: qapp)
     monkeypatch.setattr(qapp, "exec", lambda: 0)
@@ -432,3 +434,33 @@ def test_main_survives_an_invalid_hotkey(
     monkeypatch.setattr(app_main.UpdateScheduler, "start", lambda _self: None)
     monkeypatch.setattr(app_main, "run_setup_wizard", lambda *_a, **_k: None)
     assert app_main.main([]) == 0
+
+
+def test_main_reports_invalid_settings_instead_of_dying_silently(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shown: list[str] = []
+
+    def broken() -> object:
+        raise app_main.SettingsError("invalid settings in C:/x/settings.toml: bad key")
+
+    monkeypatch.setattr(app_main, "load_settings", broken)
+    monkeypatch.setattr(app_main, "install_excepthooks", lambda: None)
+    monkeypatch.setattr(app_main, "configure_logging", lambda *_a, **_k: None)
+    monkeypatch.setattr(app_main, "QApplication", lambda _argv: qapp)
+    monkeypatch.setattr(app_main, "show_settings_error", shown.append)
+    assert app_main.main([]) == app_main.EXIT_BAD_SETTINGS
+    assert "settings.toml" in shown[0]
+
+
+def test_main_exits_when_another_copy_is_running(
+    qapp: QApplication, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_main, "load_settings", lambda: env.settings)
+    monkeypatch.setattr(app_main, "install_excepthooks", lambda: None)
+    monkeypatch.setattr(app_main, "configure_logging", lambda *_a, **_k: None)
+    monkeypatch.setattr(app_main, "QApplication", lambda _argv: qapp)
+    monkeypatch.setattr(app_main, "run_app", lambda *_a: pytest.fail("a second app started"))
+    with app_main.single_instance("app", env.settings.storage.data_dir) as first:
+        assert first
+        assert app_main.main([]) == app_main.EXIT_OK
