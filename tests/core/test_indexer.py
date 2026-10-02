@@ -500,3 +500,21 @@ class TestThumbnailCleanup:
         env.state.enqueue(note, "delete", delay=0)
         env.indexer.process(env.state.claim(10, ignore_debounce=True))
         assert len(list(thumbs.glob("*.jpg"))) == 1
+
+
+def test_renaming_a_file_reuses_every_vector(env: "Env") -> None:
+    old = write(env, "src/old_name.py", PY_A)
+    env.indexer.index_paths([old])
+    before = len(env.embedder.embedded_texts)
+    new = str(env.root / "moved" / "new_name.py")
+    (env.root / "moved").mkdir()
+    Path(old).rename(new)
+    env.indexer.process([QueueItem(old, "delete", 1)])
+    env.indexer.process([QueueItem(new, "upsert", 2)])
+    again = env.embedder.embedded_texts[before:]
+    # The outline names the file ("File: new_name.py"), so it legitimately changes; the code does not.
+    assert all("<outline>" in text for text in again)
+    assert len(again) <= 1
+    paths = {r["path"] for r in env.store.scan(CHUNKS, ["path"], limit=100)}
+    assert paths == {new}
+    assert env.store.count(CHUNKS) > 0

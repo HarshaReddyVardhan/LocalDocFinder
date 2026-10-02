@@ -125,8 +125,10 @@ class Indexer:
             # Embedded text omits project and drive so identical code copied between projects
             # hashes the same and is embedded once.
             embed_text = f"{rel} > {symbol}\n{chunk.text}" if symbol else f"{rel}\n{chunk.text}"
+            # The hash covers what the chunk *says*, not where its file lives: renaming or moving
+            # a file keeps every vector (the path stays in the row metadata).
             digest = xxhash.xxh3_128_hexdigest(
-                f"{chunk.kind}\0{embed_text}".encode(errors="replace")
+                f"{chunk.kind}\0{symbol}\0{chunk.text}".encode(errors="replace")
             )
             if digest in seen:
                 continue
