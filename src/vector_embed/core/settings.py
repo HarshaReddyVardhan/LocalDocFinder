@@ -1,0 +1,330 @@
+"""Typed, versioned application settings.
+
+Precedence (highest first): environment variables (``VE_`` prefix, ``__`` for nesting),
+a local ``.env`` file, ``settings.toml``, built-in defaults. The TOML file carries a
+``schema_version`` and is migrated forward before validation, so old files keep working.
+"""
+
+import os
+import tomllib
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic_settings import (
+    BaseSettings,
+    DotEnvSettingsSource,
+    EnvSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+SCHEMA_VERSION = 1
+APP_DIR_NAME = "VectorEmbed"
+SETTINGS_FILENAME = "settings.toml"
+
+RawSettings = dict[str, Any]
+Migration = Callable[[RawSettings], RawSettings]
+
+# Maps "from version" -> function producing the next version's layout.
+MIGRATIONS: dict[int, Migration] = {}
+
+
+class SettingsError(ValueError):
+    """Raised when settings cannot be read, migrated or validated."""
+
+
+def default_data_dir() -> Path:
+    """Where the index, queue and logs live; under LOCALAPPDATA, a directory scope never indexes."""
+    base = os.environ.get("LOCALAPPDATA")
+    return (Path(base) if base else Path.home()) / APP_DIR_NAME
+
+
+class _Section(BaseModel):
+    """Base for settings sections: immutable, and unknown keys are errors (typo protection)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+# --------------------------------------------------------------------------- scope
+class ScopeSettings(_Section):
+    """What is indexed. Rule order is documented in ``vector_embed.core.scope``."""
+
+    roots: tuple[str, ...] = (str(Path.home()), "D:\\")
+
+    blocked_dirs: frozenset[str] = frozenset(
+        {
+            # system and program directories
+            "windows", "$recycle.bin", "system volume information", "recovery",
+            "program files", "program files (x86)", "programdata", "appdata",
+            # build output, package caches, virtualenvs, tool state
+            "node_modules", ".git", "target", "dist", "build", "out", "bin", "obj",
+            "venv", ".venv", "env", ".env", "__pycache__", ".pytest_cache", ".mypy_cache",
+            ".ruff_cache", ".idea", ".vscode", ".next", ".nuxt", ".cache", "vendor", "pkg",
+        }
+    )  # fmt: skip
+
+    project_markers: frozenset[str] = frozenset(
+        {".git", "package.json", "pyproject.toml", "Cargo.toml", "go.mod", "pom.xml"}
+    )
+    project_marker_globs: tuple[str, ...] = ("*.sln",)
+
+    # Hidden dir (fnmatch, lowercase) -> include globs relative to it. Exempt from the
+    # hidden-directory rule only: the secrets denylist and blocked dirs are still checked first.
+    ai_note_dirs: dict[str, tuple[str, ...]] = {
+        ".claude": ("**/*.md",),
+        ".cursor": ("rules/**", "*.md", "*.mdc"),
+        ".github": ("copilot-instructions.md", "instructions/**/*.md", "prompts/**"),
+        ".gemini": ("**/*.md",),
+        ".codex": ("**/*.md",),
+        ".continue": ("**/*.md", "rules/**"),
+        ".windsurf": ("**/*.md", "rules/**"),
+        ".kiro": ("**/*.md",),
+        ".aider*": ("**/*.md",),
+    }
+    ai_excluded_subdirs: frozenset[str] = frozenset(
+        {"plugins", "shell-snapshots", "todos", "statsig", "ide", "cache"}
+    )
+    # Session transcripts are large, noisy and may contain pasted secrets.
+    index_ai_transcripts: bool = False
+    ai_transcript_glob: str = "projects/**/*.jsonl"
+    agent_rule_files: frozenset[str] = frozenset(
+        {"claude.md", "agents.md", "gemini.md", ".cursorrules", ".windsurfrules"}
+    )
+
+    # Secrets denylist: evaluated first, on every path, without exceptions.
+    secret_name_patterns: tuple[str, ...] = (
+        ".env", ".env.*", "*.pem", "*.key", "*.pfx", "*.p12", "id_rsa*", "id_ed25519*",
+        "*credential*", ".npmrc", ".pypirc", "*.kdbx",
+    )  # fmt: skip
+    secret_name_exceptions: frozenset[str] = frozenset(
+        {".env.example", ".env.sample", ".env.template"}
+    )
+    # Slash-separated globs over the lowercase full path.
+    secret_path_globs: tuple[str, ...] = ("**/.claude/settings*.json",)
+
+    noise_name_patterns: tuple[str, ...] = (
+        "*.min.js", "*.min.css", "*.map", "*.lock", "package-lock.json", "pnpm-lock.yaml",
+        "yarn.lock", "npm-shrinkwrap.json", "go.sum", "composer.lock", "gemfile.lock",
+        "poetry.lock", "uv.lock", "pipfile.lock", ".aider*history*", ".aider.tags.cache*",
+    )  # fmt: skip
+
+    # Extension-less or dot-prefixed files that are still plain text (lowercase).
+    text_filenames: frozenset[str] = frozenset(
+        {
+            "dockerfile", "makefile", "readme", "license", "licence", "copying", ".gitignore",
+            ".gitattributes", ".dockerignore", ".editorconfig", ".env.example", ".env.sample",
+            ".env.template", ".cursorrules", ".windsurfrules",
+        }
+    )  # fmt: skip
+    text_exts: frozenset[str] = frozenset(
+        {
+            ".c", ".h", ".cpp", ".hpp", ".cc", ".cxx", ".rs", ".go", ".dart", ".java", ".cs",
+            ".kt", ".kts", ".scala", ".swift", ".gradle", ".py", ".ts", ".tsx", ".js", ".jsx",
+            ".mjs", ".cjs", ".vue", ".svelte", ".php", ".rb", ".lua", ".r", ".sh", ".bash",
+            ".ps1", ".bat", ".cmd", ".html", ".htm", ".css", ".scss", ".sass", ".less", ".svg",
+            ".sql", ".json", ".yaml", ".yml", ".toml", ".xml", ".ini", ".cfg", ".ipynb", ".md",
+            ".mdc", ".markdown", ".txt", ".rtf", ".tex",
+        }
+    )  # fmt: skip
+    # Parsed into function/class chunks with tree-sitter; others are chunked by lines/paragraphs.
+    code_exts: frozenset[str] = frozenset(
+        {
+            ".c", ".h", ".cpp", ".hpp", ".cc", ".cxx", ".rs", ".go", ".dart", ".java", ".cs",
+            ".kt", ".kts", ".scala", ".swift", ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs",
+            ".cjs", ".php", ".rb", ".lua", ".r", ".sh", ".bash", ".ps1",
+        }
+    )  # fmt: skip
+    doc_exts: frozenset[str] = frozenset({".pdf", ".docx", ".pptx"})
+    image_exts: frozenset[str] = frozenset(
+        {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
+    )
+
+    max_text_size_mb: float = Field(default=15, gt=0)
+    max_doc_size_mb: float = Field(default=50, gt=0)
+    max_image_size_mb: float = Field(default=100, gt=0)
+
+    # Generated-file heuristics, applied by extractors once content is read.
+    max_avg_line_length: int = Field(default=300, gt=0)
+    generated_markers: tuple[str, ...] = (
+        "@generated",
+        "auto-generated",
+        "autogenerated",
+        "do not edit",
+    )
+
+
+# --------------------------------------------------------------------------- power / idle
+class PowerSettings(_Section):
+    """Hard power rules: indexing only on AC; chat on battery is opt-in."""
+
+    require_ac_power: bool = True
+    ac_settle_seconds: int = Field(default=120, ge=0)
+    poll_seconds: int = Field(default=30, gt=0)
+    search_on_battery: bool = True
+    search_cpu_on_battery: bool = True  # embed the query with num_gpu=0 when unplugged
+    chat_on_battery: bool = False
+
+
+class IdleSettings(_Section):
+    """Idle gate evaluated before every indexing batch."""
+
+    cpu_percent: float = Field(default=15, ge=0, le=100)
+    cpu_seconds: int = Field(default=60, gt=0)
+    no_input_seconds: int = Field(default=60, ge=0)
+    gpu_max_util_percent: float = Field(default=20, ge=0, le=100)
+    worker_yield_input_seconds: int = Field(default=3, ge=0)  # running worker yields on user input
+    file_debounce_seconds: int = Field(default=30, ge=0)
+    reconcile_interval_hours: float = Field(default=6, gt=0)
+
+
+# --------------------------------------------------------------------------- models
+class ModelPrefixes(_Section):
+    """Per-model task prefixes; queries and indexed chunks are embedded differently."""
+
+    query: str = ""
+    document: str = ""
+
+
+_QWEN3_QUERY_PREFIX = (
+    "Instruct: Given a search query, retrieve relevant code and text passages "
+    "that answer the query\nQuery: "
+)
+
+
+class EmbeddingSettings(_Section):
+    """Embedding model. Ollama silently truncates to ``num_ctx``, so always pass it."""
+
+    model: str = "qwen3-embedding:0.6b"
+    dim: int = Field(default=1024, gt=0)
+    num_ctx: int = Field(default=8192, gt=0)
+    batch_size: int = Field(default=32, gt=0)
+    keep_alive: str = "5m"
+    prefixes: dict[str, ModelPrefixes] = {
+        "qwen3-embedding:0.6b": ModelPrefixes(query=_QWEN3_QUERY_PREFIX),
+        "qwen3-embedding:4b": ModelPrefixes(query=_QWEN3_QUERY_PREFIX),
+        "nomic-embed-text": ModelPrefixes(query="search_query: ", document="search_document: "),
+        "bge-m3": ModelPrefixes(),
+        "mxbai-embed-large": ModelPrefixes(
+            query="Represent this sentence for searching relevant passages: "
+        ),
+    }
+
+    def prefixes_for(self, model: str | None = None) -> ModelPrefixes:
+        """Prefixes for ``model`` (default: the configured one); unknown models get none."""
+        return self.prefixes.get(model or self.model, ModelPrefixes())
+
+
+class ChunkingSettings(_Section):
+    max_chunk_chars: int = Field(default=4500, gt=0)  # ~1500 tokens of code, under num_ctx
+    target_chunk_chars: int = Field(default=1800, gt=0)  # small neighbours merge up to this
+    min_chunk_chars: int = Field(default=400, ge=0)
+    line_overlap: int = Field(default=6, ge=0)  # overlap when an oversized unit is split by lines
+    max_chunks_per_file: int = Field(default=300, gt=0)
+    max_chunks_per_doc: int = Field(default=1500, gt=0)  # PDFs / Office documents (books)
+    max_data_file_kb: int = Field(default=512, gt=0)  # .json/.xml/... above this are data dumps
+    stored_text_chars: int = Field(default=3000, gt=0)  # raw text kept for snippets / FTS
+    worker_batch_files: int = Field(default=16, gt=0)
+
+
+class SearchSettings(_Section):
+    rrf_k: int = Field(default=60, gt=0)
+    candidates: int = Field(default=60, gt=0)
+    results: int = Field(default=25, gt=0)
+    current_project_boost: float = Field(default=1.15, ge=1)
+    hotkey: str = "ctrl+alt+space"  # Alt+Space belongs to Windows and PowerToys Run
+    vector_index_min_rows: int = Field(default=100_000, gt=0)  # flat search below, IVF_PQ above
+
+
+class StorageSettings(_Section):
+    data_dir: Path = Field(default_factory=default_data_dir)
+
+
+# --------------------------------------------------------------------------- root
+class Settings(BaseSettings):
+    """Application settings; see the module docstring for precedence."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="VE_",
+        env_nested_delimiter="__",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",  # a shared .env may hold unrelated keys; TOML keys are checked in load
+        frozen=True,
+    )
+
+    schema_version: int = SCHEMA_VERSION
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    ollama_host: str = "http://127.0.0.1:11434"
+    scope: ScopeSettings = Field(default_factory=ScopeSettings)
+    power: PowerSettings = Field(default_factory=PowerSettings)
+    idle: IdleSettings = Field(default_factory=IdleSettings)
+    embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
+    chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
+    search: SearchSettings = Field(default_factory=SearchSettings)
+    storage: StorageSettings = Field(default_factory=StorageSettings)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Environment beats ``.env`` beats the TOML file (passed as init kwargs)."""
+        assert isinstance(env_settings, EnvSettingsSource)
+        assert isinstance(dotenv_settings, DotEnvSettingsSource)
+        return (env_settings, dotenv_settings, init_settings)
+
+
+def migrate(
+    raw: Mapping[str, Any], migrations: Mapping[int, Migration] | None = None
+) -> RawSettings:
+    """Upgrade a raw settings mapping to ``SCHEMA_VERSION``; a missing version means current."""
+    steps = MIGRATIONS if migrations is None else migrations
+    data: RawSettings = dict(raw)
+    version = data.get("schema_version", SCHEMA_VERSION)
+    if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+        raise SettingsError(f"invalid schema_version: {version!r}")
+    if version > SCHEMA_VERSION:
+        raise SettingsError(
+            f"settings schema_version {version} is newer than this app supports ({SCHEMA_VERSION})"
+        )
+    while version < SCHEMA_VERSION:
+        step = steps.get(version)
+        if step is None:
+            raise SettingsError(f"no migration from settings schema_version {version}")
+        data = step(data)
+        version += 1
+        data["schema_version"] = version
+    return data
+
+
+def load_settings(path: Path | None = None) -> Settings:
+    """Load settings from ``path`` (default ``<data dir>/settings.toml``); missing is fine."""
+    toml_path = path if path is not None else _default_settings_path()
+    raw: RawSettings = {}
+    if toml_path.is_file():
+        try:
+            with toml_path.open("rb") as handle:
+                raw = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            raise SettingsError(f"cannot read {toml_path}: {exc}") from exc
+    try:
+        data = migrate(raw)
+        unknown = sorted(set(data) - set(Settings.model_fields))
+        if unknown:
+            raise SettingsError(f"unknown settings keys in {toml_path}: {', '.join(unknown)}")
+        return Settings(**data)
+    except ValueError as exc:  # pydantic.ValidationError subclasses ValueError
+        if isinstance(exc, SettingsError):
+            raise
+        raise SettingsError(f"invalid settings in {toml_path}: {exc}") from exc
+
+
+def _default_settings_path() -> Path:
+    override = os.environ.get("VE_STORAGE__DATA_DIR")
+    return (Path(override) if override else default_data_dir()) / SETTINGS_FILENAME
