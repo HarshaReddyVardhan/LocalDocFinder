@@ -8,9 +8,11 @@ from tests.core.fakes import DIM, FakeEmbedder
 from vector_embed.core.doctypes.base import DocTypeClassifierSet
 from vector_embed.core.extractors.base import ExtractContext, ExtractorSet
 from vector_embed.core.indexer import Indexer
+from vector_embed.core.power import PowerGate
 from vector_embed.core.projects import Projects
 from vector_embed.core.scope import ScopePolicy
-from vector_embed.core.settings import ScopeSettings, Settings, StorageSettings
+from vector_embed.core.settings import PowerSettings, ScopeSettings, Settings, StorageSettings
+from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.store.lance import LanceStore
 from vector_embed.core.store.sqlite import StateDb
 
@@ -85,3 +87,22 @@ def env(tmp_path: Path, scope_settings: ScopeSettings) -> Iterator[Env]:
         classifier, indexer,
     )  # fmt: skip
     state.close()
+
+
+@dataclass
+class Power:
+    """Mutable AC state shared with the PowerGate used by ``skill_ctx``."""
+
+    on_ac: bool = True
+
+
+@pytest.fixture
+def power_state() -> Power:
+    return Power()
+
+
+@pytest.fixture
+def skill_ctx(env: Env, power_state: Power) -> SkillContext:
+    gate = PowerGate(PowerSettings(), probe=lambda: power_state.on_ac)
+    gate.update()
+    return SkillContext(env.settings, env.state, env.store, env.embedder, gate)
