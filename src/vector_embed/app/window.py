@@ -1,9 +1,11 @@
-"""The hotkey popup with three modes: Search (default), Ask and Chat.
+"""The hotkey popup: a search bar and an Explorer-style result list, nothing else.
 
 Search : type; Enter opens, Ctrl+Enter reveals, Shift+Enter opens in VS Code, Ctrl+T chats with it
 Ask    : start with ``?`` or press Tab; Enter asks; answers stream with clickable [n] citations
 Chat   : Tab again, or Ctrl+T on a result; Ctrl+V pastes long text as a scratch document
-Esc closes the window and unloads the model; Tab cycles the modes.
+Match  : Tab again; paste a job description to rank your documents
+Esc closes the window and unloads the model; Tab cycles the modes. The mode label and the answer
+pane appear only outside Search. Models, health and settings live in the Settings window.
 """
 
 import enum
@@ -11,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QGuiApplication, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -19,7 +21,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QSplitter,
     QStackedWidget,
@@ -43,26 +44,25 @@ from vector_embed.app.controller import (
     SearchService,
     foreground_title,
     guess_project,
-    result_label,
+    result_row,
 )
 from vector_embed.app.match_controller import MatchController
 from vector_embed.app.match_panel import MatchPanel
-from vector_embed.app.models_controller import ModelsController
-from vector_embed.app.models_panel import ModelsPanel
-from vector_embed.core.extractors.image import thumbnail_path
+from vector_embed.app.result_delegate import ROW_ROLE, ResultDelegate
 from vector_embed.core.rag import Source
 from vector_embed.core.skills.search import SearchResult
 
+COMPACT_HEIGHT = 84  # just the search bar and the status line
+EXPANDED_HEIGHT = 520
+POPUP_WIDTH = 820
 DEBOUNCE_MS = 180
 MAINTAIN_MS = 15_000
 SCRATCH_MIN_CHARS = 200  # pasted text longer than this (or multi-line) becomes a scratch document
 PLACEHOLDERS = {
-    "search": "Search code, notes, PDFs, images…  type:code  proj:name  ext:py  after:2026-01"
-    "   ·   ? to ask   ·   Tab for modes",
+    "search": "Search your files…   ? to ask   ·   Tab for modes",
     "ask": "Ask a question about your files…  (Enter to ask)",
     "chat": "Chat about the pinned documents…  (Enter to send, Ctrl+V pastes a document)",
     "match": "Paste a job description (Ctrl+V) and press Enter to rank your documents…",
-    "models": "Models and health (Tab for the next mode)",
 }
 STYLE = """
 QWidget { background:#1e1f24; color:#e6e6e6; font-size:13px; }
@@ -71,12 +71,10 @@ QLineEdit { background:#2a2c33; border:1px solid #3b3e47; border-radius:6px;
 QListWidget { background:#1e1f24; border:none; outline:0; }
 QListWidget::item { padding:6px 8px; border-bottom:1px solid #2a2c33; }
 QListWidget::item:selected { background:#33405a; }
-QPlainTextEdit, QTextBrowser { background:#17181c; border:1px solid #2a2c33; font-size:13px; }
+QTextBrowser { background:#17181c; border:1px solid #2a2c33; font-size:13px; }
 QLabel#status { color:#8a8f9c; padding:2px 6px; }
 QLabel#mode { color:#4c7dff; font-weight:bold; padding:0 8px; }
 """
-
-PANE_PREVIEW, PANE_IMAGE, PANE_ANSWER = 0, 1, 2
 
 
 def confirm_cloud_dialog(preview: CloudPreview) -> bool:
@@ -98,7 +96,6 @@ class Mode(enum.Enum):
     ASK = "ask"
     CHAT = "chat"
     MATCH = "match"
-    MODELS = "models"
 
 
 class _Signals(QObject):
@@ -177,7 +174,6 @@ class SearchWindow(QWidget):
         assistant: AssistantService | None = None,
         *,
         matcher: MatchController | None = None,
-        models: ModelsController | None = None,
         pick_file: Callable[[], str | None] = lambda: None,
     ) -> None:
         super().__init__(
@@ -189,7 +185,6 @@ class SearchWindow(QWidget):
         self._service = service
         self._assistant = assistant
         self._matcher = matcher
-        self._models = models
         self._pick_file = pick_file
         self._jd_text = ""
         self._last_text = ""
@@ -218,7 +213,7 @@ class SearchWindow(QWidget):
         self._maintain.setInterval(MAINTAIN_MS)
         self._maintain.timeout.connect(self.maintain_model)
         self.input.textChanged.connect(self._on_text)
-        self.list.currentRowChanged.connect(self._show_preview)
+        self.list.currentRowChanged.connect(self._relayout_rows)
         self.list.itemActivated.connect(lambda _item: self.activate_selected())
         self.input.installEventFilter(self)
         QShortcut(QKeySequence("Esc"), self).activated.connect(self.dismiss)
@@ -226,7 +221,7 @@ class SearchWindow(QWidget):
 
     def _build_ui(self) -> None:
         self.setWindowTitle("Vector Embed")
-        self.resize(1000, 560)
+        self.resize(POPUP_WIDTH, COMPACT_HEIGHT)
         self.setStyleSheet(STYLE)
         self.input = QLineEdit()
         self.mode_label = QLabel("SEARCH")
@@ -236,21 +231,14 @@ class SearchWindow(QWidget):
         top.addWidget(self.mode_label)
         self.list = QListWidget()
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.list.setTextElideMode(Qt.TextElideMode.ElideMiddle)
-        self.preview = QPlainTextEdit()
-        self.preview.setReadOnly(True)
-        self.image = QLabel()
-        self.image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.list.setItemDelegate(ResultDelegate(self._thumbs_dir, self.list))
+        self.list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.answer = QTextBrowser()
-        self.pane = QStackedWidget()
-        self.pane.addWidget(self.preview)
-        self.pane.addWidget(self.image)
-        self.pane.addWidget(self.answer)
         bottom = self._build_bottom_bar()
 
         split = QSplitter()
         split.addWidget(self.list)
-        split.addWidget(self.pane)
+        split.addWidget(self.answer)
         split.setSizes([520, 480])
         self.panel: MatchPanel | None = None
         self.body = QStackedWidget()
@@ -260,11 +248,6 @@ class SearchWindow(QWidget):
             self.panel.chat_requested.connect(self._chat_from_match)
             self.panel.status_changed.connect(self._set_status)
             self.body.addWidget(self.panel)
-        self.models_panel: ModelsPanel | None = None
-        if self._models is not None:
-            self.models_panel = ModelsPanel(self._models)
-            self.models_panel.status_changed.connect(self._set_status)
-            self.body.addWidget(self.models_panel)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 6)
         layout.addLayout(top)
@@ -294,8 +277,6 @@ class SearchWindow(QWidget):
             modes += [Mode.ASK, Mode.CHAT]
         if self.panel is not None:
             modes.append(Mode.MATCH)
-        if self.models_panel is not None:
-            modes.append(Mode.MODELS)
         return modes
 
     def _next_mode(self) -> Mode:
@@ -318,22 +299,25 @@ class SearchWindow(QWidget):
             self._begin_chat()
 
     def _apply_mode(self) -> None:
+        searching = self._mode is Mode.SEARCH
         self.mode_label.setText(self._mode.value.upper())
+        self.mode_label.setVisible(not searching)
         self.input.setPlaceholderText(PLACEHOLDERS[self._mode.value])
         self.body.setCurrentIndex(self._body_index())
         self.cloud_button.setVisible(self._cloud_possible())
-        if self.models_panel is not None:
-            if self._mode is Mode.MODELS:
-                self.models_panel.activate()
-            else:
-                self.models_panel.deactivate()
-        self.pane.setCurrentIndex(PANE_PREVIEW if self._mode is Mode.SEARCH else PANE_ANSWER)
-        if self._mode is Mode.SEARCH:
-            self.preview.clear()
-        else:
-            self.answer.clear()
-            self._answer_text = ""
+        self.answer.setVisible(not searching)
+        self.answer.clear()
+        self._answer_text = ""
+        self._fit_height()
         self.input.setFocus()
+
+    def _fit_height(self) -> None:
+        """Search shows only the bar until there is something to list; other modes need room."""
+        expanded = self._mode is not Mode.SEARCH or bool(self._results)
+        self.body.setVisible(expanded)
+        if (layout := self.layout()) is not None:
+            layout.activate()  # drop the stale minimum height before shrinking
+        self.resize(self.width(), EXPANDED_HEIGHT if expanded else COMPACT_HEIGHT)
 
     def _cloud_possible(self) -> bool:
         """The cloud button shows in Ask/Chat when a provider with a key is configured."""
@@ -347,8 +331,6 @@ class SearchWindow(QWidget):
     def _body_index(self) -> int:
         if self._mode is Mode.MATCH:
             return self.body.indexOf(self.panel) if self.panel is not None else 0
-        if self._mode is Mode.MODELS:
-            return self.body.indexOf(self.models_panel) if self.models_panel is not None else 0
         return 0
 
     def _begin_chat(self) -> None:
@@ -510,8 +492,9 @@ class SearchWindow(QWidget):
         query = self.input.text().strip()
         self._generation += 1
         if not query:
+            self._results = []
             self.list.clear()
-            self.preview.clear()
+            self._fit_height()
             return
         job = _SearchJob(self._generation, query, self._project, self._service, self._signals)
         self._pool.start(job)
@@ -525,31 +508,23 @@ class SearchWindow(QWidget):
         self._results = outcome.results
         self.list.clear()
         for result in outcome.results:
-            self.list.addItem(QListWidgetItem(result_label(result)))
+            row = result_row(result)
+            item = QListWidgetItem(f"{row.name}\n{row.path}")  # the delegate draws from ROW_ROLE
+            item.setData(ROW_ROLE, row)
+            self.list.addItem(item)
         if outcome.results:
             self.list.setCurrentRow(0)
+        self._fit_height()
+        if outcome.message:
+            self.status.setText(outcome.message)
+        elif outcome.results:
+            self.status.setText(f"{len(outcome.results)} results in {outcome.milliseconds:.0f} ms")
         else:
-            self.preview.setPlainText(outcome.message or "No results.")
-            self.pane.setCurrentIndex(PANE_PREVIEW)
-        self.status.setText(
-            outcome.message or f"{len(outcome.results)} results in {outcome.milliseconds:.0f} ms"
-        )
+            self.status.setText("No results.")
 
-    def _show_preview(self, row: int) -> None:
-        if self._mode is not Mode.SEARCH or not 0 <= row < len(self._results):
-            return
-        result = self._results[row]
-        if result.kind == "image" and not result.page:
-            try:
-                pixmap = QPixmap(str(thumbnail_path(self._thumbs_dir, Path(result.path))))
-            except OSError:
-                pixmap = QPixmap()
-            if not pixmap.isNull():
-                self.image.setPixmap(pixmap)
-                self.pane.setCurrentIndex(PANE_IMAGE)
-                return
-        self.preview.setPlainText(result.text)
-        self.pane.setCurrentIndex(PANE_PREVIEW)
+    def _relayout_rows(self, _row: int) -> None:
+        """The selected row grows to show its snippet, so row heights must be recomputed."""
+        self.list.scheduleDelayedItemsLayout()
 
     # ------------------------------------------------------------------ actions
     def selected(self) -> SearchResult | None:

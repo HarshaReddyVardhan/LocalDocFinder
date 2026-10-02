@@ -85,7 +85,6 @@ def build_window(
         settings.storage.data_dir / runtime.THUMBS_DIRNAME,
         AssistantService(context),
         matcher=MatchController(context),
-        models=ModelsController(context, settings.storage.data_dir / SETTINGS_FILENAME),
         pick_file=pick_document,
     )
 

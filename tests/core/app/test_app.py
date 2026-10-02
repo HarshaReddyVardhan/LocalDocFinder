@@ -1,4 +1,5 @@
 import ctypes
+import os
 import time
 from ctypes import wintypes
 from pathlib import Path
@@ -12,7 +13,8 @@ from tests.core.conftest import Env
 from vector_embed.app import controller, hotkey
 from vector_embed.app import main as app_main
 from vector_embed.app.controller import Launcher, SearchOutcome, SearchService
-from vector_embed.app.window import SearchWindow
+from vector_embed.app.result_delegate import ROW_ROLE
+from vector_embed.app.window import COMPACT_HEIGHT, EXPANDED_HEIGHT, Mode, SearchWindow
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.skills.search import SearchResult
 
@@ -81,14 +83,55 @@ def test_foreground_title_never_raises() -> None:
     assert isinstance(controller.foreground_title(), str)
 
 
-def test_result_label_formats_three_lines() -> None:
-    label = controller.result_label(result(extra_hits=2, kind="image", page=4))
-    first, second, third = label.split("\n")
-    assert first == "[IMG] a.py  ·  f  (page 4)  +2 more"
-    assert second == r"p  D:\p\a.py"
-    assert third == "def f(): pass"
-    bare = controller.result_label(result(symbol="<module>", start_line=0, project="", kind="code"))
-    assert bare.startswith("[CODE] a.py\n")
+def fake_stat(size: int) -> object:
+    return lambda _path: os.stat_result((0, 0, 0, 0, 0, 0, size, 0, 0, 0))
+
+
+def test_result_row_carries_what_the_list_draws() -> None:
+    hit = result(extra_hits=2, kind="image", page=4, mtime=1_700_000_000)
+    row = controller.result_row(hit, fake_stat(2048))  # type: ignore[arg-type]
+    assert row.name == "a.py"
+    assert row.detail == "·  f  (page 4)  +2 more"
+    assert row.path == r"D:\p\a.py"
+    assert (row.project, row.snippet, row.tag) == ("p", "def f(): pass", "IMG")
+    assert row.size == "2.0 KB"
+    assert row.modified == time.strftime("%Y-%m-%d", time.localtime(1_700_000_000))
+    assert row.meta == f"{row.modified}  ·  2.0 KB"
+    assert not row.is_image  # a page of a document, not a whole image
+
+
+def test_result_row_for_a_bare_whole_image() -> None:
+    row = controller.result_row(
+        result(symbol="<module>", start_line=0, project="", kind="image"),
+        fake_stat(5),  # type: ignore[arg-type]
+    )
+    assert row.detail == ""
+    assert row.is_image
+    assert row.size == "5 B"
+    assert row.modified == ""
+    assert row.meta == "5 B"
+
+
+def test_result_row_survives_a_missing_file() -> None:
+    def gone(_path: str) -> os.stat_result:
+        raise FileNotFoundError
+
+    row = controller.result_row(result(), gone)
+    assert (row.size, row.meta) == ("", "")
+
+
+@pytest.mark.parametrize(
+    ("size", "text"),
+    [
+        (0, "0 B"),
+        (1023, "1023 B"),
+        (1024, "1.0 KB"),
+        (5 * 1024**2, "5.0 MB"),
+        (3 * 1024**3, "3.0 GB"),
+    ],
+)
+def test_format_size(size: int, text: str) -> None:
+    assert controller.format_size(size) == text
 
 
 class TestLauncher:
@@ -190,24 +233,64 @@ def wait_for(qapp: QApplication, condition, timeout: float = 5.0) -> None:  # ty
 
 
 class TestWindow:
-    def test_results_are_listed_and_previewed(
+    def test_results_are_listed_with_row_data(
         self, window: tuple[SearchWindow, FakeService, list[object]]
     ) -> None:
         win, service, _ = window
         win.show_results(SearchOutcome(service.results, 12.0))
         assert win.list.count() == 2
         assert "a.py" in win.list.item(0).text()
-        assert win.preview.toPlainText() == "def f(): pass"
+        row = win.list.item(0).data(ROW_ROLE)
+        assert (row.name, row.path) == ("a.py", r"D:\p\a.py")
         assert win.status.text() == "2 results in 12 ms"
+
+    def test_popup_is_just_the_search_bar_until_there_are_results(
+        self, window: tuple[SearchWindow, FakeService, list[object]]
+    ) -> None:
+        win, service, _ = window
+        win.show()
+        assert win.height() == COMPACT_HEIGHT
+        assert win.body.isHidden()
+        assert win.mode_label.isHidden()
+        assert win.answer.isHidden()
+        win.show_results(SearchOutcome(service.results, 1.0))
+        assert not win.body.isHidden()
+        assert win.height() == EXPANDED_HEIGHT
+        win.input.setText("x")
+        win.input.clear()
+        win.run_search()
+        assert win.body.isHidden()
+        assert win.height() == COMPACT_HEIGHT
+
+    def test_other_modes_show_their_label_and_answer_pane(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        from tests.core.app.test_modes import FakeAssistant
+
+        win = SearchWindow(
+            FakeService(),  # type: ignore[arg-type]
+            Launcher(),
+            tmp_path,
+            FakeAssistant(),  # type: ignore[arg-type]
+        )
+        win.show()
+        win.set_mode(Mode.ASK)
+        assert not win.mode_label.isHidden()
+        assert not win.answer.isHidden()
+        assert win.height() == EXPANDED_HEIGHT
+        win.set_mode(Mode.SEARCH)
+        assert win.mode_label.isHidden()
+        assert win.answer.isHidden()
 
     def test_no_results_shows_the_message(
         self, window: tuple[SearchWindow, FakeService, list[object]]
     ) -> None:
         win, _, _ = window
         win.show_results(SearchOutcome([], 1.0, "SearchDisabledError: nope"))
-        assert win.preview.toPlainText() == "SearchDisabledError: nope"
+        assert win.status.text() == "SearchDisabledError: nope"
         win.show_results(SearchOutcome([], 1.0))
-        assert win.preview.toPlainText() == "No results."
+        assert win.status.text() == "No results."
+        assert win.body.isHidden()
 
     def test_stale_generations_are_ignored(
         self, window: tuple[SearchWindow, FakeService, list[object]]
@@ -299,28 +382,6 @@ class TestWindow:
         win.show()
         win._hide_if_inactive()
         assert not win.isVisible() or win.isActiveWindow()
-
-    def test_image_results_show_a_thumbnail(
-        self, window: tuple[SearchWindow, FakeService, list[object]], tmp_path: Path
-    ) -> None:
-        from PIL import Image
-
-        from vector_embed.core.extractors.image import thumbnail_path
-
-        win, _, _ = window
-        picture = tmp_path / "pic.png"
-        Image.new("RGB", (200, 100), "red").save(picture)
-        thumb = thumbnail_path(tmp_path / "thumbs", picture)
-        thumb.parent.mkdir(parents=True)
-        Image.new("RGB", (50, 25), "red").save(thumb, format="JPEG")
-        win.show_results(SearchOutcome([result(path=str(picture), kind="image", symbol="")], 1.0))
-        assert win.pane.currentIndex() == 1
-        assert not win.image.pixmap().isNull()
-        missing = tmp_path / "gone.png"
-        win.show_results(SearchOutcome([result(path=str(missing), kind="image", text="OCR")], 1.0))
-        assert win.pane.currentIndex() == 0
-        assert win.preview.toPlainText() == "OCR"
-        win._show_preview(99)  # out of range is ignored
 
 
 # ------------------------------------------------------------------------- main

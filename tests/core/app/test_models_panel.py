@@ -218,22 +218,12 @@ class TestActions:
         wait_for(qapp, lambda: widget.models.rowCount() > 0)
 
 
-def test_models_mode_inside_the_window(
-    qapp: QApplication, controller: ModelsController, tmp_path: Path
-) -> None:
+def test_models_live_in_settings_not_in_the_popup(qapp: QApplication, tmp_path: Path) -> None:
     window = SearchWindow(
         FakeService(),  # type: ignore[arg-type]
         Launcher(),
         tmp_path,
         FakeAssistant(),  # type: ignore[arg-type]
-        models=controller,
     )
-    assert window.available_modes()[-1] is Mode.MODELS
-    window.set_mode(Mode.MODELS)
-    assert window.body.currentWidget() is window.models_panel
-    assert window.models_panel is not None
-    wait_for(qapp, lambda: window.models_panel.models.rowCount() > 0)  # type: ignore[union-attr]
-    assert window.models_panel._timer.isActive()
-    window.set_mode(Mode.SEARCH)
-    assert not window.models_panel._timer.isActive()
-    assert window.body.currentIndex() == 0
+    assert "models" not in {mode.value for mode in Mode}
+    assert window.available_modes() == [Mode.SEARCH, Mode.ASK, Mode.CHAT]

@@ -17,6 +17,8 @@ _MIN_TITLE_PARTS = 3
 _NO_WINDOW = 0x08000000
 _TAGS = {"image": "IMG", "ai-note": "NOTE", "outline": "FILE"}
 _SNIPPET_LINE = 110
+_SIZE_UNITS = ("B", "KB", "MB", "GB")
+_SIZE_STEP = 1024
 
 
 def foreground_title() -> str:
@@ -38,16 +40,55 @@ def guess_project(title: str) -> str | None:
     return None
 
 
-def result_label(result: SearchResult) -> str:
-    """Three-line list item: title, location, snippet."""
-    name = Path(result.path).name
+@dataclass(frozen=True)
+class ResultRow:
+    """What the result list needs to draw one hit, Explorer-style."""
+
+    name: str
+    detail: str  # symbol, page or line, and "+N more", shown after the name
+    path: str
+    project: str
+    snippet: str
+    tag: str
+    modified: str  # "2026-09-28", or "" when unknown
+    size: str  # "12 KB", or "" when the file cannot be read
+    is_image: bool  # a whole-image hit, drawn with its thumbnail
+
+    @property
+    def meta(self) -> str:
+        """Right-hand column: modified date and size."""
+        return "  ·  ".join(part for part in (self.modified, self.size) if part)
+
+
+def format_size(size: int) -> str:
+    value = float(size)
+    for unit in _SIZE_UNITS[:-1]:
+        if value < _SIZE_STEP:
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= _SIZE_STEP
+    return f"{value:.1f} {_SIZE_UNITS[-1]}"
+
+
+def result_row(result: SearchResult, stat: Callable[[str], os.stat_result] = os.stat) -> ResultRow:
     symbol = f"  ·  {result.symbol}" if result.symbol and result.symbol != "<module>" else ""
     where = f"  ({result.location})" if result.location else ""
     more = f"  +{result.extra_hits} more" if result.extra_hits else ""
-    tag = _TAGS.get(result.kind, result.kind.upper())
-    project = f"{result.project}  " if result.project else ""
-    head = f"[{tag}] {name}{symbol}{where}{more}"
-    return f"{head}\n{project}{result.path}\n{result.snippet[:_SNIPPET_LINE]}"
+    try:
+        size = format_size(stat(result.path).st_size)
+    except OSError:  # moved or deleted since indexing; the row still opens a useful error
+        size = ""
+    modified = time.strftime("%Y-%m-%d", time.localtime(result.mtime)) if result.mtime else ""
+    return ResultRow(
+        name=Path(result.path).name,
+        detail=f"{symbol}{where}{more}".strip(),
+        path=result.path,
+        project=result.project,
+        snippet=result.snippet[:_SNIPPET_LINE],
+        tag=_TAGS.get(result.kind, result.kind.upper()),
+        modified=modified,
+        size=size,
+        is_image=result.kind == "image" and not result.page,
+    )
 
 
 class Launcher:
