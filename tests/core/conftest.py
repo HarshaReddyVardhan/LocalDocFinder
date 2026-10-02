@@ -4,14 +4,26 @@ from pathlib import Path
 
 import pytest
 from tests.core.fakes import DIM, FakeEmbedder
+from tests.core.providers.fakes import FakeOllamaClient
 
 from vector_embed.core.doctypes.base import DocTypeClassifierSet
 from vector_embed.core.extractors.base import ExtractContext, ExtractorSet
 from vector_embed.core.indexer import Indexer
+from vector_embed.core.llm import LlmGateway
+from vector_embed.core.models.catalog import load_catalog
+from vector_embed.core.models.hardware import Hardware
+from vector_embed.core.models.registry import ModelRegistry
 from vector_embed.core.power import PowerGate
 from vector_embed.core.projects import Projects
+from vector_embed.core.providers.ollama import OllamaProvider
 from vector_embed.core.scope import ScopePolicy
-from vector_embed.core.settings import PowerSettings, ScopeSettings, Settings, StorageSettings
+from vector_embed.core.settings import (
+    EmbeddingSettings,
+    PowerSettings,
+    ScopeSettings,
+    Settings,
+    StorageSettings,
+)
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.store.lance import LanceStore
 from vector_embed.core.store.sqlite import StateDb
@@ -106,3 +118,36 @@ def skill_ctx(env: Env, power_state: Power) -> SkillContext:
     gate = PowerGate(PowerSettings(), probe=lambda: power_state.on_ac)
     gate.update()
     return SkillContext(env.settings, env.state, env.store, env.embedder, gate)
+
+
+GPU = Hardware("RTX 2070", 8192, 7000, 32000, 16000, 8, True)
+CHAT_MODELS: dict[str, dict[str, object]] = {
+    "qwen3-embedding:0.6b": {"caps": ["embedding"], "size": 600 * 1024**2},
+    "qwen3.5:9b": {"caps": ["completion"], "size": 5 * 1024**3},
+    "qwen2.5-coder:7b": {"caps": ["completion"], "size": 4 * 1024**3},
+}
+
+
+@dataclass
+class Chat:
+    """A chat stack on a fake Ollama client, attached to ``skill_ctx.extras``."""
+
+    gateway: LlmGateway
+    client: FakeOllamaClient
+    provider: OllamaProvider
+
+    def chat_calls(self) -> list[dict[str, object]]:
+        return [kw for kind, kw in self.client.calls if kind == "chat"]
+
+    def kinds(self) -> list[str]:
+        return [kind for kind, _ in self.client.calls]
+
+
+@pytest.fixture
+def chat(skill_ctx: SkillContext, env: Env) -> Chat:
+    client = FakeOllamaClient(models=CHAT_MODELS)
+    provider = OllamaProvider(EmbeddingSettings(), client=client, sleep=lambda _s: None)
+    registry = ModelRegistry(load_catalog(), [provider], env.state, hardware_probe=lambda: GPU)
+    gateway = LlmGateway(env.settings.chat, registry, provider, env.state, skill_ctx.power)
+    skill_ctx.extras.update(llm=gateway, provider=provider, models=registry)
+    return Chat(gateway, client, provider)

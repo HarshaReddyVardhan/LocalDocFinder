@@ -6,6 +6,7 @@ tests can substitute any piece.
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,7 @@ from vector_embed.core.doctypes.base import PROTOTYPE_TEXTS, build_prototypes
 from vector_embed.core.extractors.base import ExtractContext, ExtractorSet
 from vector_embed.core.extractors.image import OllamaCaptioner
 from vector_embed.core.extractors.ocr import WindowsOcr
+from vector_embed.core.llm import LlmGateway
 from vector_embed.core.models.catalog import load_catalog
 from vector_embed.core.models.registry import ModelRegistry
 from vector_embed.core.power import PowerGate
@@ -115,19 +117,30 @@ def build_model_registry(
     )
 
 
-def build_skill_context(settings: Settings, state: StateDb) -> SkillContext:
+def build_skill_context(
+    settings: Settings,
+    state: StateDb,
+    fullscreen: Callable[[], bool] = lambda: False,
+) -> SkillContext:
     """Context for read-side skills (search, ask, ...): read-only store, local provider."""
     provider = build_provider(settings)
     power = PowerGate(settings.power)
     power.update()
+    registry = build_model_registry(settings, state, provider)
+    gateway = LlmGateway(
+        settings.chat,
+        registry,
+        provider,
+        state,
+        power,
+        fullscreen=fullscreen,
+        refresh_seconds=settings.models.refresh_seconds,
+    )
     return SkillContext(
         settings=settings,
         state=state,
         store=open_read_only_store(settings, state),
         embedder=provider,
         power=power,
-        extras={
-            "provider": provider,
-            "models": build_model_registry(settings, state, provider),
-        },
+        extras={"provider": provider, "models": registry, "llm": gateway},
     )
