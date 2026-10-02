@@ -7,6 +7,7 @@ the worker when the machine is on AC power, settled and idle.
 
 import argparse
 import logging
+import queue
 import signal
 import subprocess
 import sys
@@ -39,6 +40,8 @@ _NO_WINDOW = 0x08000000
 _FAILURE_BACKOFF_SECONDS = 600
 _WORKER_STOP_GRACE_SECONDS = 15.0
 _RECONCILE_BACKOFF_SECONDS = 300
+_TREE_QUEUE_SIZE = 64  # directories waiting to be walked
+_TREE_IDLE_SECONDS = 5.0  # the tree-walking thread exits after this long with nothing to do
 _NO_PROGRESS_BACKOFF_SECONDS = 120  # a worker that finishes without shrinking the queue
 _UNPLUG_GRACE_SECONDS = 20
 
@@ -59,6 +62,9 @@ class ChangeHandler(FileSystemEventHandler):
         self.scope = scope
         self._blocked = settings.scope.blocked_dirs
         self._debounce = settings.idle.file_debounce_seconds
+        self._trees: queue.Queue[str] = queue.Queue(maxsize=_TREE_QUEUE_SIZE)
+        self._tree_worker: threading.Thread | None = None
+        self._tree_lock = threading.Lock()
 
     def _upsert(self, path: str) -> None:
         if quick_reject(path, self._blocked):
@@ -69,8 +75,11 @@ class ChangeHandler(FileSystemEventHandler):
             self.state.enqueue(path, "upsert", priority=time.time(), delay=self._debounce)
 
     def _delete(self, path: str) -> None:
+        """A path vanished. On Windows a removed *directory* often arrives as a plain file-deleted
+        event, so anything indexed below the path goes too."""
         if self.state.manifest_get(path) is not None:
             self.state.enqueue(path, "delete", priority=time.time(), delay=0)
+        self._delete_tree(path)
 
     def _delete_tree(self, directory: str) -> None:
         for path in self.state.manifest_under(directory):
@@ -84,7 +93,31 @@ class ChangeHandler(FileSystemEventHandler):
             logger.exception("tree enqueue failed for %s", directory)
 
     def _enqueue_tree_async(self, directory: str) -> None:
-        threading.Thread(target=self._enqueue_tree, args=(directory,), daemon=True).start()
+        """Walk a directory that appeared (created or moved in): its files send no events.
+
+        One bounded worker thread does all the walking. A directory the scope would not enter is
+        skipped, and if too many pile up, an early reconcile picks up what was dropped.
+        """
+        if not self.scope.should_descend(directory, self.projects.is_ignored):
+            return
+        try:
+            self._trees.put_nowait(directory)
+        except queue.Full:
+            logger.warning("watcher: tree backlog is full; scheduling an early reconcile")
+            self.state.set_meta("last_reconcile", "0")
+            return
+        with self._tree_lock:
+            if self._tree_worker is None or not self._tree_worker.is_alive():
+                self._tree_worker = threading.Thread(target=self._walk_trees, daemon=True)
+                self._tree_worker.start()
+
+    def _walk_trees(self) -> None:
+        while True:
+            try:
+                directory = self._trees.get(timeout=_TREE_IDLE_SECONDS)
+            except queue.Empty:
+                return  # idle: the thread ends, and a new one starts when needed
+            self._enqueue_tree(directory)
 
     @staticmethod
     def _text(value: str | bytes) -> str:
@@ -115,7 +148,10 @@ class ChangeHandler(FileSystemEventHandler):
             self._enqueue_tree_async(dest)
         else:
             self._delete(src)
-            self._upsert(dest)
+            if Path(dest).is_dir():  # Windows may report a moved directory as a plain move
+                self._enqueue_tree_async(dest)
+            else:
+                self._upsert(dest)
 
 
 class WorkerHandle(Protocol):

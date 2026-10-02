@@ -83,6 +83,63 @@ class TestChangeHandler:
         handler.on_deleted(DirDeletedEvent(str(env.root / "d")))
         assert queued(env) == {inside: "delete"}
 
+    def test_windows_reports_a_removed_folder_as_a_plain_file_deleted_event(
+        self, handler: ChangeHandler, env: Env
+    ) -> None:
+        inside = str(env.root / "gone" / "sub" / "a.py")
+        also = str(env.root / "gone" / "b.py")
+        outside = str(env.root / "gone-not" / "c.py")  # shares the name prefix, not the folder
+        for path in (inside, also, outside):
+            env.state.manifest_set(path, 1, 1, "h")
+        handler.on_deleted(FileDeletedEvent(str(env.root / "gone")))  # is_directory is False
+        assert queued(env) == {inside: "delete", also: "delete"}
+
+    def test_a_moved_folder_reported_as_a_file_move_is_still_walked(
+        self, handler: ChangeHandler, env: Env
+    ) -> None:
+        old_file = str(env.root / "src2" / "a.py")
+        env.state.manifest_set(old_file, 1, 1, "h")
+        new_file = write(env, "dst2/a.py")
+        handler.on_moved(FileMovedEvent(str(env.root / "src2"), str(env.root / "dst2")))
+        deadline = time.time() + 5
+        while new_file not in queued(env) and time.time() < deadline:
+            time.sleep(0.05)
+        assert queued(env) == {old_file: "delete", new_file: "upsert"}
+
+    def test_a_directory_the_scope_will_not_enter_is_not_walked(
+        self, handler: ChangeHandler, env: Env
+    ) -> None:
+        write(env, "node_modules/pkg/index.js")
+        handler.on_created(DirCreatedEvent(str(env.root / "node_modules")))
+        time.sleep(0.3)
+        assert queued(env) == {}
+
+    def test_many_new_directories_share_one_walker_thread(
+        self, handler: ChangeHandler, env: Env
+    ) -> None:
+        import threading
+
+        before = threading.active_count()
+        for i in range(20):
+            write(env, f"bulk{i}/f.py")
+            handler.on_created(DirCreatedEvent(str(env.root / f"bulk{i}")))
+        assert threading.active_count() <= before + 1  # not a thread per directory
+        deadline = time.time() + 10
+        while len(queued(env)) < 20 and time.time() < deadline:
+            time.sleep(0.05)
+        assert len(queued(env)) == 20
+
+    def test_a_full_backlog_schedules_an_early_reconcile(
+        self, handler: ChangeHandler, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        env.state.set_meta("last_reconcile", str(time.time()))
+        monkeypatch.setattr(handler, "_trees", __import__("queue").Queue(maxsize=1))
+        monkeypatch.setattr(handler, "_walk_trees", lambda: None)  # nothing drains it
+        for i in range(3):
+            write(env, f"full{i}/f.py")
+            handler.on_created(DirCreatedEvent(str(env.root / f"full{i}")))
+        assert env.state.get_meta("last_reconcile") == "0"
+
     def test_move_deletes_the_old_path_and_queues_the_new(
         self, handler: ChangeHandler, env: Env
     ) -> None:
