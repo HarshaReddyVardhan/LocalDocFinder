@@ -112,6 +112,13 @@ class LlmGateway:
             raise NoChatModelError(f"no usable chat model; run: ollama pull {hint}")
         return ChatTarget(role, resolution.model, self._local, local=True)
 
+    def will_use_cloud(self, role: str = ROLE_CHAT) -> bool:
+        """Whether a request for ``role`` would go to the cloud right now (never raises)."""
+        try:
+            return not self.target(role).local
+        except (ChatBlockedError, NoChatModelError):
+            return False
+
     def options(self, *, session: bool) -> ChatOptions:
         """Request options: sessions keep the model warm, one-shot calls unload right after."""
         return ChatOptions(
