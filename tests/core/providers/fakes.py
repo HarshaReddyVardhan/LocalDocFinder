@@ -21,6 +21,7 @@ class FakeOllamaClient:
         self.failures: list[BaseException] = []  # raised (in order) before a call succeeds
         self.chat_reply = ["Hel", "lo"]
         self.chat_json_reply = '{"ok": true}'
+        self.chat_json_fn: Callable[[dict[str, Any]], str] | None = None  # reply per request
         self.loaded: list[str] = []
 
     def _maybe_fail(self) -> None:
@@ -39,8 +40,9 @@ class FakeOllamaClient:
         self._maybe_fail()
         if kwargs.get("stream"):
             return self._stream()
+        reply = self.chat_json_fn(kwargs) if self.chat_json_fn else self.chat_json_reply
         return ollama.ChatResponse(
-            message=ollama.Message(role="assistant", content=self.chat_json_reply),
+            message=ollama.Message(role="assistant", content=reply),
             done=True,
             prompt_eval_count=7,
             eval_count=3,
