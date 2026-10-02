@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vector_embed.app.assistant import CloudPreview
+from vector_embed.app.cloud_dialog import confirm_cloud_dialog
 from vector_embed.app.match_controller import MatchController
 from vector_embed.core.match.judge import MatchError
 from vector_embed.core.match.pipeline import MatchRun
@@ -69,8 +71,10 @@ class MatchPanel(QWidget):
         controller: MatchController,
         pick_file: Callable[[], str | None] = lambda: None,
         pool: QThreadPool | None = None,
+        confirm_cloud: Callable[[CloudPreview], bool] | None = None,
     ) -> None:
         super().__init__()
+        self._confirm_cloud = confirm_cloud or confirm_cloud_dialog
         self._controller = controller
         self._pick_file = pick_file
         self._pool = pool or QThreadPool.globalInstance()
@@ -81,6 +85,7 @@ class MatchPanel(QWidget):
         self._signals.delta.connect(self._on_delta)
         self._verdict = ""
         self._updating = False
+        self._after_confirm: Callable[[], None] = lambda: None
         self._build()
 
     # ------------------------------------------------------------------ layout
@@ -222,6 +227,9 @@ class MatchPanel(QWidget):
 
     # ------------------------------------------------------------------ step 2: checklist
     def request_checklist(self) -> None:
+        self._preview_then("checklist", self._begin_checklist)
+
+    def _begin_checklist(self) -> None:
         self._say("reading the job description…")
         self._pool.start(_Task("checklist", self._controller.checklist, self._signals))
 
@@ -265,8 +273,28 @@ class MatchPanel(QWidget):
         run = self._controller.run
         if run is None:
             return
+        self._preview_then("score", self._begin_score)
+
+    def _preview_then(self, step: str, proceed: Callable[[], None]) -> None:
+        """Run ``proceed`` now if the step is local; else after the user approves the preview."""
+        self._after_confirm = proceed
+        self._say("preparing what will be sent…")
+        self._pool.start(
+            _Task("preview", lambda: self._controller.cloud_preview(step), self._signals)
+        )
+
+    def _begin_score(self) -> None:
         self._say(self._controller.footer() + " — scoring…")
         self._pool.start(_Task("score", self._score, self._signals))
+
+    def _after_preview(self, preview: CloudPreview | None) -> None:
+        """Local scoring starts at once; a cloud one waits for the user's explicit Send."""
+        if preview is not None:
+            if not self._confirm_cloud(preview):
+                self._say("cancelled: nothing was sent")
+                return
+            self._controller.grant_cloud_consent()
+        self._after_confirm()
 
     def _score(self) -> object:
         scores = self._controller.score(self._signals.progress.emit)
@@ -314,7 +342,10 @@ class MatchPanel(QWidget):
                 self._say("no matching documents found; index some first")
         elif name == "checklist":
             self._fill_checklist(result)  # type: ignore[arg-type]
+        elif name == "preview":
+            self._after_preview(result if isinstance(result, CloudPreview) else None)
         elif name == "score" and run is not None:
+            self._controller.revoke_cloud_consent()
             self._fill_results(run)
             self._say("done: press Chat to ask follow-up questions")
 
@@ -323,6 +354,8 @@ class MatchPanel(QWidget):
         self.verdict.setMarkdown(self._verdict)
 
     def _on_failed(self, name: str, message: str) -> None:
+        if name in ("preview", "score"):
+            self._controller.revoke_cloud_consent()
         self._say(f"{name} failed: {message}")
 
     def reset(self) -> None:

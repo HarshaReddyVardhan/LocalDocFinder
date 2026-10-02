@@ -99,9 +99,16 @@ class AssistantService:
     def end_chat(self, reason: str = "closed") -> None:
         if self._ctx is not None and self.gateway.session_active:
             self.gateway.end_chat(reason)
+        self.revoke_consent()
         privacy = privacy_of(self._ctx) if self._ctx is not None else None
         if privacy is not None:
             privacy.forget_names()  # the next chat must not inherit this one's masked names
+
+    def revoke_consent(self) -> None:
+        """Withdraw cloud consent (the window was hidden, the chat ended, a new match started)."""
+        cloud = self.ctx.extras.get("cloud") if self._ctx is not None else None
+        if isinstance(cloud, CloudContext):
+            cloud.consent.revoke()
 
     def maintain(self) -> str | None:
         """Poll idle/unplug/fullscreen conditions; returns why the model was unloaded."""
@@ -171,6 +178,7 @@ class AssistantService:
             yield from events
         finally:
             cloud.router.reset()
+            cloud.consent.revoke()  # consent covers this one request, never the next
 
     # ------------------------------------------------------------------ streaming
     def ask(self, question: str) -> Iterator[Event]:

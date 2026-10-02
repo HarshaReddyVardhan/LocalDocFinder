@@ -36,6 +36,9 @@ class FakeAssistant:
     def end_chat(self, reason: str = "closed") -> None:
         self.calls.append(("end", reason))
 
+    def revoke_consent(self) -> None:
+        self.calls.append(("revoke_consent", None))
+
     def maintain(self) -> str | None:
         self.calls.append(("maintain", None))
         return self.maintain_result

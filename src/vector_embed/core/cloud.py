@@ -109,7 +109,9 @@ class CloudChatProvider:
     # ------------------------------------------------------------------ guards
     def _guard(self) -> None:
         if not self._consent.granted:
-            raise ChatBlockedError("cloud requests need your consent for this session")
+            raise ChatBlockedError(
+                "cloud requests need your consent for this session (command line: pass --cloud-ok)"
+            )
         budget = self._settings.monthly_budget_usd
         if budget is not None and self._state.spend_since(month_start(self._clock())) >= budget:
             raise ChatBlockedError(f"the monthly cloud budget (${budget:.2f}) is used up")

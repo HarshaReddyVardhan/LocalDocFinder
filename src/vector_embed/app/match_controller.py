@@ -3,12 +3,13 @@
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
-from vector_embed.app.assistant import ChatState
+from vector_embed.app.assistant import ChatState, CloudPreview
 from vector_embed.core.match.judge import MatchError
 from vector_embed.core.match.pipeline import DocumentScore, MatchPipeline, MatchRun
 from vector_embed.core.match.recall import MatchCandidate, select_top, selected
 from vector_embed.core.match.scoring import Requirement
 from vector_embed.core.models.catalog import ROLE_MATCH_SCORER
+from vector_embed.core.runtime import CloudContext
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.skills.match import pipeline_of
 from vector_embed.core.tokens import estimate_tokens
@@ -41,10 +42,54 @@ class MatchController:
             self._pipeline = pipeline_of(self._factory())
         return self._pipeline
 
+    # ------------------------------------------------------------------ cloud consent
+    def _cloud(self) -> CloudContext | None:
+        cloud = self._factory().extras.get("cloud")
+        return cloud if isinstance(cloud, CloudContext) else None
+
+    def cloud_preview(self, step: str = "score") -> CloudPreview | None:
+        """Exactly what ``step`` ("checklist" or "score") would send to the cloud.
+
+        ``None`` when the step stays on this machine.
+        """
+        run = self._require()
+        messages = (
+            self.pipeline.checklist_cloud_messages(run)
+            if step == "checklist"
+            else self.pipeline.cloud_messages(run)
+        )
+        cloud = self._cloud()
+        if not messages or cloud is None or cloud.provider is None:
+            return None
+        destination = str(cloud.router.destination(ROLE_MATCH_SCORER))
+        outbound = cloud.provider.prepare(messages)
+        privacy = cloud.privacy
+        remote = (
+            1 if step == "checklist" else sum(1 for c in selected(run.candidates) if not c.locked)
+        )
+        return CloudPreview(
+            destination,
+            privacy.badge(outbound, destination, remote),
+            privacy.shield_note(outbound),
+            privacy.preview(outbound),
+        )
+
+    def grant_cloud_consent(self) -> None:
+        """The user pressed Send in the preview: allow cloud calls for this run."""
+        cloud = self._cloud()
+        if cloud is not None:
+            cloud.consent.grant()
+
+    def revoke_cloud_consent(self) -> None:
+        cloud = self._cloud()
+        if cloud is not None:
+            cloud.consent.revoke()
+
     # ------------------------------------------------------------------ steps
     def start(
         self, jd_text: str, doc_type: str | None = None, all_versions: bool = False
     ) -> MatchRun:
+        self.revoke_cloud_consent()  # consent belongs to one run, never the next
         self.run = self.pipeline.start(jd_text, doc_type, all_versions)
         return self.run
 

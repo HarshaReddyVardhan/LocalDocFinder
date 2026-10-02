@@ -14,14 +14,13 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
+from PySide6.QtGui import QGuiApplication, QHideEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
     QPushButton,
     QSplitter,
     QStackedWidget,
@@ -39,6 +38,7 @@ from vector_embed.app.assistant import (
     Failed,
     Finished,
 )
+from vector_embed.app.cloud_dialog import confirm_cloud_dialog
 from vector_embed.app.controller import (
     Launcher,
     SearchOutcome,
@@ -77,20 +77,6 @@ QTextBrowser { background:#17181c; border:1px solid #2a2c33; font-size:13px; }
 QLabel#status { color:#8a8f9c; padding:2px 6px; }
 QLabel#mode { color:#4c7dff; font-weight:bold; padding:0 8px; }
 """
-
-
-def confirm_cloud_dialog(preview: CloudPreview) -> bool:
-    """Show the privacy badge and let the user inspect the exact text before anything is sent."""
-    box = QMessageBox()
-    box.setWindowTitle("Answer better with the cloud?")
-    note = f"\n{preview.shield}" if preview.shield else ""
-    box.setText(preview.badge + note)
-    box.setInformativeText("Nothing is sent until you press Send.")
-    box.setDetailedText(preview.text)  # the "View what will be sent" panel
-    send = box.addButton("Send", QMessageBox.ButtonRole.AcceptRole)
-    box.addButton(QMessageBox.StandardButton.Cancel)
-    box.exec()
-    return box.clickedButton() is send
 
 
 class Mode(enum.Enum):
@@ -430,6 +416,11 @@ class SearchWindow(QWidget):
             return self._service.on_battery()
         except Exception:  # no index or model server yet: the status line is cosmetic
             return False
+
+    def hideEvent(self, event: QHideEvent) -> None:  # noqa: N802
+        super().hideEvent(event)
+        if self._assistant is not None:
+            self._assistant.revoke_consent()  # consent never outlives the visible window
 
     def changeEvent(self, event: QEvent) -> None:  # noqa: N802
         super().changeEvent(event)

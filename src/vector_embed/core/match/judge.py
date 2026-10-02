@@ -125,14 +125,19 @@ def _json(
     ).data
 
 
+def requirements_messages(jd_text: str, settings: MatchSettings) -> list[Message]:
+    """The checklist-extraction prompt (also what the "what will be sent" preview shows)."""
+    return [
+        Message("system", EXTRACT_SYSTEM.format(limit=settings.max_requirements)),
+        Message("user", jd_text),
+    ]
+
+
 def extract_requirements(
     gateway: LlmGateway, jd_text: str, settings: MatchSettings, session: bool = False
 ) -> list[Requirement]:
     """The checklist, generated once and reused for every document."""
-    messages = [
-        Message("system", EXTRACT_SYSTEM.format(limit=settings.max_requirements)),
-        Message("user", jd_text),
-    ]
+    messages = requirements_messages(jd_text, settings)
     last: Exception | None = None
     for attempt in range(2):
         try:
@@ -203,6 +208,27 @@ def build_judge_messages(
     return [Message("system", JUDGE_SYSTEM), Message("user", user)]
 
 
+def prepare_judge_messages(
+    requirements: list[Requirement],
+    jd_text: str,
+    *,
+    name: str,
+    document_text: str,
+    match: MatchSettings,
+    chat: ChatSettings,
+) -> tuple[list[Message], bool]:
+    """The exact judge prompt for one document, and whether the document had to be cut.
+
+    Shared by scoring and by the "what will be sent" preview, so the two can never differ.
+    """
+    fixed = build_judge_messages(requirements, jd_text, name, "")
+    overhead = sum(estimate_tokens(m.content) for m in fixed)
+    room = chat.num_ctx - match.reserved_output_tokens - overhead
+    budget = max(200, min(match.scoring_budget_tokens, room))
+    body, reduced = reduce_document(document_text, requirements, jd_text, budget)
+    return build_judge_messages(requirements, jd_text, name, body), reduced
+
+
 def judge_document(
     gateway: LlmGateway,
     requirements: list[Requirement],
@@ -216,12 +242,9 @@ def judge_document(
     local_only: bool = False,
 ) -> Judgement:
     """Judge one document. The prompt is kept under the context window (logged token count)."""
-    fixed = build_judge_messages(requirements, jd_text, name, "")
-    overhead = sum(estimate_tokens(m.content) for m in fixed)
-    room = chat.num_ctx - match.reserved_output_tokens - overhead
-    budget = max(200, min(match.scoring_budget_tokens, room))
-    body, reduced = reduce_document(document_text, requirements, jd_text, budget)
-    messages = build_judge_messages(requirements, jd_text, name, body)
+    messages, reduced = prepare_judge_messages(
+        requirements, jd_text, name=name, document_text=document_text, match=match, chat=chat
+    )
     prompt_tokens = sum(estimate_tokens(m.content) for m in messages)
     logger.info(
         "match: judging", extra={"doc": name, "prompt_tokens": prompt_tokens, "reduced": reduced}

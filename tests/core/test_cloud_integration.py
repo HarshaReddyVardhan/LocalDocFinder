@@ -378,3 +378,76 @@ class TestMatch:
 def test_the_cloud_rig_fixture_is_available(cloud: CloudRig, tmp_path: Path) -> None:
     assert cloud.consent.granted
     assert tmp_path.exists()
+
+
+class TestMatchConsent:
+    library = TestMatch.library
+    cloud_judge = TestMatch.cloud_judge
+
+    def test_the_preview_is_what_scoring_then_sends_and_shows_the_shield(
+        self,
+        env: Env,
+        chat: Chat,
+        cloud: CloudRig,
+        skill_ctx: SkillContext,
+        library: dict[str, str],
+    ) -> None:
+        self.cloud_judge(cloud)
+        controller = MatchController(lambda: skill_ctx)
+        run = controller.start(JD)
+        select_all(run.candidates)
+        first = controller.cloud_preview("checklist")
+        assert first is not None
+        assert "Senior backend engineer" in first.text  # the job description is what leaves
+        assert controller.cloud_preview("score") is None  # nothing to judge before a checklist
+        controller.grant_cloud_consent()
+        controller.checklist()
+        preview = controller.cloud_preview("score")
+        assert preview is not None
+        assert "OpenRouter" in preview.destination
+        assert "Resume_a.txt" in preview.text
+        assert "Resume_private.md" not in preview.text  # locked: scored locally, never shown
+        assert "K1234567" not in preview.text
+        assert preview.shield.startswith("🛡")
+        before = len(cloud.inner.sent)
+        assert controller.cloud_preview("score") is not None
+        assert len(cloud.inner.sent) == before  # building a preview sends nothing
+        controller.score()
+        scored = [m.content for batch in cloud.inner.sent for m in batch if "Resume (" in m.content]
+        assert scored
+        for text in scored:
+            if "Resume (Resume_a.txt)" in text:
+                assert text in preview.text  # the very text that was previewed
+
+    def test_scoring_without_consent_is_refused_and_a_new_run_revokes_it(
+        self,
+        env: Env,
+        chat: Chat,
+        cloud: CloudRig,
+        skill_ctx: SkillContext,
+        library: dict[str, str],
+    ) -> None:
+        self.cloud_judge(cloud)
+        cloud.consent.revoke()
+        controller = MatchController(lambda: skill_ctx)
+        run = controller.start(JD)
+        select_all(run.candidates)
+        with pytest.raises(ChatBlockedError, match="consent"):
+            controller.checklist()
+        controller.grant_cloud_consent()
+        assert cloud.consent.granted
+        controller.start(JD)  # a new Match run
+        assert not cloud.consent.granted
+
+    def test_local_scoring_needs_no_preview(
+        self,
+        env: Env,
+        chat: Chat,
+        cloud: CloudRig,
+        skill_ctx: SkillContext,
+        library: dict[str, str],
+    ) -> None:
+        cloud.router._settings = cloud.router._settings.model_copy(update={"routing": {}})
+        controller = MatchController(lambda: skill_ctx)
+        select_all(controller.start(JD).candidates)
+        assert controller.cloud_preview() is None

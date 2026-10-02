@@ -104,6 +104,38 @@ class MatchPipeline:
         return run.requirements
 
     # ------------------------------------------------------------------ step 3
+    def checklist_cloud_messages(self, run: MatchRun) -> list[Message]:
+        """The checklist request, if building it would go to the cloud (else nothing)."""
+        if run.requirements or not self._gateway.will_use_cloud(ROLE_MATCH_SCORER):
+            return []
+        return judge.requirements_messages(run.jd_text, self._ctx.settings.match)
+
+    def cloud_messages(self, run: MatchRun) -> list[Message]:
+        """Every judge prompt that scoring would send to the cloud (none if it stays local).
+
+        Locked (private) documents are scored locally and so never appear here. Needs the
+        checklist to exist already: building it is its own (previewed) step.
+        """
+        requirements = run.requirements
+        if not requirements or not self._gateway.will_use_cloud(ROLE_MATCH_SCORER):
+            return []
+        settings = self._ctx.settings
+        messages: list[Message] = []
+        for candidate in selected(run.candidates):
+            if candidate.locked:
+                continue
+            document = self._loader.load(candidate.path)
+            prompt, _ = judge.prepare_judge_messages(
+                requirements,
+                run.jd_text,
+                name=candidate.name,
+                document_text=document.text,
+                match=settings.match,
+                chat=settings.chat,
+            )
+            messages.extend(prompt)
+        return messages
+
     def score(
         self, run: MatchRun, progress: Progress | None = None, session: bool = False
     ) -> list[DocumentScore]:

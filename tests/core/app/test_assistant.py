@@ -203,7 +203,7 @@ class TestAnswerBetter:
         text, (finished,) = drain(service.escalated(service.ask("how do we retry failed payments")))
         assert text == "Cloud answer [1]."
         assert isinstance(finished, Finished)
-        assert local_by_default.consent.granted
+        assert not local_by_default.consent.granted  # consent covered that one request only
         assert local_by_default.inner.sent
         assert chat.chat_calls() == []
         assert not local_by_default.router.escalate  # back to local for the next request
@@ -222,6 +222,7 @@ class TestAnswerBetter:
         with pytest.raises(RuntimeError):
             list(service.escalated(boom()))  # type: ignore[arg-type]
         assert not local_by_default.router.escalate
+        assert not local_by_default.consent.granted
 
     def test_chat_preview_opens_the_session_and_includes_pinned_text(
         self, env: Env, skill_ctx: SkillContext, local_by_default: CloudRig
@@ -235,3 +236,29 @@ class TestAnswerBetter:
         assert "[PASSPORT REMOVED]" in preview.text
         assert "K1234567" not in preview.text
         assert preview.badge.startswith("☁ Sending 1 excerpt")
+
+
+class TestConsentLifetime:
+    @pytest.fixture
+    def local_by_default(self, cloud: CloudRig) -> CloudRig:
+        cloud.consent.revoke()
+        return cloud
+
+    def test_ending_the_chat_revokes_consent_and_forgets_names(
+        self, skill_ctx: SkillContext, chat: Chat, local_by_default: CloudRig
+    ) -> None:
+        service = AssistantService(lambda: skill_ctx)
+        local_by_default.consent.grant()
+        service.begin_chat()
+        service.end_chat("closed")
+        assert not local_by_default.consent.granted
+
+    def test_hiding_revokes_consent(
+        self, skill_ctx: SkillContext, local_by_default: CloudRig
+    ) -> None:
+        service = AssistantService(lambda: skill_ctx)
+        assert service.ctx is skill_ctx  # the context is built lazily; consent lives in it
+        local_by_default.consent.grant()
+        service.revoke_consent()
+        assert not local_by_default.consent.granted
+        service.revoke_consent()  # harmless twice

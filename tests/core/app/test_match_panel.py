@@ -9,10 +9,10 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from tests.core.app.test_app import FakeService
 from tests.core.app.test_modes import FakeAssistant
-from tests.core.conftest import Chat, Env
+from tests.core.conftest import Chat, CloudRig, Env
 from tests.core.match.test_pipeline import JD, faithful_model, resume, write
 
-from vector_embed.app.assistant import ChatState
+from vector_embed.app.assistant import ChatState, CloudPreview
 from vector_embed.app.controller import Launcher
 from vector_embed.app.match_controller import MatchController
 from vector_embed.app.match_panel import (
@@ -282,3 +282,44 @@ class TestInsideTheWindow:
         win.set_mode(Mode.MATCH)
         QGuiApplication.clipboard().setText("   ")
         assert win.paste_job_description() is False
+
+
+class TestCloudConsent:
+    def test_declining_the_preview_sends_nothing_and_starts_nothing(
+        self, qapp: QApplication, controller: MatchController, cloud: CloudRig
+    ) -> None:
+        previews: list[CloudPreview] = []
+        panel = MatchPanel(controller, confirm_cloud=lambda p: previews.append(p) or False)
+        recall(qapp, panel)
+        panel.buttons["all"].click()
+        panel.buttons["checklist"].click()
+        wait_for(qapp, lambda: "cancelled" in panel.footer.text())
+        assert len(previews) == 1
+        assert "OpenRouter" in previews[0].destination
+        assert cloud.inner.sent == []
+        assert not cloud.consent.granted
+        assert panel.pages.currentIndex() == PAGE_CANDIDATES
+
+    def test_approving_grants_consent_and_runs_the_step(
+        self, qapp: QApplication, controller: MatchController, cloud: CloudRig
+    ) -> None:
+        cloud.inner.json_fn = lambda _m: {
+            "requirements": [{"text": "Python", "kind": "must", "weight": 1}]
+        }
+        panel = MatchPanel(controller, confirm_cloud=lambda _p: True)
+        recall(qapp, panel)
+        panel.buttons["checklist"].click()
+        wait_for(qapp, lambda: panel.pages.currentIndex() == PAGE_CHECKLIST)
+        assert cloud.consent.granted
+        assert cloud.inner.sent
+
+    def test_local_steps_never_show_the_dialog(
+        self, qapp: QApplication, controller: MatchController, cloud: CloudRig
+    ) -> None:
+        cloud.router._settings = cloud.router._settings.model_copy(update={"routing": {}})
+        shown: list[CloudPreview] = []
+        panel = MatchPanel(controller, confirm_cloud=lambda p: shown.append(p) or True)
+        recall(qapp, panel)
+        panel.buttons["checklist"].click()
+        wait_for(qapp, lambda: panel.pages.currentIndex() == PAGE_CHECKLIST)
+        assert shown == []

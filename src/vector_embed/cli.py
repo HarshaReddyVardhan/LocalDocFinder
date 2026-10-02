@@ -113,7 +113,12 @@ def run_skill(skill_cls: type[Skill], args: argparse.Namespace, settings: Settin
     fields = dict(skill_cls.Input.model_fields)
     params = skill_cls.Input(**collect_input(args, fields, skill_cls.cli_positional))
     with StateDb(settings.storage.data_dir) as state:
-        skill = skill_cls(runtime.build_skill_context(settings, state))
+        ctx = runtime.build_skill_context(settings, state)
+        if getattr(args, "cloud_ok", False):
+            cloud = ctx.extras.get("cloud")
+            if isinstance(cloud, runtime.CloudContext):
+                cloud.consent.grant()  # the flag is the consent: this one command, nothing else
+        skill = skill_cls(ctx)
         stream = skill.stream(params)
         if stream is not None:
             for delta in stream:
@@ -229,6 +234,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ve", description="Local search + chat-with-documents.")
     parser.add_argument(
         "--data-dir", help="data directory (default %%LOCALAPPDATA%%\\VectorEmbedData)"
+    )
+    parser.add_argument(
+        "--cloud-ok",
+        action="store_true",
+        help="allow this command to send (masked) text to the configured cloud provider",
     )
     sub = parser.add_subparsers(dest="command", required=True)
     for skill_cls in load_skills():
