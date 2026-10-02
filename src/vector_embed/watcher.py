@@ -6,14 +6,12 @@ the worker when the machine is on AC power, settled and idle.
 """
 
 import argparse
-import json
 import logging
 import signal
 import subprocess
 import sys
 import threading
 import time
-import urllib.request
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
@@ -24,10 +22,10 @@ from watchdog.observers import Observer
 from vector_embed.core import runtime
 from vector_embed.core.idle import IdleGate
 from vector_embed.core.logging_setup import configure_logging
-from vector_embed.core.model_names import same_model
 from vector_embed.core.models.hardware import on_ac_power
+from vector_embed.core.ollama_http import unload_model
 from vector_embed.core.power import PowerGate
-from vector_embed.core.process import self_command, single_instance
+from vector_embed.core.process import self_command, single_instance, stop_requested
 from vector_embed.core.projects import Projects
 from vector_embed.core.scope import ScopePolicy
 from vector_embed.core.settings import Settings, load_settings
@@ -39,10 +37,9 @@ TICK_SECONDS = 10
 _BELOW_NORMAL = 0x00004000
 _NO_WINDOW = 0x08000000
 _FAILURE_BACKOFF_SECONDS = 600
+_WORKER_STOP_GRACE_SECONDS = 15.0
 _RECONCILE_BACKOFF_SECONDS = 300
 _UNPLUG_GRACE_SECONDS = 20
-_HTTP_TIMEOUT_SECONDS = 10
-_UNLOAD_ATTEMPTS_NOTE = "unload is best effort"
 
 
 def quick_reject(path: str, blocked_dirs: frozenset[str]) -> bool:
@@ -151,45 +148,6 @@ class SubprocessLauncher:
             )
 
 
-def _ollama_json(host: str, path: str, body: dict[str, object] | None = None) -> object:
-    request = urllib.request.Request(  # noqa: S310  # host comes from our own settings
-        f"{host.rstrip('/')}{path}",
-        method="GET" if body is None else "POST",
-        data=None if body is None else json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-    raw = urllib.request.urlopen(request, timeout=_HTTP_TIMEOUT_SECONDS).read()  # noqa: S310
-    return json.loads(raw or b"{}")
-
-
-def _resident_entry(host: str, model: str) -> dict[str, object] | None:
-    """The ``/api/ps`` entry for ``model``; ``None`` when it is not loaded."""
-    listing = _ollama_json(host, "/api/ps")
-    models = listing.get("models") if isinstance(listing, dict) else None
-    for entry in models if isinstance(models, list) else []:
-        if isinstance(entry, dict) and same_model(str(entry.get("model", "")), model):
-            return entry
-    return None
-
-
-def unload_model(host: str, model: str) -> None:
-    """``keep_alive=0`` over HTTP: the watcher must not import the ollama package.
-
-    A request that frees a model loads it first, so nothing is sent unless ``/api/ps`` lists it,
-    and the same GPU/CPU placement is requested so no second runner is started.
-    """
-    try:
-        resident = _resident_entry(host, model)
-        if resident is None:
-            return
-        body: dict[str, object] = {"model": model, "input": "x", "keep_alive": 0}
-        if not resident.get("size_vram"):
-            body["options"] = {"num_gpu": 0}
-        _ollama_json(host, "/api/embed", body)
-    except (OSError, ValueError):
-        logger.debug("watcher: model unload request failed (%s)", _UNLOAD_ATTEMPTS_NOTE)
-
-
 class StartGate(Protocol):
     def update(self) -> None: ...
 
@@ -253,9 +211,18 @@ class Watcher:
         finally:
             self.observer.stop()
             self.observer.join(timeout=5)
-            if self.handle is not None and self.handle.poll() is None:
-                self.handle.terminate()
-                self._unload()
+            self._stop_worker()
+
+    def _stop_worker(self) -> None:
+        """Let a running worker finish its batch and unload itself; kill it only if it hangs."""
+        if self.handle is None or self.handle.poll() is not None:
+            return
+        deadline = time.monotonic() + _WORKER_STOP_GRACE_SECONDS
+        while self.handle.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.2)
+        if self.handle.poll() is None:
+            self.handle.terminate()
+        self._unload()  # a hard kill skips the worker's own unload
 
     # ------------------------------------------------------------------ scheduling
     def reconcile_due(self) -> bool:
@@ -273,6 +240,7 @@ class Watcher:
             self.handle = None
             if code != 0:
                 self.next_spawn = self._clock() + _FAILURE_BACKOFF_SECONDS  # e.g. Ollama is down
+                self._unload()  # a crashed worker never reached its own unload
             self.unplugged_at = None
             return False
         # The worker checks power itself before each batch; this is the backstop if it is stuck
@@ -288,6 +256,10 @@ class Watcher:
         return True
 
     def tick(self) -> None:
+        if stop_requested(self.settings.storage.data_dir):
+            logger.info("stop requested")
+            self.stop()
+            return
         self.gate.update()
         if self._supervise():
             return

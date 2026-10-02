@@ -52,6 +52,63 @@ def test_stops_other_copies_but_not_itself_or_strangers() -> None:
     assert not (me.terminated or other.terminated)
 
 
+def test_graceful_stop_asks_first_and_unloads_last(tmp_path: Path) -> None:
+    order: list[str] = []
+    worker = FakeProcess(2, "VectorEmbed.exe")
+    worker.terminate = lambda: order.append("terminate")  # type: ignore[method-assign]
+
+    def waits(
+        processes: list[lifecycle.ProcessLike], _timeout: float
+    ) -> list[lifecycle.ProcessLike]:
+        order.append(f"wait flag={(tmp_path / 'stop.request').exists()}")
+        return []  # it exited on its own
+
+    lifecycle.stop_other_instances(
+        current_pid=1,
+        lister=lambda: [worker],
+        wait=waits,
+        data_dir=tmp_path,
+        unload=lambda: order.append("unload"),
+    )
+    assert order[0] == "wait flag=True"  # asked politely, then waited
+    assert "terminate" not in order or order.index("terminate") > 0
+    assert order[-1] == "unload"
+    assert not (tmp_path / "stop.request").exists()  # the flag never outlives the stop
+
+
+def test_graceful_stop_terminates_what_ignores_the_request(tmp_path: Path) -> None:
+    stubborn = FakeProcess(2, "VectorEmbed.exe", stubborn=True)
+    unloaded: list[int] = []
+
+    def alive(
+        processes: list[lifecycle.ProcessLike], _timeout: float
+    ) -> list[lifecycle.ProcessLike]:
+        return list(processes)
+
+    lifecycle.stop_other_instances(
+        current_pid=1,
+        lister=lambda: [stubborn],
+        wait=alive,
+        data_dir=tmp_path,
+        unload=lambda: unloaded.append(1),
+    )
+    assert stubborn.terminated
+    assert stubborn.killed
+    assert unloaded == [1]
+
+
+def test_nothing_to_stop_means_no_unload_request(tmp_path: Path) -> None:
+    unloaded: list[int] = []
+    lifecycle.stop_other_instances(
+        current_pid=1,
+        lister=lambda: [],
+        data_dir=tmp_path,
+        unload=lambda: unloaded.append(1),
+    )
+    assert unloaded == []
+    assert not (tmp_path / "stop.request").exists()
+
+
 def test_stops_the_cli_too() -> None:
     cli = FakeProcess(4, "ve.exe")
     assert stop([cli]) == 1
@@ -153,7 +210,7 @@ def test_hooks_never_raise(monkeypatch: pytest.MonkeyPatch) -> None:
             raise RuntimeError("scheduler unavailable")
 
     monkeypatch.setattr(lifecycle, "start_watcher", lambda: (_ for _ in ()).throw(OSError("no")))
-    monkeypatch.setattr(lifecycle, "stop_other_instances", lambda: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(lifecycle, "stop_everything", lambda: (_ for _ in ()).throw(OSError()))
     lifecycle.after_install(Broken(), lambda: True)
     lifecycle.after_update(Broken(), lambda: True)
     lifecycle.before_update()
@@ -163,7 +220,7 @@ def test_hooks_never_raise(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_update_and_uninstall_chores_run_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
     order: list[str] = []
     monkeypatch.setattr(lifecycle, "start_watcher", lambda: order.append("watcher"))
-    monkeypatch.setattr(lifecycle, "stop_other_instances", lambda: order.append("stop") or 0)
+    monkeypatch.setattr(lifecycle, "stop_everything", lambda: order.append("stop") or 0)
     tasks = RecordingAutostart()
     lifecycle.before_update()
     lifecycle.after_update(tasks, lambda: True)
@@ -200,7 +257,7 @@ class FakeVelopackApp:
 def test_startup_hooks_are_wired_to_velopack(monkeypatch: pytest.MonkeyPatch) -> None:
     order: list[str] = []
     monkeypatch.setattr(lifecycle, "start_watcher", lambda: order.append("watcher"))
-    monkeypatch.setattr(lifecycle, "stop_other_instances", lambda: order.append("stop") or 0)
+    monkeypatch.setattr(lifecycle, "stop_everything", lambda: order.append("stop") or 0)
     app = FakeVelopackApp()
     tasks = RecordingAutostart()
     lifecycle.run_startup_hooks(lambda: app, autostart=tasks)  # type: ignore[arg-type,return-value]

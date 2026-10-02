@@ -17,6 +17,8 @@ from watchdog.events import (
 )
 
 from vector_embed import watcher
+from vector_embed.core import ollama_http
+from vector_embed.core.process import request_stop
 from vector_embed.watcher import ChangeHandler, Watcher, quick_reject
 
 DEBOUNCE = 30
@@ -266,11 +268,12 @@ class TestScheduling:
     def test_failed_worker_backs_off(
         self, parts: tuple[Watcher, FakeGate, FakeLauncher, list[int]], env: Env, clock: Clock
     ) -> None:
-        w, _, launcher, _ = parts
+        w, _, launcher, unloads = parts
         env.state.enqueue("a", delay=0)
         w.tick()
         launcher.handles[0].code = 2
         w.tick()
+        assert unloads == [1]  # a crashed worker never unloaded the model itself
         assert launcher.started == [False]
         clock.now += 601
         w.tick()
@@ -288,6 +291,43 @@ class TestScheduling:
         clock.now += 21
         w.tick()
         assert launcher.handles[0].terminated
+        assert unloads == [1]
+
+    def test_a_clean_exit_does_not_ask_for_an_unload(
+        self, parts: tuple[Watcher, FakeGate, FakeLauncher, list[int]], env: Env
+    ) -> None:
+        w, _, launcher, unloads = parts
+        env.state.enqueue("a", delay=0)
+        w.tick()
+        launcher.handles[0].code = 0
+        w.tick()
+        assert unloads == []
+
+    def test_a_stop_request_ends_the_loop_without_scheduling(
+        self, parts: tuple[Watcher, FakeGate, FakeLauncher, list[int]], env: Env
+    ) -> None:
+        w, _, launcher, _ = parts
+        env.state.enqueue("a", delay=0)
+        request_stop(env.settings.storage.data_dir)
+        w.tick()
+        assert launcher.started == []
+        assert w._stop.is_set()
+
+    def test_shutdown_lets_a_worker_exit_by_itself_before_killing_it(
+        self,
+        parts: tuple[Watcher, FakeGate, FakeLauncher, list[int]],
+        env: Env,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        w, _, launcher, unloads = parts
+        monkeypatch.setattr(watcher, "_WORKER_STOP_GRACE_SECONDS", 2.0)
+        env.state.enqueue("a", delay=0)
+        w.tick()
+        handle = launcher.handles[0]
+        polls = iter([None, None, 0])
+        handle.poll = lambda: next(polls, 0)  # type: ignore[method-assign]
+        w._stop_worker()
+        assert not handle.terminated
         assert unloads == [1]
 
     def test_replugging_resets_the_grace_timer(
@@ -331,6 +371,7 @@ class TestLifecycle:
         )
         w.settings = env.settings
         monkeypatch.setattr(watcher, "TICK_SECONDS", 0.05)
+        monkeypatch.setattr(watcher, "_WORKER_STOP_GRACE_SECONDS", 0.2)
         thread = threading.Thread(target=w.run, daemon=True)
         thread.start()
         path = write(env, "live.py", "value = 1\n")
@@ -412,12 +453,12 @@ class TestHelpers:
             sent.append((url, request.data))  # type: ignore[attr-defined]
             return Response({"models": resident} if url.endswith("/api/ps") else {})
 
-        monkeypatch.setattr(watcher.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(ollama_http.urllib.request, "urlopen", fake_urlopen)
         return sent
 
     def test_unload_model_posts_keep_alive_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
         sent = self.fake_ollama(monkeypatch, [{"model": "m:latest", "size_vram": 5}])
-        watcher.unload_model("http://host:1/", "m")
+        ollama_http.unload_model("http://host:1/", "m")
         assert [url for url, _ in sent] == ["http://host:1/api/ps", "http://host:1/api/embed"]
         body = json.loads(sent[1][1] or b"")
         assert body["keep_alive"] == 0
@@ -425,22 +466,22 @@ class TestHelpers:
 
     def test_unload_model_keeps_a_cpu_runner_on_cpu(self, monkeypatch: pytest.MonkeyPatch) -> None:
         sent = self.fake_ollama(monkeypatch, [{"model": "m", "size_vram": 0}])
-        watcher.unload_model("http://host:1", "m")
+        ollama_http.unload_model("http://host:1", "m")
         assert json.loads(sent[1][1] or b"")["options"] == {"num_gpu": 0}
 
     def test_unload_model_does_not_load_what_is_not_resident(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         sent = self.fake_ollama(monkeypatch, [{"model": "other", "size_vram": 5}])
-        watcher.unload_model("http://host:1", "m")
+        ollama_http.unload_model("http://host:1", "m")
         assert [url for url, _ in sent] == ["http://host:1/api/ps"]
 
     def test_unload_model_swallows_connection_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def refuse(*_a: object, **_k: object) -> None:
             raise ConnectionRefusedError
 
-        monkeypatch.setattr(watcher.urllib.request, "urlopen", refuse)
-        watcher.unload_model("http://host:1", "m")
+        monkeypatch.setattr(ollama_http.urllib.request, "urlopen", refuse)
+        ollama_http.unload_model("http://host:1", "m")
 
     def test_build_watcher_wires_real_collaborators(self, env: Env) -> None:
         w = watcher.build_watcher(env.settings, env.state)

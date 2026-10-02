@@ -9,7 +9,7 @@ from vector_embed.app.hotkey import parse_hotkey
 from vector_embed.core.lifecycle import (
     ensure_data_folder,
     schedule_data_deletion,
-    stop_other_instances,
+    stop_everything,
 )
 from vector_embed.core.models.benchmark import BenchResult, load_results
 from vector_embed.core.secrets import KeyStore
@@ -45,7 +45,7 @@ class SettingsController:
         *,
         apply_autostart: Callable[[bool], None] = lambda enabled: None,
         updater: Updater | None = None,
-        stop_others: Callable[[], object] = stop_other_instances,
+        stop_others: Callable[[], object] = stop_everything,
         schedule_deletion: Callable[[Path], None] = schedule_data_deletion,
     ) -> None:
         self._path = settings_path

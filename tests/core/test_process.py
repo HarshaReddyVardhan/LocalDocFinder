@@ -1,4 +1,5 @@
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -57,3 +58,14 @@ def test_unknown_entry_point_is_rejected() -> None:
     with pytest.raises(ValueError, match="unknown entry point"):
         self_command("bogus")
     assert set(ENTRY_POINTS) == {"app", "watcher", "worker", "setup"}
+
+
+def test_stop_request_round_trip_and_expiry(tmp_path: Path) -> None:
+    from vector_embed.core.process import clear_stop_request, request_stop, stop_requested
+
+    assert not stop_requested(tmp_path)
+    request_stop(tmp_path)
+    assert stop_requested(tmp_path)
+    assert not stop_requested(tmp_path, now=time.time() + 3600)  # a stale flag is ignored
+    clear_stop_request(tmp_path)
+    assert not stop_requested(tmp_path)

@@ -14,7 +14,7 @@ from typing import Protocol
 import psutil
 
 from vector_embed.core.autostart import Autostart
-from vector_embed.core.process import self_command
+from vector_embed.core.process import clear_stop_request, request_stop, self_command
 from vector_embed.core.store.sqlite import STATE_FILENAME
 
 logger = logging.getLogger(__name__)
@@ -23,6 +23,7 @@ APP_EXE_NAME = "VectorEmbed.exe"
 CLI_EXE_NAME = "ve.exe"
 DELETE_ATTEMPTS = 5
 STOP_WAIT_SECONDS = 5.0
+GRACEFUL_STOP_SECONDS = 10.0
 _DETACHED = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
 _QUOTE = "'"
 
@@ -59,8 +60,15 @@ def stop_other_instances(
     current_pid: int | None = None,
     lister: ProcessLister = list_processes,
     wait: WaitForExit = wait_for_exit,
+    data_dir: Path | None = None,
+    unload: Callable[[], None] | None = None,
 ) -> int:
-    """Stop every other running copy of the app (tray, watcher, worker, ve); returns how many."""
+    """Stop every other running copy of the app (tray, watcher, worker, ve); returns how many.
+
+    The worker and watcher are first asked to stop through ``data_dir`` and given a moment to
+    unload the model themselves; whatever is left is terminated, then killed, and ``unload``
+    runs last because a hard kill skips the worker's own cleanup.
+    """
     names = {name.lower() for name in exe_names}
     me = os.getpid() if current_pid is None else current_pid
     victims: list[ProcessLike] = []
@@ -70,17 +78,31 @@ def stop_other_instances(
                 victims.append(process)
         except psutil.Error:  # the process ended or is not ours to inspect
             continue
-    for process in victims:
+    try:
+        remaining = victims
+        if data_dir is not None and victims:
+            request_stop(data_dir)
+            remaining = wait(victims, GRACEFUL_STOP_SECONDS)
+        _terminate_all(remaining, wait)
+    finally:
+        if data_dir is not None:
+            clear_stop_request(data_dir)
+    if unload is not None and victims:
+        _safely(unload, "unloading the model after stopping")
+    return len(victims)
+
+
+def _terminate_all(processes: list[ProcessLike], wait: WaitForExit) -> None:
+    for process in processes:
         try:
             process.terminate()
         except psutil.Error:
             logger.debug("lifecycle: could not terminate pid %s", process.pid)
-    for process in wait(victims, STOP_WAIT_SECONDS):
+    for process in wait(processes, STOP_WAIT_SECONDS):
         try:
             process.kill()
         except psutil.Error:
             logger.warning("lifecycle: pid %s would not stop", process.pid)
-    return len(victims)
 
 
 def start_watcher(spawn: Callable[..., object] = subprocess.Popen) -> None:
@@ -144,8 +166,20 @@ def after_install(autostart: Autostart, enabled: Callable[[], bool]) -> None:
         _safely(autostart.register, "registering startup tasks")
 
 
+def stop_everything() -> None:
+    """Stop our other processes the polite way and free the GPU; used by the install hooks."""
+    from vector_embed.core.ollama_http import unload_model
+    from vector_embed.core.settings import load_settings
+
+    settings = load_settings()
+    stop_other_instances(
+        data_dir=settings.storage.data_dir,
+        unload=lambda: unload_model(settings.ollama_host, settings.embedding.model),
+    )
+
+
 def before_update() -> None:
-    _safely(stop_other_instances, "stopping the old version")
+    _safely(stop_everything, "stopping the old version")
 
 
 def after_update(autostart: Autostart, enabled: Callable[[], bool]) -> None:
@@ -156,7 +190,7 @@ def after_update(autostart: Autostart, enabled: Callable[[], bool]) -> None:
 
 def before_uninstall(autostart: Autostart) -> None:
     _safely(autostart.unregister, "removing startup tasks")
-    _safely(stop_other_instances, "stopping the app")
+    _safely(stop_everything, "stopping the app")
 
 
 class StartupApp(Protocol):

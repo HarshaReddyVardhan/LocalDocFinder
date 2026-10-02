@@ -301,3 +301,17 @@ class TestCli:
         with pytest.raises(ProviderError):
             worker.build_parts(env.settings, env.state, FakeGate())
         assert unloaded == [1]
+
+
+def test_a_stop_request_ends_the_run_and_still_unloads(env: Env) -> None:
+    from vector_embed.core.process import clear_stop_request, request_stop
+
+    env.state.enqueue(write(env, "s.txt", "stop me " * 40), delay=0)
+    unload = Unloader()
+    request_stop(env.settings.storage.data_dir)
+    try:
+        run_worker(make_parts(env, unload=unload), WorkerOptions(now=True))
+    finally:
+        clear_stop_request(env.settings.storage.data_dir)
+    assert env.state.queue_size() == 1
+    assert unload.count == 1

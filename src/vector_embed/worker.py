@@ -22,7 +22,7 @@ from vector_embed.core.idle import IdleGate
 from vector_embed.core.indexer import BatchEmbedder, Indexer
 from vector_embed.core.logging_setup import configure_logging
 from vector_embed.core.power import PowerGate
-from vector_embed.core.process import single_instance
+from vector_embed.core.process import single_instance, stop_requested
 from vector_embed.core.projects import Projects
 from vector_embed.core.providers.base import ProviderError
 from vector_embed.core.providers.ollama import Interrupted
@@ -83,6 +83,9 @@ def run_worker(parts: WorkerParts, options: WorkerOptions) -> int:
 
     def stop_check() -> bool:
         if stopped["why"]:
+            return True
+        if stop_requested(parts.settings.storage.data_dir):
+            stopped["why"] = "stop requested"
             return True
         proceed, reason = gate.worker_may_continue(
             options.allow_battery, respect_activity=not options.now

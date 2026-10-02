@@ -2,6 +2,7 @@
 
 import msvcrt
 import sys
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -55,3 +56,30 @@ def self_command(entry: str, *, windowless: bool = False) -> list[str]:
     if windowless and (quiet := interpreter.with_name("pythonw.exe")).is_file():
         interpreter = quiet
     return [str(interpreter), "-m", "vector_embed", entry]
+
+
+STOP_REQUEST_FILENAME = "stop.request"
+STOP_REQUEST_MAX_AGE_SECONDS = 60.0  # an old flag from a crashed updater must not stop us forever
+
+
+def request_stop(data_dir: Path) -> None:
+    """Ask the worker and watcher to finish what they are doing and exit (and unload the model).
+
+    ``Process.terminate`` on Windows is a hard kill that skips ``finally`` blocks, so a worker
+    stopped that way would leave the model on the GPU.
+    """
+    directory = Path(data_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / STOP_REQUEST_FILENAME).write_text("stop", encoding="ascii")
+
+
+def clear_stop_request(data_dir: Path) -> None:
+    (Path(data_dir) / STOP_REQUEST_FILENAME).unlink(missing_ok=True)
+
+
+def stop_requested(data_dir: Path, now: float | None = None) -> bool:
+    try:
+        modified = (Path(data_dir) / STOP_REQUEST_FILENAME).stat().st_mtime
+    except OSError:
+        return False
+    return (time.time() if now is None else now) - modified <= STOP_REQUEST_MAX_AGE_SECONDS
