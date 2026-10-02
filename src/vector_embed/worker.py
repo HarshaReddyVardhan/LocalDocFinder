@@ -115,7 +115,10 @@ def run_worker(parts: WorkerParts, options: WorkerOptions) -> int:
         if code != EXIT_OK:
             return code
         if stopped["why"]:
+            # Maintenance is heavy disk and CPU work; the reason we stopped (battery, the user
+            # is back) means it must wait for the next run.
             logger.info("stopping early (%s); progress committed, queue kept", stopped["why"])
+            return EXIT_OK
         parts.store.maintain()
         if indexer.stats.files:
             indexer.assign_version_groups()
@@ -155,31 +158,38 @@ def _drain(
     return EXIT_OK
 
 
-def build_parts(settings: Settings) -> WorkerParts:
-    """Wire the real collaborators."""
-    scope = runtime.build_scope(settings)
-    state = StateDb(settings.storage.data_dir)
-    provider = runtime.build_provider(settings)
-    store = runtime.open_store(settings, state, provider)
-    gate = IdleGate(
+def build_gate(settings: Settings, state: StateDb) -> IdleGate:
+    """Power and idle checks; cheap, and built before anything touches the model server."""
+    return IdleGate(
         PowerGate(settings.power),
         settings.idle,
         chat_active=lambda: state.lock_held(CHAT_LOCK),
     )
-    return WorkerParts(
-        settings=settings,
-        state=state,
-        store=store,
-        embedder=provider,
-        extractors=runtime.build_extractors(settings, scope, provider),
-        projects=runtime.build_projects(settings, scope),
-        scope=scope,
-        classifier=DocTypeClassifierSet(
-            settings.doctypes, settings.scope, runtime.load_prototypes(state, provider)
-        ),
-        gate=gate,
-        unload=provider.unload_embedder,
-    )
+
+
+def build_parts(settings: Settings, state: StateDb, gate: WorkerGate) -> WorkerParts:
+    """Wire the real collaborators. May use the model server, so call it after the gate passes."""
+    scope = runtime.build_scope(settings)
+    provider = runtime.build_provider(settings)
+    try:
+        store = runtime.open_store(settings, state, provider)
+        return WorkerParts(
+            settings=settings,
+            state=state,
+            store=store,
+            embedder=provider,
+            extractors=runtime.build_extractors(settings, scope, provider),
+            projects=runtime.build_projects(settings, scope),
+            scope=scope,
+            classifier=DocTypeClassifierSet(
+                settings.doctypes, settings.scope, runtime.load_prototypes(state, provider)
+            ),
+            gate=gate,
+            unload=provider.unload_embedder,
+        )
+    except BaseException:
+        provider.unload_embedder()  # a half-built worker must not leave the model on the GPU
+        raise
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -210,20 +220,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not acquired:
             logger.info("another worker is running")
             return EXIT_OK
-        parts = build_parts(settings)
+        state = StateDb(settings.storage.data_dir)
         try:
-            return run_worker(
-                parts,
-                WorkerOptions(
-                    now=args.now,
-                    paths=tuple(args.path or ()),
-                    reconcile=args.reconcile,
-                    allow_battery=args.allow_battery,
-                    limit=args.limit,
-                ),
-            )
+            return _run(settings, state, args)
         finally:
-            parts.state.close()
+            state.close()
+
+
+def _run(settings: Settings, state: StateDb, args: argparse.Namespace) -> int:
+    gate = build_gate(settings, state)
+    ok, why = gate.worker_may_continue(args.allow_battery, respect_activity=False)
+    if not ok:  # decided before the model server is touched, so a refusal never loads the GPU
+        logger.info("not starting: %s", why)
+        return EXIT_OK
+    try:
+        parts = build_parts(settings, state, gate)
+    except ProviderError:
+        logger.exception("could not reach the model server; is Ollama running?")
+        return EXIT_PROVIDER
+    return run_worker(
+        parts,
+        WorkerOptions(
+            now=args.now,
+            paths=tuple(args.path or ()),
+            reconcile=args.reconcile,
+            allow_battery=args.allow_battery,
+            limit=args.limit,
+        ),
+    )
 
 
 if __name__ == "__main__":

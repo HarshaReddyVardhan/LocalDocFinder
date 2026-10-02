@@ -109,6 +109,27 @@ def test_unplugging_mid_run_commits_progress_and_keeps_the_queue(env: Env) -> No
     assert unload.count == 1
 
 
+def test_no_maintenance_after_stopping_for_battery(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran: list[str] = []
+    monkeypatch.setattr(env.store, "maintain", lambda: ran.append("maintain"))
+    monkeypatch.setattr(worker.Indexer, "assign_version_groups", lambda _self: ran.append("groups"))
+    for i in range(3):
+        env.state.enqueue(write(env, f"g{i}.txt", f"file {i} content " * 40), delay=0)
+    run_worker(make_parts(env, FakeGate(allowed=3)), WorkerOptions())
+    assert env.state.queue_size() > 0  # it did stop early
+    assert ran == []
+
+
+def test_maintenance_runs_after_a_complete_pass(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    ran: list[str] = []
+    monkeypatch.setattr(env.store, "maintain", lambda: ran.append("maintain"))
+    env.state.enqueue(write(env, "h.txt", "content " * 40), delay=0)
+    run_worker(make_parts(env), WorkerOptions(now=True))
+    assert ran == ["maintain"]
+
+
 def test_allow_battery_and_activity_flags_reach_the_gate(env: Env) -> None:
     gate = FakeGate()
     run_worker(make_parts(env, gate), WorkerOptions(allow_battery=True, now=True))
@@ -207,11 +228,12 @@ class TestCli:
     ) -> None:
         seen: dict[str, object] = {}
 
-        def fake_build(settings: object) -> WorkerParts:
+        def fake_build(settings: object, _state: object, _gate: object) -> WorkerParts:
             seen["settings"] = settings
             return make_parts(env)
 
         monkeypatch.setattr(worker, "build_parts", fake_build)
+        monkeypatch.setattr(worker, "build_gate", lambda _s, _st: FakeGate())
         monkeypatch.setattr(worker, "load_settings", lambda: env.settings)
         monkeypatch.setattr(worker, "configure_logging", lambda *_a, **_k: None)
         data_dir = tmp_path / "other-data"
@@ -227,9 +249,55 @@ class TestCli:
         monkeypatch.setattr(worker, "load_settings", lambda: env.settings)
         monkeypatch.setattr(worker, "configure_logging", lambda *_a, **_k: None)
 
-        def must_not_build(_settings: object) -> WorkerParts:
+        def must_not_build(*_args: object) -> WorkerParts:
             raise AssertionError("second worker must not start")
 
         monkeypatch.setattr(worker, "build_parts", must_not_build)
         with single_instance("worker", env.data_dir):
             assert worker.main([]) == 0
+
+    def test_main_checks_the_gate_before_touching_the_model_server(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def must_not_build(*_args: object) -> WorkerParts:
+            raise AssertionError("the model server was used while on battery")
+
+        monkeypatch.setattr(worker, "load_settings", lambda: env.settings)
+        monkeypatch.setattr(worker, "configure_logging", lambda *_a, **_k: None)
+        monkeypatch.setattr(worker, "build_gate", lambda _s, _st: FakeGate(allowed=0))
+        monkeypatch.setattr(worker, "build_parts", must_not_build)
+        assert worker.main([]) == 0
+
+    def test_main_reports_an_unreachable_model_server(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def down(*_args: object) -> WorkerParts:
+            raise ProviderError("ollama unavailable")
+
+        monkeypatch.setattr(worker, "load_settings", lambda: env.settings)
+        monkeypatch.setattr(worker, "configure_logging", lambda *_a, **_k: None)
+        monkeypatch.setattr(worker, "build_gate", lambda _s, _st: FakeGate())
+        monkeypatch.setattr(worker, "build_parts", down)
+        assert worker.main([]) == worker.EXIT_PROVIDER
+
+    def test_a_half_built_worker_unloads_the_embedder(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        unloaded: list[int] = []
+
+        class Provider:
+            def unload_embedder(self) -> None:
+                unloaded.append(1)
+
+        def boom(*_args: object) -> None:
+            raise ProviderError("embed failed")
+
+        monkeypatch.setattr(worker.runtime, "build_scope", lambda _s: env.scope)
+        monkeypatch.setattr(worker.runtime, "build_provider", lambda _s: Provider())
+        monkeypatch.setattr(worker.runtime, "open_store", lambda *_a: env.store)
+        monkeypatch.setattr(worker.runtime, "build_extractors", lambda *_a: env.extractors)
+        monkeypatch.setattr(worker.runtime, "build_projects", lambda *_a: env.projects)
+        monkeypatch.setattr(worker.runtime, "load_prototypes", boom)
+        with pytest.raises(ProviderError):
+            worker.build_parts(env.settings, env.state, FakeGate())
+        assert unloaded == [1]
