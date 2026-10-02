@@ -404,6 +404,14 @@ class SearchSettings(_Section):
     vector_index_min_rows: int = Field(default=100_000, gt=0)  # flat search below, IVF_PQ above
 
 
+class AppSettings(_Section):
+    start_with_windows: bool = True  # register the watcher and tray app with Task Scheduler
+
+
+class UpdateSettings(_Section):
+    auto_check: bool = True  # look for a new release in the background (at start, then daily)
+
+
 class StorageSettings(_Section):
     data_dir: Path = Field(default_factory=default_data_dir)
 
@@ -437,6 +445,8 @@ class Settings(BaseSettings):
     privacy: PrivacySettings = Field(default_factory=PrivacySettings)
     cloud: CloudSettings = Field(default_factory=CloudSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
+    app: AppSettings = Field(default_factory=AppSettings)
+    updates: UpdateSettings = Field(default_factory=UpdateSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
 
     @classmethod

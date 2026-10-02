@@ -1,0 +1,326 @@
+import tomllib
+from collections.abc import Callable
+
+import pytest
+from PySide6.QtWidgets import QApplication
+from tests.core.app.test_models_panel import GPU, wait_for
+from tests.core.conftest import Chat, Env
+
+from vector_embed.app import main as app_main
+from vector_embed.app.models_controller import ModelsController
+from vector_embed.app.settings_controller import NO_UPDATES, SettingsController, app_version
+from vector_embed.app.settings_tabs import CloudTab, GeneralTab
+from vector_embed.app.settings_window import SettingsWindow
+from vector_embed.core.models.benchmark import BenchKind, BenchResult, record_result
+from vector_embed.core.settings import CloudProviderSettings, Settings, SettingsError
+from vector_embed.core.settings_io import set_setting
+from vector_embed.core.skills.base import SkillContext
+
+
+class FakeKeys:
+    def __init__(self) -> None:
+        self.keys: dict[str, str] = {}
+
+    def get(self, provider: str) -> str | None:
+        return self.keys.get(provider)
+
+    def set(self, provider: str, key: str) -> None:
+        self.keys[provider] = key
+
+    def delete(self, provider: str) -> None:
+        self.keys.pop(provider, None)
+
+
+@pytest.fixture
+def keys() -> FakeKeys:
+    return FakeKeys()
+
+
+@pytest.fixture
+def autostart() -> list[bool]:
+    return []
+
+
+@pytest.fixture
+def controller(env: Env, keys: FakeKeys, autostart: list[bool]) -> SettingsController:
+    return SettingsController(
+        env.data_dir / "settings.toml", env.state, keys, apply_autostart=autostart.append
+    )
+
+
+def saved(env: Env) -> dict[str, object]:
+    with (env.data_dir / "settings.toml").open("rb") as handle:
+        return tomllib.load(handle)
+
+
+# ------------------------------------------------------------------ controller
+def test_hotkey_is_validated_and_normalised(env: Env, controller: SettingsController) -> None:
+    assert controller.set_hotkey(" Ctrl + Alt + F9 ") == "ctrl+alt+f9"
+    assert saved(env)["search"] == {"hotkey": "ctrl+alt+f9"}
+    with pytest.raises(SettingsError, match="invalid hotkey"):
+        controller.set_hotkey("ctrl+banana")
+    assert controller.settings().search.hotkey == "ctrl+alt+f9"
+
+
+def test_roots_need_at_least_one_folder_and_dedupe(
+    env: Env, controller: SettingsController
+) -> None:
+    controller.set_roots(["D:\\a", "D:\\a", "D:\\b"])
+    assert controller.settings().scope.roots == ("D:\\a", "D:\\b")
+    with pytest.raises(SettingsError):
+        controller.set_roots([])
+
+
+def test_autostart_is_saved_and_applied(
+    controller: SettingsController, autostart: list[bool]
+) -> None:
+    controller.set_start_with_windows(False)
+    assert autostart == [False]
+    assert not controller.settings().app.start_with_windows
+
+
+def test_privacy_budget_and_updates_settings(env: Env, controller: SettingsController) -> None:
+    controller.set_redact_personal(True)
+    controller.set_mask_ids_locally(True)
+    controller.set_monthly_budget(12.5)
+    controller.set_auto_check(False)
+    settings = controller.settings()
+    assert settings.privacy.redact_personal
+    assert settings.privacy.mask_ids_locally
+    assert settings.cloud.monthly_budget_usd == 12.5
+    assert not settings.updates.auto_check
+    controller.set_monthly_budget(None)
+    assert controller.settings().cloud.monthly_budget_usd is None
+    with pytest.raises(SettingsError):
+        controller.set_monthly_budget(0)
+
+
+def test_key_statuses_never_expose_the_key(
+    env: Env, controller: SettingsController, keys: FakeKeys
+) -> None:
+    provider = CloudProviderSettings(base_url="https://x.test/v1", label="X Cloud")
+    set_setting(
+        env.data_dir / "settings.toml",
+        ["cloud", "providers", "x"],
+        provider.model_dump(mode="json"),
+    )
+    assert [(s.label, s.has_key) for s in controller.key_statuses()] == [("X Cloud", False)]
+    controller.set_key("x", "sk-secret")
+    assert [s.has_key for s in controller.key_statuses()] == [True]
+    assert "sk-secret" not in repr(controller.key_statuses())
+    controller.delete_key("x")
+    assert [s.has_key for s in controller.key_statuses()] == [False]
+
+
+def test_speed_tests_and_update_check(env: Env, controller: SettingsController) -> None:
+    assert controller.speed_tests() == []
+    result = BenchResult("m", BenchKind.CHAT, 20.0, 1.0)
+    record_result(env.state, result)
+    assert controller.speed_tests() == [result]
+    assert controller.check_now() == NO_UPDATES
+    assert app_version()
+
+
+# ------------------------------------------------------------------ window
+@pytest.fixture
+def models(
+    chat: Chat, skill_ctx: SkillContext, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> ModelsController:
+    monkeypatch.setattr("vector_embed.core.models.registry.probe_hardware", lambda: GPU)
+    chat.gateway._registry._probe = lambda: GPU
+    return ModelsController(lambda: skill_ctx, env.data_dir / "settings.toml")
+
+
+@pytest.fixture
+def window(
+    qapp: QApplication, controller: SettingsController, models: ModelsController
+) -> SettingsWindow:
+    folders: list[str] = []
+    win = SettingsWindow(
+        controller,
+        models,
+        general=GeneralTab(controller, choose_folder=lambda: folders.pop() if folders else None),
+        cloud=CloudTab(controller, ask_key=lambda provider: "sk-typed"),
+    )
+    win._folders = folders  # type: ignore[attr-defined]  # test hook for the folder chooser
+    return win
+
+
+def test_window_has_the_expected_tabs(window: SettingsWindow) -> None:
+    titles = [window.tabs.tabText(i) for i in range(window.tabs.count())]
+    assert titles == ["General", "Models & Health", "Cloud & Privacy", "Updates", "About"]
+
+
+def test_general_tab_applies_a_hotkey(
+    window: SettingsWindow, env: Env, controller: SettingsController
+) -> None:
+    seen: list[str] = []
+    window.hotkey_changed.connect(seen.append)
+    window.general.hotkey.setText("ctrl+alt+f9")
+    window.general.apply_hotkey.click()
+    assert seen == ["ctrl+alt+f9"]
+    assert controller.settings().search.hotkey == "ctrl+alt+f9"
+    assert "hotkey set to ctrl+alt+f9" in window.status.text()
+
+
+def test_general_tab_reports_a_bad_hotkey_without_saving(
+    window: SettingsWindow, controller: SettingsController
+) -> None:
+    seen: list[str] = []
+    window.hotkey_changed.connect(seen.append)
+    window.general.hotkey.setText("ctrl+banana")
+    window.general.apply_hotkey.click()
+    assert seen == []
+    assert "invalid hotkey" in window.status.text()
+    assert controller.settings().search.hotkey == "ctrl+alt+space"
+
+
+def test_general_tab_adds_and_removes_folders(
+    window: SettingsWindow, controller: SettingsController
+) -> None:
+    window._folders.append("D:\\Work")  # type: ignore[attr-defined]
+    window.general.add_folder.click()
+    assert "D:\\Work" in controller.settings().scope.roots
+    assert "D:\\Work" in [
+        window.general.folders.item(i).text() for i in range(window.general.folders.count())
+    ]
+    window.general.folders.setCurrentRow(window.general.folders.count() - 1)
+    window.general.remove_folder.click()
+    assert "D:\\Work" not in controller.settings().scope.roots
+
+
+def test_removing_the_last_folder_is_refused(
+    window: SettingsWindow, controller: SettingsController
+) -> None:
+    controller.set_roots(["D:\\only"])
+    window.general.refresh()
+    window.general.folders.setCurrentRow(0)
+    window.general.remove_folder.click()
+    assert controller.settings().scope.roots == ("D:\\only",)
+    assert "at least one folder" in window.status.text()
+
+
+def test_autostart_checkbox_saves_and_applies(
+    window: SettingsWindow, controller: SettingsController, autostart: list[bool]
+) -> None:
+    window.general.start_with_windows.click()
+    assert autostart == [False]
+    assert not controller.settings().app.start_with_windows
+
+
+def test_cloud_tab_toggles_and_budget(
+    window: SettingsWindow, controller: SettingsController
+) -> None:
+    cloud = window.cloud
+    cloud.redact.click()
+    cloud.mask_local.click()
+    cloud.limit.click()
+    cloud.budget.setValue(25.0)
+    cloud.budget.editingFinished.emit()
+    settings = controller.settings()
+    assert settings.privacy.redact_personal
+    assert settings.privacy.mask_ids_locally
+    assert settings.cloud.monthly_budget_usd == 25.0
+    cloud.limit.click()
+    assert controller.settings().cloud.monthly_budget_usd is None
+
+
+def test_cloud_tab_stores_a_key_without_showing_it(
+    env: Env, window: SettingsWindow, controller: SettingsController, keys: FakeKeys
+) -> None:
+    provider = CloudProviderSettings(base_url="https://x.test/v1", label="X Cloud")
+    set_setting(
+        env.data_dir / "settings.toml",
+        ["cloud", "providers", "x"],
+        provider.model_dump(mode="json"),
+    )
+    window.cloud.refresh()
+    assert window.cloud.key_labels[0].text() == "X Cloud: no key"
+    window.cloud.key_buttons[0].click()
+    assert keys.keys == {"x": "sk-typed"}
+    assert window.cloud.key_labels[0].text() == "X Cloud: key stored"
+    assert "sk-typed" not in window.cloud.key_labels[0].text()
+
+
+def test_updates_tab(window: SettingsWindow, controller: SettingsController) -> None:
+    window.updates.check_now.click()
+    assert window.updates.result.text() == NO_UPDATES
+    window.updates.auto_check.click()
+    assert not controller.settings().updates.auto_check
+
+
+def test_about_tab_shows_the_data_folder(window: SettingsWindow, env: Env) -> None:
+    assert window.about.data_folder.text() == str(env.data_dir)
+    assert window.about.version.text().startswith("Vector Embed ")
+
+
+def test_models_tab_lists_speed_tests(qapp: QApplication, window: SettingsWindow, env: Env) -> None:
+    window.models.refresh()
+    assert "Not measured yet" in window.models.speed.text()
+    record_result(env.state, BenchResult("qwen3.5:9b", BenchKind.CHAT, 3.0, 1.0))
+    record_result(env.state, BenchResult("qwen3-embedding:0.6b", BenchKind.EMBED, 90.0, 0.5))
+    window.models.refresh()
+    text = window.models.speed.text()
+    assert "qwen3.5:9b: 3.0 tok/s  (slow on this machine)" in text
+    assert "qwen3-embedding:0.6b: 90.0 texts/s" in text
+    wait_for(qapp, lambda: window.models.panel.models.rowCount() > 0)
+    window.models.panel.deactivate()
+
+
+def test_open_refreshes_and_shows(
+    window: SettingsWindow, controller: SettingsController, qapp: QApplication
+) -> None:
+    controller.set_hotkey("ctrl+alt+f8")
+    window.open()
+    assert window.isVisible()
+    assert window.general.hotkey.text() == "ctrl+alt+f8"
+    window.close()
+
+
+# ------------------------------------------------------------------ app wiring
+def test_build_settings_window_forwards_hotkey_changes(
+    qapp: QApplication,
+    env: Env,
+    skill_ctx: SkillContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app_main, "KeyringStore", FakeKeys)
+    seen: list[str] = []
+    window = app_main.build_settings_window(env.settings, env.state, lambda: skill_ctx, seen.append)
+    window.hotkey_changed.emit("ctrl+alt+f7")
+    assert seen == ["ctrl+alt+f7"]
+
+
+@pytest.mark.parametrize(("registers", "suffix"), [(True, ""), (False, " - hotkey unavailable")])
+def test_hotkey_applier_reregisters_and_updates_the_tooltip(registers: bool, suffix: str) -> None:
+    calls: list[str] = []
+
+    class FakeHotkey:
+        def unregister(self) -> None:
+            calls.append("unregister")
+
+        def register(self, spec: str) -> bool:
+            calls.append(spec)
+            if spec == "bad":
+                raise ValueError(spec)
+            return registers
+
+    class FakeTray:
+        tip = ""
+
+        def setToolTip(self, text: str) -> None:  # noqa: N802
+            self.tip = text
+
+    tray = FakeTray()
+    apply: Callable[[str], None] = app_main.hotkey_applier(FakeHotkey(), tray)  # type: ignore[arg-type]
+    apply("ctrl+alt+f6")
+    assert calls == ["unregister", "ctrl+alt+f6"]
+    assert tray.tip == f"Vector Embed (ctrl+alt+f6){suffix}"
+    apply("bad")
+    assert tray.tip.endswith(" - hotkey unavailable")
+
+
+def test_settings_defaults_include_the_new_sections() -> None:
+    settings = Settings()
+    assert settings.app.start_with_windows
+    assert settings.updates.auto_check
