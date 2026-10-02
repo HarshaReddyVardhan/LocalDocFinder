@@ -7,6 +7,7 @@ the worker when the machine is on AC power, settled and idle.
 
 import argparse
 import logging
+import os
 import queue
 import signal
 import subprocess
@@ -19,6 +20,7 @@ from typing import Protocol
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
+from watchdog.observers.api import ObservedWatch
 
 from vector_embed.core.idle import IdleGate
 from vector_embed.core.logging_setup import configure_logging
@@ -40,6 +42,8 @@ _NO_WINDOW = 0x08000000
 _FAILURE_BACKOFF_SECONDS = 600
 _WORKER_STOP_GRACE_SECONDS = 15.0
 _RECONCILE_BACKOFF_SECONDS = 300
+_MAX_EVENTS_PER_SECOND = 400  # beyond this, events are dropped and a reconcile picks them up
+_WATCH_REFRESH_TICKS = 6  # re-list the top-level folders about once a minute
 _TREE_QUEUE_SIZE = 64  # directories waiting to be walked
 _TREE_IDLE_SECONDS = 5.0  # the tree-walking thread exits after this long with nothing to do
 _NO_PROGRESS_BACKOFF_SECONDS = 120  # a worker that finishes without shrinking the queue
@@ -62,12 +66,35 @@ class ChangeHandler(FileSystemEventHandler):
         self.scope = scope
         self._blocked = settings.scope.blocked_dirs
         self._debounce = settings.idle.file_debounce_seconds
+        self._window_start = time.monotonic()
+        self._window_events = 0
+        self._dropped = 0
         self._trees: queue.Queue[str] = queue.Queue(maxsize=_TREE_QUEUE_SIZE)
         self._tree_worker: threading.Thread | None = None
         self._tree_lock = threading.Lock()
 
+    def _admit(self) -> bool:
+        """Rate limit: a storm of events (an unpacked archive, a build) is dropped, not queued.
+
+        Dropped events are not lost for good: ``take_dropped`` tells the watcher to reconcile,
+        which finds whatever changed by comparing the disk with the manifest.
+        """
+        now = time.monotonic()
+        if now - self._window_start >= 1.0:
+            self._window_start, self._window_events = now, 0
+        self._window_events += 1
+        if self._window_events > _MAX_EVENTS_PER_SECOND:
+            self._dropped += 1
+            return False
+        return True
+
+    def take_dropped(self) -> int:
+        """How many events were dropped since the last call (and reset the count)."""
+        dropped, self._dropped = self._dropped, 0
+        return dropped
+
     def _upsert(self, path: str) -> None:
-        if quick_reject(path, self._blocked):
+        if quick_reject(path, self._blocked) or not self._admit():
             return
         if self.scope.is_valid_file(path, is_ignored=self.projects.is_ignored):
             # Re-queueing resets the debounce timer, so a file saved repeatedly is processed once,
@@ -225,15 +252,48 @@ class Watcher:
         self.last_reason = ""
         self.unplugged_at: float | None = None
         self._progress_at_start: str | None = None
+        self._watches: dict[str, ObservedWatch] = {}
+        self._ticks = 0
+        self.handler = ChangeHandler(state, projects, scope, settings)
         self._stop = threading.Event()
 
     # ------------------------------------------------------------------ lifecycle
-    def start_observers(self) -> None:
-        handler = ChangeHandler(self.state, self.projects, self.scope, self.settings)
+    def watch_targets(self) -> dict[str, bool]:
+        """Folders to watch -> recursive.
+
+        A root is watched for its own files, and each top-level folder the scope would enter is
+        watched recursively. Folders it would not enter (AppData, hidden folders, ``node_modules``)
+        are never watched, so their constant churn costs nothing.
+        """
+        targets: dict[str, bool] = {}
         for root in self.roots:
-            self.observer.schedule(handler, root, recursive=True)
-            logger.info("watching %s", root)
+            try:
+                children = [e.path for e in os.scandir(root) if e.is_dir(follow_symlinks=False)]
+            except OSError:
+                targets[root] = True  # cannot list it: fall back to watching it whole
+                continue
+            targets[root] = False
+            for child in children:
+                if self.scope.should_descend(child, self.projects.is_ignored):
+                    targets[child] = True
+        return targets
+
+    def start_observers(self) -> None:
+        self.refresh_watches()
         self.observer.start()
+
+    def refresh_watches(self) -> None:
+        """Start watching folders that appeared and stop watching ones that went away."""
+        wanted = self.watch_targets()
+        for path in [p for p in self._watches if p not in wanted]:
+            self.observer.unschedule(self._watches.pop(path))
+            logger.info("no longer watching %s", path)
+        for path, recursive in wanted.items():
+            if path not in self._watches:
+                self._watches[path] = self.observer.schedule(
+                    self.handler, path, recursive=recursive
+                )
+                logger.info("watching %s%s", path, " (recursive)" if recursive else "")
 
     def stop(self) -> None:
         self._stop.set()
@@ -302,11 +362,21 @@ class Watcher:
             self.unplugged_at = None
         return True
 
+    def _housekeeping(self) -> None:
+        """New top-level folders get watched; a storm of dropped events schedules a reconcile."""
+        self._ticks += 1
+        if self.handler.take_dropped():
+            logger.warning("watcher: events were dropped under load; scheduling a reconcile")
+            self.state.set_meta("last_reconcile", "0")
+        if self._ticks % _WATCH_REFRESH_TICKS == 0:
+            self.refresh_watches()
+
     def tick(self) -> None:
         if stop_requested(self.settings.storage.data_dir):
             logger.info("stop requested")
             self.stop()
             return
+        self._housekeeping()
         self.gate.update()
         if self._supervise():
             return

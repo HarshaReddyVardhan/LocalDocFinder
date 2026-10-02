@@ -127,7 +127,7 @@ class TestChangeHandler:
         deadline = time.time() + 10
         while len(queued(env)) < 20 and time.time() < deadline:
             time.sleep(0.05)
-        assert len(queued(env)) == 20
+        assert env.state.queue_size() == 20
 
     def test_a_full_backlog_schedules_an_early_reconcile(
         self, handler: ChangeHandler, env: Env, monkeypatch: pytest.MonkeyPatch
@@ -439,6 +439,107 @@ class TestScheduling:
         assert not w.reconcile_due()
         env.state.set_meta("last_reconcile", "0")
         assert w.reconcile_due()
+
+
+class TestWatchScope:
+    @pytest.fixture
+    def tree(self, env: Env) -> Path:
+        for rel in (
+            "docs/a.md",
+            "src/b.py",
+            "node_modules/pkg/c.js",
+            ".hidden/d.txt",
+            "appdata/e.txt",
+        ):
+            write(env, rel)
+        return env.root
+
+    def test_only_enterable_top_level_folders_are_watched_recursively(
+        self, parts: tuple[Watcher, FakeGate, FakeLauncher, list[int]], tree: Path
+    ) -> None:
+        w, *_ = parts
+        targets = w.watch_targets()
+        assert targets[str(tree)] is False  # the root itself: its own files only
+        recursive = {Path(p).name for p, deep in targets.items() if deep}
+        assert recursive == {"docs", "src"}
+        assert not recursive & {"node_modules", "dist", ".hidden"}  # blocked or hidden: unwatched
+
+    def test_a_folder_that_cannot_be_listed_is_watched_whole(
+        self,
+        parts: tuple[Watcher, FakeGate, FakeLauncher, list[int]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        w, *_ = parts
+
+        def refuse(_path: object) -> None:
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(watcher.os, "scandir", refuse)
+        assert w.watch_targets() == {str(w.roots[0]): True}
+
+    def test_new_folders_are_picked_up_and_vanished_ones_dropped(
+        self, parts: tuple[Watcher, FakeGate, FakeLauncher, list[int]], tree: Path, env: Env
+    ) -> None:
+        w, *_ = parts
+        scheduled: list[tuple[str, bool]] = []
+        unscheduled: list[str] = []
+
+        class FakeObserver:
+            def schedule(self, _handler: object, path: str, recursive: bool) -> str:
+                scheduled.append((path, recursive))
+                return path
+
+            def unschedule(self, watch: str) -> None:
+                unscheduled.append(watch)
+
+        w.observer = FakeObserver()  # type: ignore[assignment]
+        w.refresh_watches()
+        first = {Path(p).name for p, _ in scheduled}
+        assert {"docs", "src"} <= first
+        scheduled.clear()
+        write(env, "newproject/x.py")  # a top-level folder appears later
+        (env.root / "docs" / "a.md").unlink()
+        (env.root / "docs").rmdir()  # and another one is removed
+        w.refresh_watches()
+        assert [Path(p).name for p, _ in scheduled] == ["newproject"]
+        assert [Path(p).name for p in unscheduled] == ["docs"]
+
+    def test_the_refresh_runs_about_once_a_minute(
+        self,
+        parts: tuple[Watcher, FakeGate, FakeLauncher, list[int]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        w, *_ = parts
+        refreshes: list[int] = []
+        monkeypatch.setattr(w, "refresh_watches", lambda: refreshes.append(1))
+        for _ in range(12):
+            w.tick()
+        assert len(refreshes) == 2
+
+
+class TestEventStorms:
+    def test_a_storm_is_dropped_and_asks_for_a_reconcile(
+        self, parts: tuple[Watcher, FakeGate, FakeLauncher, list[int]], env: Env
+    ) -> None:
+        w, *_ = parts
+        handler = w.handler
+        files = [write(env, f"storm/f{i}.py") for i in range(watcher._MAX_EVENTS_PER_SECOND + 50)]
+        for path in files:
+            handler.on_modified(FileModifiedEvent(path))
+        assert env.state.queue_size() == watcher._MAX_EVENTS_PER_SECOND  # the rest were not queued
+        env.state.set_meta("last_reconcile", "999")
+        w.tick()
+        assert env.state.get_meta("last_reconcile") == "0"  # reconcile finds the dropped ones
+        assert handler.take_dropped() == 0  # reported once
+
+    def test_normal_traffic_is_never_dropped(
+        self, parts: tuple[Watcher, FakeGate, FakeLauncher, list[int]], env: Env
+    ) -> None:
+        w, *_ = parts
+        for i in range(20):
+            w.handler.on_modified(FileModifiedEvent(write(env, f"calm/f{i}.py")))
+        assert w.handler.take_dropped() == 0
+        assert len(queued(env)) == 20
 
 
 class TestLifecycle:
