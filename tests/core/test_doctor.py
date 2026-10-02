@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from tests.core.conftest import Env
 
 from vector_embed.core import doctor
@@ -105,3 +106,16 @@ def test_setup_not_run_is_reported(env: Env) -> None:
     checks = names(doctor.run_doctor(env.settings, registry([]), GPU, Ocr(), state=env.state))
     assert not checks["setup"].ok
     assert "ve setup" in checks["setup"].detail
+
+
+def test_extractors_check_lists_the_builtin_formats() -> None:
+    check = doctor.extractors_check()
+    assert check.ok
+    assert {"pdf", "docx", "markdown"} <= set(check.detail.split(", "))
+
+
+def test_extractors_check_fails_when_a_format_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor, "REQUIRED_EXTRACTORS", frozenset({"nonexistent"}))
+    check = doctor.extractors_check()
+    assert not check.ok
+    assert "nonexistent" in check.detail

@@ -6,14 +6,16 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from vector_embed.core.extractors.base import OcrEngine
+from vector_embed.core.extractors.base import BUILTIN_PACKAGE, EXTRACTORS, OcrEngine
 from vector_embed.core.models.hardware import Hardware
 from vector_embed.core.models.registry import ModelRegistry
+from vector_embed.core.registry import discover_modules
 from vector_embed.core.settings import Settings
 from vector_embed.core.setup.flow import SETUP_COMPLETED_KEY
 from vector_embed.core.store.sqlite import StateDb
 
 MIN_PYTHON = (3, 11)
+REQUIRED_EXTRACTORS = frozenset({"pdf", "docx", "pptx", "markdown", "text"})
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,7 @@ def run_doctor(
     which: Callable[[str], str | None] = shutil.which,
 ) -> list[Check]:
     checks = [_python_check(), _data_dir_check(settings.storage.data_dir)]
+    checks.append(extractors_check())
     checks.append(_ollama_check(registry))
     checks.append(_embed_model_check(settings, registry))
     resolutions = registry.resolve_all(hardware)
@@ -84,6 +87,16 @@ def run_doctor(
 
 def format_checks(checks: list[Check]) -> str:
     return "\n".join(f"[{'ok' if c.ok else 'FAIL'}] {c.name}: {c.detail}" for c in checks)
+
+
+def extractors_check() -> Check:
+    """Fails when the extractor modules were not packaged (a frozen build can lose them)."""
+    discover_modules(BUILTIN_PACKAGE)
+    found = sorted(cls.name for cls in EXTRACTORS)
+    missing = sorted(REQUIRED_EXTRACTORS - set(found))
+    if missing:
+        return Check("extractors", False, f"missing: {', '.join(missing)}")
+    return Check("extractors", True, ", ".join(found))
 
 
 def _setup_check(state: StateDb) -> Check:

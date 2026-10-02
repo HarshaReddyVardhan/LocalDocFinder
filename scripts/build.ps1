@@ -46,10 +46,18 @@ Run $python @("-m", "PyInstaller", "packaging\vector_embed.spec", "--noconfirm",
 
 Step "3/5 Smoke test: ve.exe doctor"
 # doctor's exit code reflects this machine's setup (Ollama, models); we only need it to run.
+# Windows PowerShell 5.1 turns native stderr into terminating errors under "Stop"; relax it here.
+$previous = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 $smoke = & "dist\VectorEmbed\ve.exe" doctor 2>&1 | Out-String
+$ErrorActionPreference = $previous
 Write-Host $smoke
 if ($smoke -notmatch "\[ok\] python" -or $smoke -match "Traceback") {
     throw "The packaged ve.exe doctor did not run cleanly."
+}
+# Proves the extractor modules were bundled (they are found by scanning the package at run time).
+if ($smoke -notmatch "\[ok\] extractors: .*pdf.*") {
+    throw "The packaged build is missing document extractors."
 }
 
 Step "4/5 Velopack pack"

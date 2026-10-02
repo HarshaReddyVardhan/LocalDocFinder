@@ -94,14 +94,14 @@ class Extractor(ABC):
 EXTRACTORS: Registry[type[Extractor]] = Registry("extractor")
 register_extractor = EXTRACTORS.register
 
-_BUILTIN_PACKAGE = "vector_embed.core.extractors"
+BUILTIN_PACKAGE = "vector_embed.core.extractors"
 
 
 class ExtractorSet:
     """Instantiated extractors for one context, ordered by priority."""
 
     def __init__(self, ctx: ExtractContext) -> None:
-        discover_modules(_BUILTIN_PACKAGE)
+        discover_modules(BUILTIN_PACKAGE)
         classes = sorted(EXTRACTORS, key=lambda cls: cls.priority)
         self.ctx = ctx
         self._extractors = [cls(ctx) for cls in classes]
