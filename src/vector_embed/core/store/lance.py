@@ -206,19 +206,6 @@ class LanceStore:
         return int(table.count_rows()) if table is not None else 0
 
     # ------------------------------------------------------------------ chunks
-    def existing_hashes(self, path: str) -> set[str]:
-        table = self.chunks
-        if table is None:
-            return set()
-        rows = (
-            table.search()
-            .where(f"path = {sql_quote(path)}")
-            .select(["chunk_hash"])
-            .limit(100_000)
-            .to_list()
-        )
-        return {r["chunk_hash"] for r in rows}
-
     def vectors_for_hashes(self, hashes: Iterable[str]) -> dict[str, np.ndarray]:
         """Embeddings already stored for identical chunk text (embedded once, reused anywhere)."""
         table = self.chunks
@@ -257,14 +244,6 @@ class LanceStore:
             for row in self.scan(DOCUMENTS, ["path", "doc_type"], f"path IN ({listed})", len(part)):
                 found[row["path"]] = row["doc_type"]
         return found
-
-    def delete_prefix(self, prefix: str) -> list[str]:
-        """Remove every indexed path under a directory; returns the removed paths."""
-        paths = self._state.manifest_under(prefix)
-        self.delete_paths(paths)
-        for path in paths:
-            self._state.manifest_delete(path)
-        return paths
 
     def replace_rows(self, paths: Iterable[str], rows: list[Row]) -> None:
         """Swap all chunk rows of ``paths`` for ``rows`` (delete, then a single add)."""

@@ -74,8 +74,7 @@ def test_replace_and_count(store: LanceStore) -> None:
     assert store.count() == 2
     store.replace_rows(["a.py"], [chunk("a.py", "three", [0, 0, 1, 0])])
     assert store.count() == 1
-    assert store.existing_hashes("a.py") == {"h-three"}
-    assert store.existing_hashes("zzz") == set()
+    assert {r["chunk_hash"] for r in store.scan(lc.CHUNKS, ["chunk_hash"])} == {"h-three"}
 
 
 def test_vectors_are_reused_by_hash(store: LanceStore) -> None:
@@ -137,22 +136,6 @@ def test_documents_roundtrip_and_delete_paths(store: LanceStore) -> None:
     assert store.count(lc.DOCUMENTS) == 0
 
 
-def test_delete_prefix_removes_rows_and_manifest(
-    store: LanceStore, state: StateDb, tmp_path: Path
-) -> None:
-    inside = str(tmp_path / "proj" / "a.py")
-    outside = str(tmp_path / "other" / "b.py")
-    state.manifest_set(inside, 1, 1, "h")
-    state.manifest_set(outside, 1, 1, "h")
-    store.replace_rows(
-        [inside, outside], [chunk(inside, "a", [1, 0, 0, 0]), chunk(outside, "b", [0, 1, 0, 0])]
-    )
-    assert store.delete_prefix(str(tmp_path / "proj")) == [inside]
-    assert store.count() == 1
-    assert state.manifest_get(inside) is None
-    assert state.manifest_get(outside) is not None
-
-
 def test_model_change_wipes_everything(tmp_path: Path, state: StateDb) -> None:
     first = LanceStore(tmp_path, state, "m1", dim=DIM)
     first.replace_rows(["a.py"], [chunk("a.py", "x", [1, 0, 0, 0])])
@@ -175,7 +158,6 @@ def test_read_only_open_without_index_returns_empty(tmp_path: Path, state: State
     ro = LanceStore(tmp_path, state, "m1", dim=None)
     assert ro.chunks is None
     assert ro.count() == 0
-    assert ro.existing_hashes("a") == set()
     assert ro.vectors_for_hashes(["x"]) == {}
     assert ro.scan(lc.CHUNKS, ["path"]) == []
     assert ro.vector_search(lc.CHUNKS, np.zeros(DIM, np.float32), ["path"]) == []

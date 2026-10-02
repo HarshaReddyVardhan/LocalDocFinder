@@ -42,12 +42,13 @@ def reconcile(
             logger.info("reconcile interrupted")
             return ReconcileResult(interrupted=True)
         path = str(found)
-        seen.add(path)
+        key = os.path.normcase(path)
+        seen.add(key)
         try:
             info = found.stat()
         except OSError:
             continue
-        if manifest.get(path) != (info.st_mtime_ns, info.st_size):
+        if manifest.get(key) != (info.st_mtime_ns, info.st_size):
             upserts.append((path, "upsert", info.st_mtime))
     queued = state.enqueue_many(upserts)
 
@@ -58,8 +59,8 @@ def reconcile(
     gone = [
         (path, "delete", _DELETE_PRIORITY)
         for path in manifest
-        if path not in seen
-        and os.path.normcase(path).startswith(prefixes)
+        if path not in seen  # both sides are lower-cased keys
+        and path.startswith(prefixes)
         and (
             not Path(path).exists() or not scope.is_valid_file(path, is_ignored=projects.is_ignored)
         )

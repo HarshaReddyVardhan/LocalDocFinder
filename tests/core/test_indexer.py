@@ -239,6 +239,24 @@ class TestReconcile:
         result = reconcile(env.state, env.projects, env.scope)
         assert (result.queued, result.deleted) == (0, 0)
 
+    def test_a_scan_that_spells_the_path_differently_changes_nothing(self, env: "Env") -> None:
+        upsert(env, write(env, "Docs/Report.txt", "report " * 10))
+        shouting = str(env.root).upper()  # Windows paths ignore case: the same files
+        result = reconcile(env.state, env.projects, env.scope, roots=[shouting])
+        assert (result.queued, result.deleted) == (0, 0)
+
+    def test_a_case_only_rename_does_not_duplicate_search_rows(self, env: "Env") -> None:
+        original = write(env, "Notes/Plan.txt", "plan words " * 10)
+        upsert(env, original)
+        before = env.store.count(CHUNKS)
+        Path(original).write_text("plan words changed " * 10, encoding="utf-8")
+        respelled = original.upper()  # a later event reports the file with another spelling
+        env.state.enqueue(respelled, delay=0)
+        env.indexer.process(env.state.claim(10, ignore_debounce=True))
+        paths = {r["path"] for r in env.store.scan(CHUNKS, ["path"], limit=500)}
+        assert len(paths) == 1  # one spelling in the index, not two copies of the file
+        assert env.store.count(CHUNKS) >= before
+
     def test_stop_check_interrupts(self, env: "Env") -> None:
         write(env, "a.txt", "alpha " * 10)
         result = reconcile(env.state, env.projects, env.scope, stop_check=lambda: True)

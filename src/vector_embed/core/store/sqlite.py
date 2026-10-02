@@ -10,7 +10,8 @@ import os
 import sqlite3
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -19,6 +20,8 @@ from typing import Any, NamedTuple, Self
 logger = logging.getLogger(__name__)
 
 _MAX_ATTEMPTS = 3
+_OPEN_ATTEMPTS = 8  # opening a database that another process is creating or upgrading
+_OPEN_RETRY_SECONDS = 0.05
 PROGRESS_KEY = "last_queue_progress"  # meta key stamped whenever queue items are finished
 FAILED_HASH = "failed"  # manifest hash of a file given up on (never equals a real digest)
 _FAR_FUTURE = 1e18
@@ -57,8 +60,51 @@ CREATE TABLE usage(
 """
 
 Migration = Callable[[sqlite3.Connection], None]
+STALE_PATHS_KEY = "stale_paths"  # case-variant duplicates whose search rows must be removed
+
+
+def _migrate_case_insensitive_paths(sql: sqlite3.Connection) -> None:
+    """Windows paths ignore case: key the manifest and queue that way, and add the claim index.
+
+    Rows that differ only by case collapse into one (the newest wins). The dropped spellings are
+    remembered so the worker can remove their search rows, which would otherwise be duplicates.
+    """
+    sql.execute(
+        "CREATE TABLE manifest_new(path TEXT COLLATE NOCASE PRIMARY KEY, mtime_ns INTEGER NOT NULL,"
+        " size INTEGER NOT NULL, content_hash TEXT NOT NULL, indexed_at REAL NOT NULL)"
+    )
+    sql.execute(
+        "INSERT OR REPLACE INTO manifest_new SELECT path,mtime_ns,size,content_hash,indexed_at "
+        "FROM manifest ORDER BY indexed_at"
+    )
+    dropped = [
+        row[0]
+        for row in sql.execute(
+            "SELECT m.path FROM manifest m "
+            "LEFT JOIN manifest_new n ON n.path = m.path COLLATE BINARY WHERE n.path IS NULL"
+        )
+    ]
+    sql.execute("DROP TABLE manifest")
+    sql.execute("ALTER TABLE manifest_new RENAME TO manifest")
+    sql.execute(
+        "CREATE TABLE queue_new(path TEXT COLLATE NOCASE PRIMARY KEY, op TEXT NOT NULL,"
+        " priority REAL NOT NULL DEFAULT 0, not_before REAL NOT NULL DEFAULT 0,"
+        " seq INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0)"
+    )
+    sql.execute("INSERT OR REPLACE INTO queue_new SELECT * FROM queue ORDER BY seq")
+    sql.execute("DROP TABLE queue")
+    sql.execute("ALTER TABLE queue_new RENAME TO queue")
+    sql.execute("CREATE INDEX queue_claim ON queue(attempts, not_before, priority DESC, seq)")
+    if dropped:
+        sql.execute(
+            "INSERT INTO meta(key,value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (STALE_PATHS_KEY, json.dumps(dropped)),
+        )
+
+
 # Index i upgrades schema version i+1 -> i+2; version 1 is created by _SCHEMA_V1.
-MIGRATIONS: tuple[Migration, ...] = ()
+MIGRATIONS: tuple[Migration, ...] = (_migrate_case_insensitive_paths,)
 SCHEMA_VERSION = 1 + len(MIGRATIONS)
 
 
@@ -115,29 +161,56 @@ class StateDb:
             check_same_thread=False,
             isolation_level=None,
         )
-        self._sql.execute("PRAGMA journal_mode=WAL")
-        self._sql.execute("PRAGMA synchronous=NORMAL")
-        self._sql.execute("PRAGMA foreign_keys=ON")
         try:
-            self._upgrade()
+            self._open_with_retry()
         except BaseException:
             self._sql.close()
             raise
 
-    def _upgrade(self) -> None:
+    def _open_with_retry(self) -> None:
+        """Switch to WAL and upgrade the schema. Several processes may open a fresh database at
+        the same moment; SQLite then answers "locked" at once for some steps (the busy timeout
+        does not apply), so retry briefly."""
+        for attempt in range(_OPEN_ATTEMPTS):
+            try:
+                self._sql.execute("PRAGMA journal_mode=WAL")
+                self._sql.execute("PRAGMA synchronous=NORMAL")
+                self._sql.execute("PRAGMA foreign_keys=ON")
+                self._upgrade()
+                return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc) or attempt == _OPEN_ATTEMPTS - 1:
+                    raise
+                time.sleep(_OPEN_RETRY_SECONDS * (attempt + 1))
+
+    @contextmanager
+    def _tx(self) -> Iterator[sqlite3.Connection]:
+        """One write transaction: ``BEGIN IMMEDIATE`` (take the write lock now, so concurrent
+        processes queue up instead of failing half-way), commit on success, roll back on error."""
         with self._lock:
-            version = int(self._sql.execute("PRAGMA user_version").fetchone()[0])
+            self._sql.execute("BEGIN IMMEDIATE")
+            try:
+                yield self._sql
+            except BaseException:
+                self._sql.execute("ROLLBACK")
+                raise
+            self._sql.execute("COMMIT")
+
+    def _upgrade(self) -> None:
+        # The version is read *inside* the write lock: when the watcher, the worker and the app
+        # all open a fresh database at once, exactly one of them creates and upgrades it.
+        with self._tx() as sql:
+            version = int(sql.execute("PRAGMA user_version").fetchone()[0])
             if version > SCHEMA_VERSION:
                 raise StateError(f"state schema {version} is newer than supported {SCHEMA_VERSION}")
             if version == 0:
-                self._sql.executescript("BEGIN;" + _SCHEMA_V1 + "COMMIT;")
+                for statement in _SCHEMA_V1.split(";"):
+                    if statement.strip():
+                        sql.execute(statement)
                 version = 1
             for target in range(version + 1, SCHEMA_VERSION + 1):
-                self._sql.execute("BEGIN")
-                MIGRATIONS[target - 2](self._sql)
-                self._sql.execute(f"PRAGMA user_version={target}")
-                self._sql.execute("COMMIT")
-            self._sql.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                MIGRATIONS[target - 2](sql)
+            sql.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     # ------------------------------------------------------------------ lifecycle
     def close(self) -> None:
@@ -186,7 +259,26 @@ class StateDb:
         return ManifestEntry(*row) if row else None
 
     def manifest_all(self) -> dict[str, tuple[int, int]]:
-        return {p: (m, s) for p, m, s in self._all("SELECT path,mtime_ns,size FROM manifest")}
+        """Every indexed path (keyed in lower case, as Windows compares paths) -> (mtime, size)."""
+        rows = self._all("SELECT path,mtime_ns,size FROM manifest")
+        return {os.path.normcase(p): (m, s) for p, m, s in rows}
+
+    def canonical_path(self, path: str) -> str:
+        """The spelling the index already uses for ``path`` (``path`` itself if it is new).
+
+        Search rows are keyed by the exact string, so one file must always use one spelling.
+        """
+        row = self._one("SELECT path FROM manifest WHERE path=?", (path,))
+        return str(row[0]) if row else path
+
+    def take_stale_paths(self) -> list[str]:
+        """Spellings dropped by the case-insensitive migration, once; the caller deletes them."""
+        raw = self.get_meta(STALE_PATHS_KEY)
+        if raw is None:
+            return []
+        self._run("DELETE FROM meta WHERE key=?", (STALE_PATHS_KEY,))
+        paths: list[str] = json.loads(raw)
+        return paths
 
     def manifest_set(self, path: str, mtime_ns: int, size: int, content_hash: str) -> None:
         self._run(
@@ -231,16 +323,10 @@ class StateDb:
         """Queue ``(path, op, priority)`` triples in one transaction; returns how many."""
         count = 0
         now = self._clock()
-        with self._lock:
-            self._sql.execute("BEGIN")
-            try:
-                for path, op, priority in items:
-                    self._sql.execute(self._UPSERT_QUEUE, (path, op, priority, now, time.time_ns()))
-                    count += 1
-                self._sql.execute("COMMIT")
-            except BaseException:
-                self._sql.execute("ROLLBACK")
-                raise
+        with self._tx() as sql:
+            for path, op, priority in items:
+                sql.execute(self._UPSERT_QUEUE, (path, op, priority, now, time.time_ns()))
+                count += 1
         return count
 
     def queue_size(self, due_only: bool = False) -> int:
@@ -266,11 +352,9 @@ class StateDb:
     def done(self, items: Iterable[tuple[str, int]]) -> None:
         """Remove processed rows, unless a path was re-queued (its ``seq`` changed) meanwhile."""
         finished = list(items)
-        with self._lock:
-            self._sql.execute("BEGIN")
+        with self._tx() as sql:
             for path, seq in finished:
-                self._sql.execute("DELETE FROM queue WHERE path=? AND seq=?", (path, seq))
-            self._sql.execute("COMMIT")
+                sql.execute("DELETE FROM queue WHERE path=? AND seq=?", (path, seq))
         if finished:  # lets the watcher tell a worker that worked from one that only exited
             self.set_meta(PROGRESS_KEY, str(time.time_ns()))
 
@@ -374,12 +458,11 @@ class StateDb:
         ``context_length`` and ``capabilities`` (list of strings).
         """
         now = self._clock()
-        with self._lock:
-            self._sql.execute("BEGIN")
-            self._sql.execute("DELETE FROM models WHERE provider=?", (provider,))
-            self._sql.execute("DELETE FROM model_capabilities WHERE provider=?", (provider,))
+        with self._tx() as sql:
+            sql.execute("DELETE FROM models WHERE provider=?", (provider,))
+            sql.execute("DELETE FROM model_capabilities WHERE provider=?", (provider,))
             for item in models:
-                self._sql.execute(
+                sql.execute(
                     "INSERT INTO models VALUES(?,?,?,?,?,?,?)",
                     (
                         item["name"],
@@ -392,11 +475,10 @@ class StateDb:
                     ),
                 )
                 for capability in item.get("capabilities", ()):
-                    self._sql.execute(
+                    sql.execute(
                         "INSERT OR IGNORE INTO model_capabilities VALUES(?,?,?)",
                         (provider, item["name"], capability),
                     )
-            self._sql.execute("COMMIT")
 
     def list_models(self, provider: str | None = None) -> list[dict[str, Any]]:
         columns = (

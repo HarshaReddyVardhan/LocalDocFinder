@@ -108,6 +108,10 @@ def run_worker(parts: WorkerParts, options: WorkerOptions) -> int:
     )
     started = time.time()
     try:
+        stale = state.take_stale_paths()  # case-variant duplicates found by a schema migration
+        if stale:
+            parts.store.delete_paths(stale)
+            logger.info("removed %d duplicate case-variant paths", len(stale))
         if options.paths or options.reconcile:
             result = reconcile(
                 state, parts.projects, parts.scope, list(options.paths) or None, stop_check

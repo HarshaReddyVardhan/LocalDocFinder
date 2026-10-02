@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -59,13 +60,93 @@ def test_migrations_run_in_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     def add_table(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE TABLE extra(x INTEGER)")
 
-    monkeypatch.setattr(sq, "MIGRATIONS", (add_table,))
-    monkeypatch.setattr(sq, "SCHEMA_VERSION", 2)
+    monkeypatch.setattr(sq, "MIGRATIONS", (*sq.MIGRATIONS, add_table))
+    monkeypatch.setattr(sq, "SCHEMA_VERSION", sq.SCHEMA_VERSION + 1)
     with StateDb(tmp_path) as upgraded:
         assert upgraded._one("SELECT COUNT(*) FROM extra") == (0,)
     raw = sqlite3.connect(tmp_path / sq.STATE_FILENAME)
-    assert raw.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert raw.execute("PRAGMA user_version").fetchone()[0] == sq.SCHEMA_VERSION
     raw.close()
+
+
+def make_v1_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A database as released builds created it: case-sensitive paths, no claim index."""
+    with monkeypatch.context() as patch:
+        patch.setattr(sq, "MIGRATIONS", ())
+        patch.setattr(sq, "SCHEMA_VERSION", 1)
+        with StateDb(tmp_path) as legacy:
+            legacy._run("INSERT INTO manifest VALUES('D:/Docs/A.txt',1,1,'h1',100)")
+            legacy._run("INSERT INTO manifest VALUES('d:/docs/a.txt',2,2,'h2',200)")
+            legacy._run("INSERT INTO manifest VALUES('D:/Docs/B.txt',3,3,'h3',300)")
+            legacy._run("INSERT INTO queue VALUES('D:/Docs/C.txt','upsert',0,0,1,0)")
+            legacy._run("INSERT INTO queue VALUES('d:/docs/c.txt','delete',0,0,2,0)")
+
+
+class TestCaseInsensitivePaths:
+    def test_upgrading_collapses_case_duplicates_and_remembers_the_dropped_spelling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        make_v1_database(tmp_path, monkeypatch)
+        with StateDb(tmp_path) as db:
+            assert db.manifest_count() == 2  # the A.txt pair became one
+            entry = db.manifest_get("D:/DOCS/a.TXT")
+            assert entry is not None
+            assert entry.content_hash == "h2"  # the most recently indexed row won
+            assert db.queue_size() == 1
+            assert db.claim(10, ignore_debounce=True)[0].op == "delete"  # the newest request won
+            assert db.take_stale_paths() == ["D:/Docs/A.txt"]
+            assert db.take_stale_paths() == []  # handed out once
+
+    def test_new_paths_match_regardless_of_case(self, db: StateDb) -> None:
+        db.manifest_set("D:/Work/Plan.md", 1, 1, "h")
+        db.manifest_set("d:/work/plan.md", 2, 2, "h2")
+        assert db.manifest_count() == 1
+        assert db.canonical_path("D:/WORK/PLAN.MD") == "D:/Work/Plan.md"  # first spelling
+        assert db.canonical_path("D:/Work/new.md") == "D:/Work/new.md"  # unknown stays
+        db.enqueue("D:/Work/X.md")
+        db.enqueue("d:/work/x.md")
+        assert db.queue_size() == 1
+
+    def test_the_claim_index_exists(self, db: StateDb) -> None:
+        names = {r[1] for r in db._all("PRAGMA index_list('queue')")}
+        assert "queue_claim" in names
+
+    def test_manifest_all_is_keyed_in_lower_case(self, db: StateDb) -> None:
+        db.manifest_set("D:/Mixed/Case.TXT", 5, 6, "h")
+        assert db.manifest_all() == {os.path.normcase("d:/mixed/case.txt"): (5, 6)}
+
+    def test_two_processes_opening_a_fresh_database_do_not_collide(self, tmp_path: Path) -> None:
+        import threading
+
+        errors: list[BaseException] = []
+
+        def open_it() -> None:
+            try:
+                with StateDb(tmp_path):
+                    pass
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=open_it) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert errors == []
+
+
+class TestTransactions:
+    def test_a_failure_inside_a_batch_rolls_everything_back(self, db: StateDb) -> None:
+        def models() -> Iterator[dict[str, object]]:
+            yield {"name": "good"}
+            raise RuntimeError("boom")
+
+        db.replace_models("ollama", [{"name": "kept"}])
+        with pytest.raises(RuntimeError):
+            db.replace_models("ollama", models())  # type: ignore[arg-type]
+        assert [m["name"] for m in db.list_models("ollama")] == ["kept"]
+        db.enqueue("a")  # and the connection is usable: no transaction was left open
+        assert db.queue_size() == 1
 
 
 class TestMeta:

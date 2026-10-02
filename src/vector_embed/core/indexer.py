@@ -219,7 +219,7 @@ class Indexer:
         for item in items:
             if self.stop_check():
                 break  # remaining items stay queued
-            path = item.path
+            path = self.state.canonical_path(item.path)  # one spelling per file in the index
             try:
                 if (
                     item.op == "delete"
