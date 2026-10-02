@@ -1,5 +1,7 @@
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -111,3 +113,36 @@ def test_spawn_server_launches_detached(monkeypatch: pytest.MonkeyPatch) -> None
     argv, kwargs = calls[0]
     assert argv == ["ollama.exe", "serve"]
     assert kwargs["creationflags"] == 0x00000008 | 0x08000000
+
+
+def test_signature_non_object_json_is_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        windows_ollama.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(stdout="[1]", returncode=0),
+    )
+    assert system_with().signature(Path("x.exe")) == Signature(False, None)
+
+
+def test_signature_timeout_is_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
+    def hang(*args: object, **kwargs: object) -> None:
+        raise subprocess.TimeoutExpired("powershell", 1)
+
+    monkeypatch.setattr(windows_ollama.subprocess, "run", hang)
+    assert system_with().signature(Path("x.exe")) == Signature(False, None)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="needs Windows PowerShell")
+def test_signature_really_reads_a_signed_system_binary() -> None:
+    binary = Path(os.environ["SYSTEMROOT"]) / "System32" / "cmd.exe"
+    result = system_with().signature(binary)
+    assert result.valid
+    assert result.signer
+
+
+def test_run_installer_timeout_is_a_failure_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    def hang(*args: object, **kwargs: object) -> None:
+        raise subprocess.TimeoutExpired("setup.exe", 1)
+
+    monkeypatch.setattr(windows_ollama.subprocess, "run", hang)
+    assert system_with().run_installer(Path("setup.exe"), ()) != 0

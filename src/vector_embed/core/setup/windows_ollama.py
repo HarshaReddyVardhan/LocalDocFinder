@@ -20,8 +20,13 @@ _TIMEOUT_SECONDS = 60.0  # per read, so a big download is fine as long as bytes 
 _SIGNATURE_TIMEOUT_SECONDS = 60
 _DETACHED_PROCESS = 0x00000008
 _CREATE_NO_WINDOW = 0x08000000
+_SIGNATURE_PATH_ENV = "VE_SIGNATURE_PATH"
+_INSTALLER_TIMEOUT_SECONDS = 15 * 60
+_INSTALLER_TIMED_OUT = -1
+# The path travels in the environment: with ``-Command`` extra argv entries are pasted into the
+# script text, so ``$args[0]`` is empty and quoting a path with spaces is fragile.
 _SIGNATURE_SCRIPT = (
-    "$s = Get-AuthenticodeSignature -LiteralPath $args[0]; "
+    f"$s = Get-AuthenticodeSignature -LiteralPath $env:{_SIGNATURE_PATH_ENV}; "
     "[pscustomobject]@{valid = ($s.Status -eq 'Valid'); "
     "signer = if ($s.SignerCertificate) "
     "{ $s.SignerCertificate.GetNameInfo('SimpleName', $false) } else { $null }} "
@@ -75,30 +80,50 @@ class WindowsOllamaSystem:
 
     def signature(self, path: Path) -> Signature:
         powershell = shutil.which("powershell") or "powershell"
-        result = subprocess.run(  # noqa: S603  # fixed argv, the path is a separate argument
+        try:
+            result = self._run_signature_script(powershell, path)
+        except subprocess.TimeoutExpired:
+            logger.warning("ollama: signature check timed out")
+            return Signature(valid=False, signer=None)
+        return self._parse_signature(result.stdout)
+
+    @staticmethod
+    def _run_signature_script(powershell: str, path: Path) -> "subprocess.CompletedProcess[str]":
+        return subprocess.run(  # noqa: S603  # fixed argv, the path travels in the environment
             [
                 powershell,
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
                 _SIGNATURE_SCRIPT,
-                str(path),
             ],
+            env={**os.environ, _SIGNATURE_PATH_ENV: str(path)},
             capture_output=True,
             text=True,
             timeout=_SIGNATURE_TIMEOUT_SECONDS,
             creationflags=_CREATE_NO_WINDOW,
             check=False,
         )
+
+    @staticmethod
+    def _parse_signature(stdout: str) -> Signature:
         try:
-            data = json.loads(result.stdout)
+            data = json.loads(stdout)
         except json.JSONDecodeError:
+            data = None
+        if not isinstance(data, dict):
             logger.warning("ollama: could not read the installer signature")
             return Signature(valid=False, signer=None)
         return Signature(valid=bool(data.get("valid")), signer=data.get("signer"))
 
     def run_installer(self, path: Path, args: tuple[str, ...]) -> int:
-        return subprocess.run([str(path), *args], check=False).returncode  # noqa: S603
+        try:
+            return subprocess.run(  # noqa: S603
+                [str(path), *args], check=False, timeout=_INSTALLER_TIMEOUT_SECONDS
+            ).returncode
+        except subprocess.TimeoutExpired:
+            logger.warning("ollama: installer timed out")
+            return _INSTALLER_TIMED_OUT
 
     def spawn_server(self, executable: Path) -> None:
         subprocess.Popen(  # noqa: S603  # detached on purpose: Ollama outlives this process
