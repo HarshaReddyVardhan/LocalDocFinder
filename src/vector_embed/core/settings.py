@@ -20,8 +20,11 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from vector_embed.core.data_migration import migrate_legacy_data
+
 SCHEMA_VERSION = 1
-APP_DIR_NAME = "VectorEmbed"
+APP_DIR_NAME = "VectorEmbed"  # the Velopack install folder; uninstall deletes all of it
+DATA_DIR_NAME = "VectorEmbedData"  # a sibling, so uninstalling never takes the index with it
 SETTINGS_FILENAME = "settings.toml"
 
 RawSettings = dict[str, Any]
@@ -37,8 +40,17 @@ class SettingsError(ValueError):
 
 def default_data_dir() -> Path:
     """Where the index, queue and logs live; under LOCALAPPDATA, a directory scope never indexes."""
+    return _local_base() / DATA_DIR_NAME
+
+
+def legacy_data_dir() -> Path:
+    """Where releases before the data/install split kept their data (the install folder)."""
+    return _local_base() / APP_DIR_NAME
+
+
+def _local_base() -> Path:
     base = os.environ.get("LOCALAPPDATA")
-    return (Path(base) if base else Path.home()) / APP_DIR_NAME
+    return Path(base) if base else Path.home()
 
 
 class _Section(BaseModel):
@@ -512,4 +524,7 @@ def load_settings(path: Path | None = None) -> Settings:
 
 def _default_settings_path() -> Path:
     override = os.environ.get("VE_STORAGE__DATA_DIR")
-    return (Path(override) if override else default_data_dir()) / SETTINGS_FILENAME
+    if override:
+        return Path(override) / SETTINGS_FILENAME
+    migrate_legacy_data(legacy_data_dir(), default_data_dir())
+    return default_data_dir() / SETTINGS_FILENAME

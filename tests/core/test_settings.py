@@ -31,7 +31,7 @@ def test_defaults_when_file_missing(tmp_path: Path) -> None:
 
 def test_data_dir_defaults_under_localappdata(tmp_path: Path) -> None:
     cfg = s.load_settings(tmp_path / "nope.toml")
-    assert cfg.storage.data_dir == tmp_path / "appdata" / s.APP_DIR_NAME
+    assert cfg.storage.data_dir == tmp_path / "appdata" / s.DATA_DIR_NAME
 
 
 def test_toml_overrides_defaults(tmp_path: Path) -> None:

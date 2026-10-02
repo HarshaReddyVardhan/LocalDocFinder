@@ -190,7 +190,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--allow-battery", action="store_true", help="index even when unplugged")
     parser.add_argument("--limit", type=int, help="stop after N files (testing)")
     parser.add_argument("--model", help="embedding model override")
-    parser.add_argument("--data-dir", help="store location (default %%LOCALAPPDATA%%\\VectorEmbed)")
+    parser.add_argument(
+        "--data-dir", help="store location (default %%LOCALAPPDATA%%\\VectorEmbedData)"
+    )
     return parser.parse_args(argv)
 
 

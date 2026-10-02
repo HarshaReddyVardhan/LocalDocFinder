@@ -16,6 +16,7 @@ Start-Process $setup -ArgumentList "--silent" -Wait
 Start-Sleep -Seconds 10   # Velopack installs, runs the after-install hook, then launches the app
 
 $root = Join-Path $env:LOCALAPPDATA "VectorEmbed"
+$dataRoot = Join-Path $env:LOCALAPPDATA "VectorEmbedData"
 $exe = Join-Path $root "current\VectorEmbed.exe"
 $ve = Join-Path $root "current\ve.exe"
 Check "installed per-user, no admin ($exe)" (Test-Path $exe)
@@ -46,4 +47,5 @@ Start-Sleep -Seconds 8
 Check "app folder removed after uninstall" (-not (Test-Path $exe))
 Check "startup tasks removed after uninstall" (($(Get-ScheduledTask -TaskName "VectorEmbed*" -ErrorAction SilentlyContinue) | Measure-Object).Count -eq 0)
 Check "no VectorEmbed.exe still running" (-not (Get-Process VectorEmbed -ErrorAction SilentlyContinue))
+Check "user data survives uninstall" (Test-Path (Join-Path $dataRoot "state.db"))
 Note "Done."

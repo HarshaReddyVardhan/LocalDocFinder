@@ -19,7 +19,7 @@ On first start a **setup wizard** runs:
    slow on your machine gets a "switch to a smaller one?" offer.
 4. It shows all your settings once (hotkey, folders to index, start with Windows, cloud and
    privacy, updates), then you are done. Settings are per Windows user, in
-   `%LOCALAPPDATA%\VectorEmbed\settings.toml`.
+   `%LOCALAPPDATA%\VectorEmbedData\settings.toml`.
 
 Press **Ctrl+Alt+Space** anywhere: the popup is just a search bar, and results appear below it like
 Explorer's (file icon, name, full path, date and size; the selected row also shows its snippet).
@@ -75,7 +75,7 @@ Other clients take the same command in their MCP config. The caller is usually a
 | `vector_embed.app` | PySide6 tray app: the hotkey popup, the Settings window and the setup wizard. |
 | `python -m vector_embed <app\|watcher\|worker\|setup>` | one dispatcher for every entry point; the installed `VectorEmbed.exe` takes the same arguments. |
 
-Data lives in `%LOCALAPPDATA%\VectorEmbed` (index, queue, logs). Settings: `settings.toml` there, overridable with `VE_*` environment variables (see `.env.example`).
+Data lives in `%LOCALAPPDATA%\VectorEmbedData` (index, queue, logs), apart from the install folder `%LOCALAPPDATA%\VectorEmbed`, so uninstalling keeps it. Older installs are migrated on first start. Settings: `settings.toml` there, overridable with `VE_*` environment variables (see `.env.example`).
 
 ## Development
 ```powershell

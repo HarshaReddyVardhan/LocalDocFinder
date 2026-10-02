@@ -227,7 +227,9 @@ def cmd_doctor(settings: Settings) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ve", description="Local search + chat-with-documents.")
-    parser.add_argument("--data-dir", help="data directory (default %%LOCALAPPDATA%%\\VectorEmbed)")
+    parser.add_argument(
+        "--data-dir", help="data directory (default %%LOCALAPPDATA%%\\VectorEmbedData)"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     for skill_cls in load_skills():
         command = sub.add_parser(skill_cls.name, help=skill_cls.description)
