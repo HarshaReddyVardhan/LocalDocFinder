@@ -25,6 +25,7 @@ from vector_embed.core.providers.base import (
     JsonResult,
     Message,
     ProviderError,
+    Usage,
 )
 from vector_embed.core.providers.ollama import OllamaProvider
 from vector_embed.core.settings import ChatSettings
@@ -118,6 +119,24 @@ class LlmGateway:
             return not self.target(role).local
         except (ChatBlockedError, NoChatModelError):
             return False
+
+    def cloud_destination(self, role: str = ROLE_CHAT) -> str | None:
+        """``Provider / model`` when the request would go to the cloud, else ``None``."""
+        if not self.will_use_cloud(role):
+            return None
+        describe = getattr(self.router, "destination", None)
+        destination = describe(role) if callable(describe) else None
+        return str(destination) if destination is not None else None
+
+    def estimate_cost(self, role: str, prompt_tokens: int, completion_tokens: int) -> float:
+        """Estimated USD for a request of this size; 0 for local models and unknown prices."""
+        try:
+            target = self.target(role)
+        except (ChatBlockedError, NoChatModelError):
+            return 0.0
+        if target.local:
+            return 0.0
+        return target.provider.estimate_cost(target.model, Usage(prompt_tokens, completion_tokens))
 
     def options(self, *, session: bool) -> ChatOptions:
         """Request options: sessions keep the model warm, one-shot calls unload right after."""

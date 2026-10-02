@@ -1,12 +1,21 @@
 """Shared test doubles for the indexing and search pipelines."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 import xxhash
 
-from vector_embed.core.providers.base import EmbedKind
+from vector_embed.core.providers.base import (
+    ChatChunk,
+    ChatOptions,
+    EmbedKind,
+    JsonResult,
+    Message,
+    ModelInfo,
+    Usage,
+)
 from vector_embed.core.providers.ollama import Interrupted
 
 DIM = 16
@@ -49,3 +58,45 @@ class FakeEmbedder:
     @property
     def embedded_texts(self) -> list[str]:
         return [t for batch, _ in self.calls for t in batch]
+
+
+class FakeCloudInner:
+    """A scripted cloud provider that records exactly what it was sent."""
+
+    name = "openrouter"
+    label = "OpenRouter"
+
+    def __init__(self) -> None:
+        self.sent: list[list[Message]] = []
+        self.reply = ["Contact ", "[NAME_1] at [EMAIL", "_1]."]
+        self.usage = Usage(1000, 500)
+        self.json_data: Any = {"summary": "[NAME_1] is a fit"}
+        self.json_fn: Callable[[list[Message]], Any] | None = None
+
+    def stream_chat(
+        self, messages: list[Message], model: str, options: ChatOptions | None = None
+    ) -> Iterator[ChatChunk]:
+        self.sent.append(messages)
+        for piece in self.reply:
+            yield ChatChunk(piece)
+        yield ChatChunk("", self.usage)
+
+    def chat_json(
+        self,
+        messages: list[Message],
+        model: str,
+        schema: dict[str, Any],
+        options: ChatOptions | None = None,
+    ) -> JsonResult:
+        self.sent.append(messages)
+        data = self.json_fn(messages) if self.json_fn else self.json_data
+        return JsonResult(data, self.usage)
+
+    def list_models(self) -> list[ModelInfo]:
+        return [ModelInfo("m", "openrouter")]
+
+    def capabilities(self, model: str) -> frozenset[str]:
+        return frozenset({"completion"})
+
+    def estimate_cost(self, model: str, usage: Usage) -> float:
+        return (usage.prompt_tokens + usage.completion_tokens) / 1000.0  # $1 per 1k tokens

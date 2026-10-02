@@ -7,10 +7,12 @@ tests can substitute any piece.
 import json
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
+from vector_embed.core.cloud import CloudChatProvider, CloudConsent, CloudRouter
 from vector_embed.core.doctypes.base import PROTOTYPE_TEXTS, build_prototypes
 from vector_embed.core.documents import DocumentLoader
 from vector_embed.core.extractors.base import ExtractContext, ExtractorSet
@@ -20,9 +22,12 @@ from vector_embed.core.llm import LlmGateway
 from vector_embed.core.models.catalog import load_catalog
 from vector_embed.core.models.registry import ModelRegistry
 from vector_embed.core.power import PowerGate
+from vector_embed.core.privacy.policy import PrivacyFilter
 from vector_embed.core.projects import Projects
 from vector_embed.core.providers.ollama import OllamaProvider
+from vector_embed.core.providers.openai_compat import OpenAICompatibleProvider
 from vector_embed.core.scope import ScopePolicy
+from vector_embed.core.secrets import KeyringStore, KeyStore, KeyStoreError
 from vector_embed.core.settings import Settings
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.store.lance import LanceStore
@@ -118,10 +123,47 @@ def build_model_registry(
     )
 
 
+@dataclass
+class CloudContext:
+    """Everything cloud-related for one process: the privacy filter, consent and routing."""
+
+    privacy: PrivacyFilter
+    consent: CloudConsent
+    router: CloudRouter
+    provider: CloudChatProvider | None
+
+
+def build_cloud(
+    settings: Settings,
+    state: StateDb,
+    scope: ScopePolicy,
+    registry: ModelRegistry,
+    keys: KeyStore | None = None,
+) -> CloudContext:
+    """Cloud wiring. With no provider configured (the default) nothing can leave the machine."""
+    privacy = PrivacyFilter(settings.privacy, scope)
+    consent = CloudConsent()
+    provider: CloudChatProvider | None = None
+    active = settings.cloud.active
+    if active and active in settings.cloud.providers:
+        try:
+            key = (keys or KeyringStore()).get(active)
+        except KeyStoreError:
+            logger.warning("cloud: cannot read the API key for %s", active, exc_info=True)
+            key = None
+        if key:
+            inner = OpenAICompatibleProvider(active, settings.cloud.providers[active], key)
+            provider = CloudChatProvider(inner, privacy, state, settings.cloud, consent)
+        else:
+            logger.info("cloud: no API key stored for %s; staying local", active)
+    return CloudContext(privacy, consent, CloudRouter(settings.cloud, provider, registry), provider)
+
+
 def build_skill_context(
     settings: Settings,
     state: StateDb,
     fullscreen: Callable[[], bool] = lambda: False,
+    keys: KeyStore | None = None,
 ) -> SkillContext:
     """Context for read-side skills (search, ask, ...): read-only store, local provider."""
     provider = build_provider(settings)
@@ -139,6 +181,8 @@ def build_skill_context(
     )
     store = open_read_only_store(settings, state)
     scope = build_scope(settings)
+    cloud = build_cloud(settings, state, scope, registry, keys)
+    gateway.router = cloud.router
     cache: list[ExtractorSet] = []
 
     def extractors() -> ExtractorSet:  # built on first use: OCR setup is not free
@@ -157,6 +201,8 @@ def build_skill_context(
             "models": registry,
             "llm": gateway,
             "scope": scope,
+            "privacy": cloud.privacy,
+            "cloud": cloud,
             "documents": DocumentLoader(store, scope, extractors),
         },
     )

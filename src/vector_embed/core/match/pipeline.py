@@ -8,6 +8,7 @@ document per call; step 4 only the step-3 JSON. Locked documents are always judg
 import json
 import logging
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 from vector_embed.core.documents import DocumentError, DocumentLoader
@@ -16,7 +17,8 @@ from vector_embed.core.match import judge
 from vector_embed.core.match.judge import Judgement, MatchError
 from vector_embed.core.match.recall import MatchCandidate, Recall, selected
 from vector_embed.core.match.scoring import Requirement, ScoreBreakdown, compute_score
-from vector_embed.core.models.catalog import ROLE_CHAT
+from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_MATCH_SCORER
+from vector_embed.core.privacy.policy import PrivacyFilter
 from vector_embed.core.providers.base import Message, ProviderError, ProviderUnavailableError
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.tokens import fit_to_budget
@@ -29,6 +31,7 @@ VERDICT_SYSTEM = (
     "not invent facts that are not in the data. Be concise."
 )
 _JD_SUMMARY_TOKENS = 300
+_CLOUD_WORKERS = 4
 
 
 @dataclass
@@ -73,7 +76,15 @@ class MatchPipeline:
         self._ctx = ctx
         self._gateway = gateway
         self._loader = loader
-        self.recall_step = Recall(ctx, loader)
+        privacy = ctx.extras.get("privacy")
+        is_locked: Callable[[str], bool] = (
+            privacy.is_never_send if isinstance(privacy, PrivacyFilter) else (lambda _path: False)
+        )
+        self.recall_step = Recall(ctx, loader, is_locked)
+
+    @property
+    def gateway(self) -> LlmGateway:
+        return self._gateway
 
     # ------------------------------------------------------------------ step 1
     def start(
@@ -101,12 +112,44 @@ class MatchPipeline:
         if not chosen:
             raise MatchError("no documents are selected")
         requirements = self.build_checklist(run, session)
-        run.scores = []
-        for position, candidate in enumerate(chosen, 1):
-            if progress:
-                progress(f"scoring {position}/{len(chosen)}: {candidate.name}")
-            run.scores.append(self._score_one(run, requirements, candidate, session))
+        if self._gateway.will_use_cloud(ROLE_MATCH_SCORER):
+            run.scores = self._score_in_parallel(run, requirements, chosen, progress, session)
+        else:
+            run.scores = []
+            for position, candidate in enumerate(chosen, 1):
+                if progress:
+                    progress(f"scoring {position}/{len(chosen)}: {candidate.name}")
+                run.scores.append(self._score_one(run, requirements, candidate, session))
         return run.scores
+
+    def _score_in_parallel(
+        self,
+        run: MatchRun,
+        requirements: list[Requirement],
+        chosen: list[MatchCandidate],
+        progress: Progress | None,
+        session: bool,
+    ) -> list[DocumentScore]:
+        """Cloud judging runs concurrently; locked documents are then judged locally, in turn."""
+        results: dict[str, DocumentScore] = {}
+        remote = [c for c in chosen if not c.locked]
+        done = 0
+        with ThreadPoolExecutor(max_workers=_CLOUD_WORKERS) as pool:
+            futures = {
+                pool.submit(self._score_one, run, requirements, c, session): c for c in remote
+            }
+            for future in as_completed(futures):
+                candidate = futures[future]
+                results[candidate.path] = future.result()  # re-raises an unreachable provider
+                done += 1
+                if progress:
+                    progress(f"scored {done}/{len(chosen)}: {candidate.name}")
+        for candidate in chosen:
+            if candidate.locked:
+                if progress:
+                    progress(f"scoring locally (private): {candidate.name}")
+                results[candidate.path] = self._score_one(run, requirements, candidate, session)
+        return [results[c.path] for c in chosen]
 
     def _score_one(
         self,

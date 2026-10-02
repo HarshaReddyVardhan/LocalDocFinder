@@ -1,9 +1,9 @@
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 from tests.core.conftest import Chat, Env, Power
+from tests.core.fakes import FakeCloudInner
 
 from vector_embed.core.cloud import (
     CloudChatProvider,
@@ -15,11 +15,7 @@ from vector_embed.core.cloud import (
 from vector_embed.core.llm import ChatBlockedError
 from vector_embed.core.privacy.policy import PrivacyFilter
 from vector_embed.core.providers.base import (
-    ChatChunk,
-    ChatOptions,
-    JsonResult,
     Message,
-    ModelInfo,
     Usage,
 )
 from vector_embed.core.settings import (
@@ -29,46 +25,6 @@ from vector_embed.core.settings import (
 )
 
 KEY_TEXT = "Passport No: K1234567 and SSN 123-45-6789"
-
-
-class FakeInner:
-    """A scripted cloud provider that records exactly what it was sent."""
-
-    name = "openrouter"
-    label = "OpenRouter"
-
-    def __init__(self) -> None:
-        self.sent: list[list[Message]] = []
-        self.reply = ["Contact ", "[NAME_1] at [EMAIL", "_1]."]
-        self.usage = Usage(1000, 500)
-        self.json_data: Any = {"summary": "[NAME_1] is a fit"}
-
-    def stream_chat(
-        self, messages: list[Message], model: str, options: ChatOptions | None = None
-    ) -> Iterator[ChatChunk]:
-        self.sent.append(messages)
-        for piece in self.reply:
-            yield ChatChunk(piece)
-        yield ChatChunk("", self.usage)
-
-    def chat_json(
-        self,
-        messages: list[Message],
-        model: str,
-        schema: dict[str, Any],
-        options: ChatOptions | None = None,
-    ) -> JsonResult:
-        self.sent.append(messages)
-        return JsonResult(self.json_data, self.usage)
-
-    def list_models(self) -> list[ModelInfo]:
-        return [ModelInfo("m", "openrouter")]
-
-    def capabilities(self, model: str) -> frozenset[str]:
-        return frozenset({"completion"})
-
-    def estimate_cost(self, model: str, usage: Usage) -> float:
-        return (usage.prompt_tokens + usage.completion_tokens) / 1000.0  # $1 per 1k tokens
 
 
 class Clock:
@@ -82,7 +38,7 @@ RESUME = "Jane Doe\njane@example.com\n" + KEY_TEXT + "\nBuilt systems in Python.
 
 
 def make(env: Env, *, budget: float | None = None, redact: bool = False, consent: bool = True):  # type: ignore[no-untyped-def]
-    inner = FakeInner()
+    inner = FakeCloudInner()
     privacy = PrivacyFilter(PrivacySettings(redact_personal=redact), env.scope)
     settings = CloudSettings(monthly_budget_usd=budget)
     gate = CloudConsent()
@@ -190,7 +146,7 @@ class TestRouter:
     def setup_cloud(
         self, env: Env, chat: Chat, **overrides: Any
     ) -> tuple[CloudRouter, CloudChatProvider, Chat]:
-        inner = FakeInner()
+        inner = FakeCloudInner()
         settings = CloudSettings(
             providers={
                 "openrouter": CloudProviderSettings(

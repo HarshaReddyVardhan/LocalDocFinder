@@ -3,9 +3,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from tests.core.fakes import DIM, FakeEmbedder
+from tests.core.fakes import DIM, FakeCloudInner, FakeEmbedder
 from tests.core.providers.fakes import FakeOllamaClient
 
+from vector_embed.core.cloud import CloudChatProvider, CloudConsent, CloudRouter
 from vector_embed.core.doctypes.base import DocTypeClassifierSet
 from vector_embed.core.documents import DocumentLoader
 from vector_embed.core.extractors.base import ExtractContext, ExtractorSet
@@ -15,10 +16,13 @@ from vector_embed.core.models.catalog import load_catalog
 from vector_embed.core.models.hardware import Hardware
 from vector_embed.core.models.registry import ModelRegistry
 from vector_embed.core.power import PowerGate
+from vector_embed.core.privacy.policy import PrivacyFilter
 from vector_embed.core.projects import Projects
 from vector_embed.core.providers.ollama import OllamaProvider
 from vector_embed.core.scope import ScopePolicy
 from vector_embed.core.settings import (
+    CloudProviderSettings,
+    CloudSettings,
     EmbeddingSettings,
     PowerSettings,
     ScopeSettings,
@@ -161,3 +165,37 @@ def chat(skill_ctx: SkillContext, env: Env) -> Chat:
         llm=gateway, provider=provider, models=registry, documents=documents, scope=env.scope
     )
     return Chat(gateway, client, provider)
+
+
+@dataclass
+class CloudRig:
+    inner: "FakeCloudInner"
+    provider: CloudChatProvider
+    router: CloudRouter
+    consent: CloudConsent
+    privacy: PrivacyFilter
+
+
+@pytest.fixture
+def cloud(chat: Chat, env: Env, skill_ctx: SkillContext) -> CloudRig:
+    """The chat stack with a scripted cloud provider attached (policy chosen per test)."""
+    inner = FakeCloudInner()
+    settings = CloudSettings(
+        providers={
+            "openrouter": CloudProviderSettings(
+                base_url="https://openrouter.ai/api/v1",
+                label="OpenRouter",
+                models={"chat": "vendor/chat", "match_scorer": "vendor/judge"},
+            )
+        },
+        active="openrouter",
+        routing={"chat": "cloud", "match_scorer": "cloud", "code_chat": "cloud"},
+    )
+    privacy = PrivacyFilter(env.settings.privacy, env.scope)
+    consent = CloudConsent()
+    consent.grant()
+    provider = CloudChatProvider(inner, privacy, env.state, settings, consent)
+    router = CloudRouter(settings, provider, chat.gateway._registry)
+    chat.gateway.router = router
+    skill_ctx.extras.update(privacy=privacy)
+    return CloudRig(inner, provider, router, consent, privacy)

@@ -8,12 +8,14 @@ from vector_embed.core.match.judge import MatchError
 from vector_embed.core.match.pipeline import DocumentScore, MatchPipeline, MatchRun
 from vector_embed.core.match.recall import MatchCandidate, select_top, selected
 from vector_embed.core.match.scoring import Requirement
+from vector_embed.core.models.catalog import ROLE_MATCH_SCORER
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.skills.match import pipeline_of
 from vector_embed.core.tokens import estimate_tokens
 
 LOCAL = "🖥 local"
 _TOKENS_PER_REQUIREMENT = 15
+_OUTPUT_TOKENS_PER_DOCUMENT = 400
 
 
 def format_tokens(tokens: int) -> str:
@@ -26,10 +28,10 @@ class MatchController:
     def __init__(
         self,
         context_factory: Callable[[], SkillContext],
-        destination: Callable[[MatchCandidate], str] = lambda _candidate: LOCAL,
+        destination: Callable[[MatchCandidate], str] | None = None,
     ) -> None:
         self._factory = context_factory
-        self._destination = destination
+        self._destination = destination or self._default_destination
         self._pipeline: MatchPipeline | None = None
         self.run: MatchRun | None = None
 
@@ -75,6 +77,13 @@ class MatchController:
         return ChatState(pinned=pinned, scratch=scratch)
 
     # ------------------------------------------------------------------ display helpers
+    def _default_destination(self, candidate: MatchCandidate) -> str:
+        """Where this document would be judged: locked files always stay local."""
+        if candidate.locked:
+            return LOCAL
+        cloud = self.pipeline.gateway.cloud_destination(ROLE_MATCH_SCORER)
+        return f"☁ {cloud}" if cloud else LOCAL
+
     def footer(self) -> str:
         """``JD + 3 documents ≈ 7.1k tokens → local`` for what Score would send."""
         run = self._require()
@@ -87,9 +96,17 @@ class MatchController:
         where = sorted({self._destination(c) for c in chosen})
         locked = sum(c.locked for c in chosen)
         note = f" · 🔒 {locked} scored locally" if locked else ""
+        remote = [c for c in chosen if not c.locked]
+        cost = self.pipeline.gateway.estimate_cost(
+            ROLE_MATCH_SCORER,
+            sum(c.tokens + checklist + jd for c in remote) + jd,
+            _OUTPUT_TOKENS_PER_DOCUMENT * len(remote),
+        )
+        price = f" · est. ${cost:.2f}" if cost > 0 else ""
         noun = "document" if len(chosen) == 1 else "documents"
         return (
-            f"JD + {len(chosen)} {noun} ≈ {format_tokens(total)} tokens → {' / '.join(where)}{note}"
+            f"JD + {len(chosen)} {noun} ≈ {format_tokens(total)} tokens "
+            f"→ {' / '.join(where)}{price}{note}"
         )
 
     def candidate_row(self, candidate: MatchCandidate) -> list[str]:

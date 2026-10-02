@@ -12,6 +12,7 @@ from pydantic import Field
 
 from vector_embed.core.llm import LlmGateway
 from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_CODE_CHAT
+from vector_embed.core.privacy.policy import PrivacyFilter
 from vector_embed.core.rag import (
     NOT_FOUND,
     SOURCE_COLUMNS,
@@ -22,7 +23,7 @@ from vector_embed.core.rag import (
     format_citations,
     is_code_heavy,
 )
-from vector_embed.core.retrieval import hybrid_candidates
+from vector_embed.core.retrieval import Candidate, hybrid_candidates
 from vector_embed.core.skills.base import (
     UI_PANEL,
     Skill,
@@ -32,6 +33,11 @@ from vector_embed.core.skills.base import (
 )
 from vector_embed.core.skills.search import parse_query
 from vector_embed.core.store.lance import CHUNKS
+
+
+def privacy_of(ctx: SkillContext) -> PrivacyFilter | None:
+    privacy = ctx.extras.get("privacy")
+    return privacy if isinstance(privacy, PrivacyFilter) else None
 
 
 def gateway_of(ctx: SkillContext) -> LlmGateway:
@@ -55,6 +61,7 @@ class AskResult:
     invalid_citations: set[int] = field(default_factory=set)
     not_found: bool = False
     role: str = ROLE_CHAT
+    withheld: int = 0  # private files kept out of a cloud request
 
 
 class AskRun:
@@ -67,11 +74,13 @@ class AskRun:
         sources: list[Source],
         role: str,
         session: bool,
+        *,
+        withheld: int = 0,
     ) -> None:
         self._gateway = gateway
         self._question = question
         self._session = session
-        self.result = AskResult(sources=sources, role=role)
+        self.result = AskResult(sources=sources, role=role, withheld=withheld)
 
     def deltas(self) -> Iterator[str]:
         result = self.result
@@ -92,17 +101,22 @@ class AskRun:
     def footer(self) -> str:
         """Text appended after the answer: the sources it actually cited."""
         result = self.result
+        withheld = ""
+        if result.withheld:
+            noun = "file was" if result.withheld == 1 else "files were"
+            withheld = f"\n({result.withheld} private {noun} not sent to the cloud)"
         if result.not_found:
-            return ""
+            return withheld
         if result.cited:
             note = ""
             if result.invalid_citations:
                 numbers = ", ".join(f"[{n}]" for n in sorted(result.invalid_citations))
                 note = f"\n(ignored citations to sources that do not exist: {numbers})"
-            return "\n\nSources:\n" + format_citations(result.cited) + note
+            return "\n\nSources:\n" + format_citations(result.cited) + note + withheld
         return (
             "\n\n(The answer cited no sources; treat it with caution.)\nSearched:\n"
             + format_citations(result.sources[:5])
+            + withheld
         )
 
 
@@ -134,10 +148,22 @@ class AskSkill(Skill):
             limit=limit or chat_cfg.retrieve_chunks,
             force_cpu=True,  # the GPU belongs to the LLM
         )
+        candidates, withheld = self._without_private(candidates, gateway)
         sources = build_sources(candidates, chat_cfg.context_token_budget)
         code = chat_cfg.code_routing and is_code_heavy(sources)
         role = ROLE_CODE_CHAT if code else ROLE_CHAT
-        return AskRun(gateway, parsed.text or question, sources, role, session)
+        return AskRun(gateway, parsed.text or question, sources, role, session, withheld=withheld)
+
+    def _without_private(
+        self, candidates: list[Candidate], gateway: LlmGateway
+    ) -> tuple[list[Candidate], int]:
+        """Cloud requests never include files under the never-send rules."""
+        privacy = privacy_of(self.ctx)
+        if privacy is None or not gateway.will_use_cloud(ROLE_CHAT):
+            return candidates, 0
+        kept = [c for c in candidates if not privacy.is_never_send(c.row["path"])]
+        blocked = {c.row["path"] for c in candidates} - {c.row["path"] for c in kept}
+        return kept, len(blocked)
 
     def stream(self, params: SkillInput) -> Iterator[str]:
         assert isinstance(params, AskInput)

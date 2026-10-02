@@ -9,16 +9,18 @@ falls back to retrieving context from the index for each message.
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from pydantic import Field
 
 from vector_embed.core.documents import DocumentError, DocumentLoader, LoadedDocument
-from vector_embed.core.llm import LlmGateway
+from vector_embed.core.llm import ChatBlockedError, LlmGateway
 from vector_embed.core.models.catalog import ROLE_CHAT
+from vector_embed.core.privacy.policy import PrivacyFilter
 from vector_embed.core.providers.base import Message
 from vector_embed.core.rag import SOURCE_COLUMNS, build_sources, format_sources
 from vector_embed.core.retrieval import hybrid_candidates
-from vector_embed.core.skills.ask import gateway_of
+from vector_embed.core.skills.ask import gateway_of, privacy_of
 from vector_embed.core.skills.base import (
     UI_PANEL,
     Skill,
@@ -139,14 +141,24 @@ class ChatSkill(Skill):
         """Messages for the model (pinned context first) and the titles that had to be cut."""
         cfg = self.ctx.settings.chat
         docs, scratch = self._pinned(session_id)
+        cloud = self._gateway.will_use_cloud(ROLE_CHAT)
+        privacy = privacy_of(self.ctx)
+        if cloud and privacy is not None:
+            private = [d.path for d in docs if privacy.is_never_send(d.path, d.doc_type or None)]
+            if private:
+                names = ", ".join(Path(p).name for p in private)
+                raise ChatBlockedError(
+                    f"{names} is private and cannot be sent to a cloud model; "
+                    "switch to the local model or unpin it"
+                )
         block, cut = _pinned_block(docs, scratch, cfg.context_token_budget)
         if not block:
-            block = self._retrieved_context(message)
+            block = self._retrieved_context(message, privacy if cloud else None)
         system = SYSTEM_PROMPT + (f"\n\nDocuments:\n\n{block}" if block else "")
         history = trim_history(self.ctx.state.messages(session_id), cfg.history_token_budget)
         return [Message("system", system), *history, Message("user", message)], cut
 
-    def _retrieved_context(self, message: str) -> str:
+    def _retrieved_context(self, message: str, cloud_filter: PrivacyFilter | None = None) -> str:
         ctx = self.ctx
         cfg = ctx.settings.chat
         candidates = hybrid_candidates(
@@ -160,6 +172,8 @@ class ChatSkill(Skill):
             limit=cfg.retrieve_chunks,
             force_cpu=True,
         )
+        if cloud_filter is not None:  # a cloud request never contains private files
+            candidates = [c for c in candidates if not cloud_filter.is_never_send(c.row["path"])]
         return format_sources(build_sources(candidates, cfg.context_token_budget))
 
     # ------------------------------------------------------------------ turns
