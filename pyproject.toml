@@ -16,6 +16,7 @@ dependencies = [
     "xxhash",
     "watchdog",
     "pyyaml",
+    "tomli-w>=1.0",
     "pymupdf",
     "python-docx",
     "python-pptx",

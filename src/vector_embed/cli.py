@@ -19,11 +19,13 @@ from vector_embed import watcher, worker
 from vector_embed.core import runtime
 from vector_embed.core.doctor import format_checks, run_doctor
 from vector_embed.core.extractors.ocr import WindowsOcr
+from vector_embed.core.health import collect_health, format_health
 from vector_embed.core.logging_setup import configure_logging
 from vector_embed.core.models.hardware import probe_hardware
+from vector_embed.core.models.manager import ModelChangeError, ModelManager
 from vector_embed.core.models.report import format_report
 from vector_embed.core.providers.base import ProviderError
-from vector_embed.core.settings import Settings, SettingsError, load_settings
+from vector_embed.core.settings import SETTINGS_FILENAME, Settings, SettingsError, load_settings
 from vector_embed.core.skills.base import Skill, load_skills
 from vector_embed.core.store.sqlite import StateDb
 
@@ -108,12 +110,45 @@ def run_skill(skill_cls: type[Skill], args: argparse.Namespace, settings: Settin
     return EXIT_OK
 
 
-def cmd_models(settings: Settings) -> int:
+def build_manager(settings: Settings, state: StateDb) -> ModelManager:
+    provider = runtime.build_provider(settings)
+    registry = runtime.build_model_registry(settings, state, provider)
+    return ModelManager(
+        registry,
+        provider,
+        state,
+        settings.storage.data_dir / SETTINGS_FILENAME,
+        indexed_files=state.manifest_count,
+    )
+
+
+def cmd_models(settings: Settings, args: argparse.Namespace) -> int:
+    with StateDb(settings.storage.data_dir) as state:
+        manager = build_manager(settings, state)
+        if args.pull:
+            manager.pull(
+                args.pull, lambda p: err(f"{p.status} {p.fraction:.0%}" if p.total else p.status)
+            )
+            out(f"pulled {args.pull}")
+        for assignment in args.set or []:
+            role, _, model = assignment.partition("=")
+            manager.set_override(role, model or None)
+            out(f"{role} -> {model or 'automatic'}")
+        if args.embedder:
+            notice = manager.change_embedder(args.embedder, confirmed=args.yes)
+            out(notice.message if notice else "already the embedder")
+        manager.registry.refresh()
+        out(format_report(manager.registry.report()))
+    return EXIT_OK
+
+
+def cmd_health(settings: Settings) -> int:
     provider = runtime.build_provider(settings)
     with StateDb(settings.storage.data_dir) as state:
         registry = runtime.build_model_registry(settings, state, provider)
         registry.refresh()
-        out(format_report(registry.report()))
+        store = runtime.open_read_only_store(settings, state)
+        out(format_health(collect_health(state, store, registry, provider.loaded_models)))
     return EXIT_OK
 
 
@@ -141,7 +176,16 @@ def build_parser() -> argparse.ArgumentParser:
         add_input_arguments(command, dict(skill_cls.Input.model_fields), skill_cls.cli_positional)
         command.set_defaults(skill=skill_cls)
     sub.add_parser("index", help="run the indexing worker now (ve index --help for options)")
-    sub.add_parser("models", help="installed models, role choices and recommendations")
+    models = sub.add_parser("models", help="installed models, role choices and recommendations")
+    models.add_argument(
+        "--pull", metavar="MODEL", help="download a model (e.g. the recommended one)"
+    )
+    models.add_argument(
+        "--set", action="append", metavar="ROLE=MODEL", help="pin a role (empty clears)"
+    )
+    models.add_argument("--embedder", metavar="MODEL", help="switch the embedder (re-index needed)")
+    models.add_argument("--yes", action="store_true", help="confirm the re-index for --embedder")
+    sub.add_parser("health", help="queue, VRAM, loaded models and cloud spend")
     sub.add_parser("doctor", help="check the environment and explain any problem")
     sub.add_parser("status", help="index and queue state")
     return parser
@@ -166,6 +210,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ProviderError as exc:
         err(f"model provider error: {exc}")
         return EXIT_ERROR
+    except ModelChangeError as exc:
+        err(str(exc))
+        return EXIT_USAGE
     except RuntimeError as exc:  # skill-level errors (e.g. search disabled on battery)
         err(str(exc))
         return EXIT_ERROR
@@ -176,7 +223,9 @@ def _dispatch(args: argparse.Namespace, settings: Settings) -> int:
     if command == "index":  # reached only through ``ve --data-dir X index``
         return worker.main([])
     if command == "models":
-        return cmd_models(settings)
+        return cmd_models(settings, args)
+    if command == "health":
+        return cmd_health(settings)
     if command == "doctor":
         return cmd_doctor(settings)
     if command == "status":
