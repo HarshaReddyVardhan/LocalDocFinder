@@ -94,7 +94,7 @@ class TestGitignore:
         ignore = Path(make("p/.gitignore", "a.py\n"))
         target = make("p/b.py")
         assert not proj.is_ignored(target)
-        ignore.write_text("b.py\n", encoding="utf-8")
+        ignore.write_text("a.py\nb.py\n", encoding="utf-8")  # longer: size differs too
         assert not proj.is_ignored(target)  # still inside the TTL: cached spec
         now[0] += projects_module._GITIGNORE_TTL_SECONDS + 1
         assert proj.is_ignored(target)

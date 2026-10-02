@@ -108,7 +108,9 @@ class Projects:
             return cached[2]
         gitignore = directory / ".gitignore"
         try:
-            mtime: int | None = gitignore.stat().st_mtime_ns
+            info = gitignore.stat()
+            # size joins the timestamp: two quick edits can share one coarse timestamp tick
+            mtime: int | None = hash((info.st_mtime_ns, info.st_size))
         except OSError:
             self._spec_cache[key] = (now, None, None)
             return None
