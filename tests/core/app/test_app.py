@@ -200,6 +200,10 @@ class FakeService:
         self.queries: list[tuple[str, str | None]] = []
         self.warmed = 0
         self.battery = False
+        self.resets = 0
+
+    def reset(self) -> None:
+        self.resets += 1
 
     def warm(self) -> None:
         self.warmed += 1

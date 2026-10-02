@@ -143,6 +143,10 @@ class SearchService:
             self._skill = SearchSkill(self._factory())
         return self._skill
 
+    def reset(self) -> None:
+        """Forget the built skill so the next query uses the current settings."""
+        self._skill = None
+
     def warm(self) -> None:
         self.skill.warm()
 

@@ -224,6 +224,18 @@ class SearchWindow(QWidget):
         QShortcut(QKeySequence("Esc"), self).activated.connect(self.dismiss)
         self._apply_mode()
 
+    def reload_context(self) -> None:
+        """Settings changed: end any chat (its model/route may differ) and rebuild lazily."""
+        if self._mode is Mode.CHAT:
+            self.set_mode(Mode.SEARCH)
+        elif self._assistant is not None and self._assistant.session_active:
+            self._end_chat("settings changed")
+        self._service.reset()
+        if self._assistant is not None:
+            self._assistant.reset()
+        if self._matcher is not None:
+            self._matcher.reset_context()
+
     def _build_ui(self) -> None:
         self.setWindowTitle("Vector Embed")
         self.resize(POPUP_WIDTH, COMPACT_HEIGHT)

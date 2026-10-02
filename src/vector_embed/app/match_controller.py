@@ -42,6 +42,10 @@ class MatchController:
         self._pipeline: MatchPipeline | None = None
         self.run: MatchRun | None = None
 
+    def reset_context(self) -> None:
+        """A setting changed: rebuild the pipeline on next use (a finished run stays visible)."""
+        self._pipeline = None
+
     @property
     def pipeline(self) -> MatchPipeline:
         if self._pipeline is None:

@@ -6,6 +6,7 @@ pythonw -m vector_embed.app          (or ``python -m vector_embed.app --show``)
 import argparse
 import logging
 import sys
+import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -73,21 +74,48 @@ def pick_document() -> str | None:
     return path or None
 
 
-def make_context_factory(settings: Settings, state: StateDb) -> Callable[[], SkillContext]:
-    """One lazily built skill context, shared by search, the assistant and the Settings window."""
-    cache: list[SkillContext] = []
-    activity = SystemActivity()
+class ContextFactory:
+    """One lazily built skill context shared by search, the assistant and the Settings window.
 
-    def context() -> SkillContext:
-        if not cache:
-            cache.append(
-                runtime.build_skill_context(
-                    settings, state, fullscreen=activity.fullscreen_app_active
+    ``invalidate`` drops it after a settings change; the next call re-reads the settings file, so
+    changes (privacy, cloud, models...) apply without restarting the app.
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        state: StateDb,
+        reload: Callable[[], Settings] | None = None,
+    ) -> None:
+        self._settings = settings
+        self._state = state
+        self._reload = reload
+        self._cache: SkillContext | None = None
+        self._lock = threading.Lock()  # built on a worker thread; two must not race
+        self._activity = SystemActivity()
+
+    def __call__(self) -> SkillContext:
+        with self._lock:
+            if self._cache is None:
+                self._cache = runtime.build_skill_context(
+                    self._settings, self._state, fullscreen=self._activity.fullscreen_app_active
                 )
-            )
-        return cache[0]
+            return self._cache
 
-    return context
+    def invalidate(self) -> None:
+        with self._lock:
+            self._cache = None
+            if self._reload is not None:
+                try:
+                    self._settings = self._reload()
+                except SettingsError:
+                    logger.warning("settings changed but are now invalid; keeping the old ones")
+
+
+def make_context_factory(
+    settings: Settings, state: StateDb, reload: Callable[[], Settings] | None = None
+) -> ContextFactory:
+    return ContextFactory(settings, state, reload)
 
 
 def build_window(
@@ -105,10 +133,18 @@ def build_window(
 
 
 def make_settings_controller(
-    path: Path, state: StateDb, updater: Updater | None = None
+    path: Path,
+    state: StateDb,
+    updater: Updater | None = None,
+    on_changed: Callable[[], None] = lambda: None,
 ) -> SettingsController:
     return SettingsController(
-        path, state, KeyringStore(), apply_autostart=Autostart().apply, updater=updater
+        path,
+        state,
+        KeyringStore(),
+        apply_autostart=Autostart().apply,
+        updater=updater,
+        on_changed=on_changed,
     )
 
 
@@ -130,10 +166,12 @@ def build_settings_window(
     context: Callable[[], SkillContext],
     on_hotkey: Callable[[str], None],
     updater: Updater | None = None,
+    *,
+    on_changed: Callable[[], None] = lambda: None,
 ) -> SettingsWindow:
     path = settings.storage.data_dir / SETTINGS_FILENAME
     window = SettingsWindow(
-        make_settings_controller(path, state, updater), ModelsController(context, path)
+        make_settings_controller(path, state, updater, on_changed), ModelsController(context, path)
     )
     window.hotkey_changed.connect(on_hotkey)
     return window
@@ -158,12 +196,13 @@ def run_setup_wizard(
     state: StateDb,
     build: FlowBuilder = build_flow,
     updater: Updater | None = None,
+    on_changed: Callable[[], None] = lambda: None,
 ) -> None:
     """Show the first-run wizard (also reachable from the tray); returns when it closes."""
     path = settings.storage.data_dir / SETTINGS_FILENAME
     wizard = SetupWizard(
         SetupController(build, settings, state),
-        make_settings_controller(path, state, updater),
+        make_settings_controller(path, state, updater, on_changed),
         load_catalog(settings.storage.data_dir),
         probe_hardware(),
     )
@@ -223,9 +262,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> int:
     with StateDb(settings.storage.data_dir) as state:
-        context = make_context_factory(settings, state)
+        settings_path = settings.storage.data_dir / SETTINGS_FILENAME
+        context = make_context_factory(settings, state, lambda: load_settings(settings_path))
         updater = Updater(resolve_source(settings.updates.repo_url), state=state)
         window = build_window(settings, state, context)
+
+        def settings_changed() -> None:
+            """A setting was saved: rebuild what depends on it so no restart is needed."""
+            context.invalidate()
+            window.reload_context()
+
         hotkey = HotkeyFilter(window.summon)
         app.installNativeEventFilter(hotkey)
         registered = False
@@ -242,7 +288,12 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
             if not settings_window:
                 settings_window.append(
                     build_settings_window(
-                        settings, state, context, hotkey_applier(hotkey, tray), updater
+                        settings,
+                        state,
+                        context,
+                        hotkey_applier(hotkey, tray),
+                        updater,
+                        on_changed=settings_changed,
                     )
                 )
             settings_window[0].open()
@@ -250,7 +301,8 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
         menu.addAction("Search", window.summon)
         menu.addAction("Settings…", open_settings)
         menu.addAction(
-            "Run setup again…", lambda: run_setup_wizard(settings, state, updater=updater)
+            "Run setup again…",
+            lambda: run_setup_wizard(settings, state, updater=updater, on_changed=settings_changed),
         )
         restart_action = menu.addAction("Restart to update", updater.restart_to_update)
         restart_action.setVisible(False)  # shown once an update has been downloaded
@@ -279,7 +331,7 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
         if is_frozen():
             start_watcher()  # a fresh install has had no logon yet; a no-op if one is running
         if args.setup or setup_needed(state):
-            run_setup_wizard(settings, state, updater=updater)
+            run_setup_wizard(settings, state, updater=updater, on_changed=settings_changed)
         if args.show:
             window.summon()
         code = app.exec()

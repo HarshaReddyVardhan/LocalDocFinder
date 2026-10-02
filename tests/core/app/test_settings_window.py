@@ -13,7 +13,12 @@ from vector_embed.app.settings_controller import NO_UPDATES, SettingsController,
 from vector_embed.app.settings_tabs import AboutTab, CloudTab, GeneralTab
 from vector_embed.app.settings_window import SettingsWindow
 from vector_embed.core.models.benchmark import BenchKind, BenchResult, record_result
-from vector_embed.core.settings import CloudProviderSettings, Settings, SettingsError
+from vector_embed.core.settings import (
+    CloudProviderSettings,
+    Settings,
+    SettingsError,
+    load_settings,
+)
 from vector_embed.core.settings_io import set_setting
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.updates import UpdateKind, Updater
@@ -434,3 +439,65 @@ def test_settings_defaults_include_the_new_sections() -> None:
     settings = Settings()
     assert settings.app.start_with_windows
     assert settings.updates.auto_check
+
+
+# ------------------------------------------------------------------ changes apply without a restart
+def test_every_saved_setting_notifies_the_app(env: Env, keys: FakeKeys) -> None:
+    changes: list[int] = []
+    controller = SettingsController(
+        env.data_dir / "settings.toml", env.state, keys, on_changed=lambda: changes.append(1)
+    )
+    controller.set_redact_personal(True)
+    controller.set_mask_ids_locally(True)
+    controller.set_monthly_budget(5.0)
+    controller.set_start_with_windows(False)
+    controller.set_hotkey("ctrl+alt+f6")
+    controller.set_roots(["D:\a"])
+    controller.set_key("x", "sk-secret")
+    controller.delete_key("x")
+    assert len(changes) == 8
+
+
+def test_a_rejected_change_does_not_notify(env: Env, keys: FakeKeys) -> None:
+    changes: list[int] = []
+    controller = SettingsController(
+        env.data_dir / "settings.toml", env.state, keys, on_changed=lambda: changes.append(1)
+    )
+    with pytest.raises(SettingsError):
+        controller.set_monthly_budget(-1.0)
+    with pytest.raises(SettingsError):
+        controller.set_roots([])
+    assert changes == []
+
+
+def test_the_context_is_rebuilt_from_the_saved_settings_after_a_change(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built: list[bool] = []
+
+    def fake_build(settings: object, state: object, **_kw: object) -> object:
+        built.append(settings.privacy.redact_personal)  # type: ignore[attr-defined]
+        return object()
+
+    monkeypatch.setattr(app_main.runtime, "build_skill_context", fake_build)
+    path = env.data_dir / "settings.toml"
+    factory = app_main.make_context_factory(env.settings, env.state, lambda: load_settings(path))
+    first = factory()
+    assert factory() is first  # cached until something changes
+    set_setting(path, ["privacy", "redact_personal"], True)
+    factory.invalidate()
+    assert factory() is not first
+    assert built == [False, True]  # the rebuilt context saw the new privacy setting
+
+
+def test_an_invalid_settings_file_keeps_the_working_context_settings(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_main.runtime, "build_skill_context", lambda *_a, **_k: object())
+
+    def broken() -> object:
+        raise SettingsError("bad file")
+
+    factory = app_main.make_context_factory(env.settings, env.state, broken)  # type: ignore[arg-type]
+    factory.invalidate()  # must not raise
+    assert factory() is not None

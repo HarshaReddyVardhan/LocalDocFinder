@@ -84,6 +84,11 @@ class AssistantService:
         self._ctx: SkillContext | None = None
         self._previewed: _Previewed | None = None
 
+    def reset(self) -> None:
+        """Drop the cached context (a setting changed); the next request rebuilds it."""
+        self._ctx = None
+        self._previewed = None
+
     @property
     def ctx(self) -> SkillContext:
         if self._ctx is None:

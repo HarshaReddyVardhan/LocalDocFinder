@@ -36,6 +36,11 @@ class FakeAssistant:
     def end_chat(self, reason: str = "closed") -> None:
         self.calls.append(("end", reason))
 
+    session_active = False
+
+    def reset(self) -> None:
+        self.calls.append(("reset", None))
+
     def revoke_consent(self) -> None:
         self.calls.append(("revoke_consent", None))
 
@@ -366,3 +371,24 @@ class TestStreamCancellation:
         wait_for(qapp, lambda: "end" in kinds(assistant))
         assert closed.is_set()
         assert "second" not in window.answer.toPlainText()
+
+
+class TestReloadContext:
+    def test_a_settings_change_resets_the_services_and_ends_a_chat(
+        self, qapp: QApplication, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, assistant, _ = parts
+        window.set_mode(Mode.CHAT)
+        wait_for(qapp, lambda: "begin" in kinds(assistant))
+        window.reload_context()
+        assert window.mode is Mode.SEARCH  # the chat's model or route may have changed
+        wait_for(qapp, lambda: "end" in kinds(assistant))
+        assert "reset" in kinds(assistant)
+        assert window._service.resets == 1  # type: ignore[attr-defined]
+
+    def test_in_search_mode_it_only_resets(
+        self, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, assistant, _ = parts
+        window.reload_context()
+        assert kinds(assistant) == ["reset"]

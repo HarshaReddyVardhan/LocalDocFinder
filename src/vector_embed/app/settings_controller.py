@@ -47,7 +47,9 @@ class SettingsController:
         updater: Updater | None = None,
         stop_others: Callable[[], object] = stop_everything,
         schedule_deletion: Callable[[Path], None] = schedule_data_deletion,
+        on_changed: Callable[[], None] = lambda: None,
     ) -> None:
+        self._on_changed = on_changed
         self._path = settings_path
         self._state = state
         self._keys = keys
@@ -73,16 +75,19 @@ class SettingsController:
         except ValueError as exc:
             raise SettingsError(f"invalid hotkey {spec!r}: {exc}") from exc
         set_setting(self._path, ["search", "hotkey"], cleaned)
+        self._on_changed()
         return cleaned
 
     def set_roots(self, roots: list[str]) -> None:
         if not roots:
             raise SettingsError("at least one folder must be indexed")
         set_setting(self._path, ["scope", "roots"], list(dict.fromkeys(roots)))
+        self._on_changed()
 
     def set_start_with_windows(self, enabled: bool) -> None:
         set_setting(self._path, ["app", "start_with_windows"], enabled)
         self._apply_autostart(enabled)
+        self._on_changed()
 
     # ------------------------------------------------------------------ models
     def speed_tests(self) -> list[BenchResult]:
@@ -98,20 +103,25 @@ class SettingsController:
 
     def set_key(self, provider: str, key: str) -> None:
         self._keys.set(provider, key)
+        self._on_changed()
 
     def delete_key(self, provider: str) -> None:
         self._keys.delete(provider)
+        self._on_changed()
 
     def set_redact_personal(self, enabled: bool) -> None:
         set_setting(self._path, ["privacy", "redact_personal"], enabled)
+        self._on_changed()
 
     def set_mask_ids_locally(self, enabled: bool) -> None:
         set_setting(self._path, ["privacy", "mask_ids_locally"], enabled)
+        self._on_changed()
 
     def set_monthly_budget(self, usd: float | None) -> None:
         if usd is not None and usd <= 0:
             raise SettingsError("the monthly budget must be above zero (or off)")
         set_setting(self._path, ["cloud", "monthly_budget_usd"], usd)
+        self._on_changed()
 
     # ------------------------------------------------------------------ updates
     def set_auto_check(self, enabled: bool) -> None:
