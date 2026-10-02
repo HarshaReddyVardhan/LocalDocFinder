@@ -245,6 +245,83 @@ class ImageSettings(_Section):
     ocr_max_dimension: int = Field(default=4000, gt=0)
 
 
+class DocTypeRule(_Section):
+    """Regex evidence for one document type (all case-insensitive)."""
+
+    filename: tuple[str, ...] = ()  # matched against the file name
+    headings: tuple[str, ...] = ()  # matched against whole lines (section headings)
+    keywords: tuple[str, ...] = ()  # matched anywhere in the text
+    path: tuple[str, ...] = ()  # matched against the full path with forward slashes
+
+
+def _default_doctype_rules() -> dict[str, DocTypeRule]:
+    return {
+        "resume": DocTypeRule(
+            filename=(r"resume", r"(?<![a-z])cv(?![a-z])", r"curriculum"),
+            headings=(r"(work )?experience", r"education", r"skills", r"projects", r"summary"),
+            keywords=(r"references available", r"professional experience"),
+        ),
+        "cover_letter": DocTypeRule(
+            filename=(r"cover[ _-]?letter",),
+            headings=(),
+            keywords=(
+                r"dear (hiring|sir|madam|mr|ms)",
+                r"sincerely",
+                r"i am writing to (apply|express)",
+            ),
+        ),
+        "jd": DocTypeRule(
+            filename=(r"(?<![a-z])jd(?![a-z])", r"job[ _-]?(description|posting)"),
+            headings=(
+                r"responsibilities",
+                r"requirements",
+                r"qualifications",
+                r"about the (role|job)",
+                r"what you('| wi)ll do",
+                r"nice to have",
+                r"benefits",
+            ),
+            keywords=(
+                r"we are (hiring|looking for)",
+                r"years of experience",
+                r"apply now",
+                r"equal opportunity",
+            ),
+        ),
+        "invoice": DocTypeRule(
+            filename=(r"invoice", r"receipt"),
+            headings=(r"bill to", r"amount due", r"subtotal"),
+            keywords=(r"invoice (no|number|#)", r"amount due", r"\btotal\b", r"due date"),
+        ),
+        "paper": DocTypeRule(
+            headings=(r"abstract", r"introduction", r"references", r"related work", r"conclusion"),
+            keywords=(r"\bdoi\b", r"arxiv", r"et al\."),
+        ),
+        "plan": DocTypeRule(
+            path=(r"/plans/", r"/\.claude/", r"plan\.md$"),
+            filename=(r"plan",),
+            headings=(r"context", r"verification", r"steps", r"build order", r"plan"),
+        ),
+        "notes": DocTypeRule(
+            path=(r"/memory/", r"/notes?/"),
+            filename=(r"notes?", r"todo", r"journal"),
+        ),
+    }  # fmt: skip
+
+
+class DocTypeSettings(_Section):
+    """Document classification and version grouping (see ``vector_embed.core.doctypes``)."""
+
+    rules: dict[str, DocTypeRule] = Field(default_factory=_default_doctype_rules)
+    threshold: float = Field(default=0.4, ge=0, le=1)  # below this a document is "other"
+    prototype_weight: float = Field(default=0.4, ge=0, le=1)
+    version_similarity: float = Field(default=0.9, gt=0, le=1)
+    versioned_types: frozenset[str] = frozenset(
+        {"resume", "cover_letter", "jd", "invoice", "paper"}
+    )
+    full_text_max_chars: int = Field(default=20_000, gt=0)  # larger documents keep no full text
+
+
 class SearchSettings(_Section):
     rrf_k: int = Field(default=60, gt=0)
     candidates: int = Field(default=60, gt=0)
@@ -280,6 +357,7 @@ class Settings(BaseSettings):
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
     images: ImageSettings = Field(default_factory=ImageSettings)
+    doctypes: DocTypeSettings = Field(default_factory=DocTypeSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
 
