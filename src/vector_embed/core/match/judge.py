@@ -114,9 +114,15 @@ class Judgement:
 
 
 def _json(
-    gateway: LlmGateway, messages: list[Message], schema: dict[str, Any], session: bool
+    gateway: LlmGateway,
+    messages: list[Message],
+    schema: dict[str, Any],
+    session: bool,
+    local_only: bool = False,
 ) -> object:
-    return gateway.chat_json(messages, schema, ROLE_MATCH_SCORER, session=session).data
+    return gateway.chat_json(
+        messages, schema, ROLE_MATCH_SCORER, session=session, local_only=local_only
+    ).data
 
 
 def extract_requirements(
@@ -207,6 +213,7 @@ def judge_document(
     match: MatchSettings,
     chat: ChatSettings,
     session: bool = False,
+    local_only: bool = False,
 ) -> Judgement:
     """Judge one document. The prompt is kept under the context window (logged token count)."""
     fixed = build_judge_messages(requirements, jd_text, name, "")
@@ -220,7 +227,9 @@ def judge_document(
         "match: judging", extra={"doc": name, "prompt_tokens": prompt_tokens, "reduced": reduced}
     )
     try:
-        payload = _JudgePayload.model_validate(_json(gateway, messages, JUDGE_SCHEMA, session))
+        payload = _JudgePayload.model_validate(
+            _json(gateway, messages, JUDGE_SCHEMA, session, local_only)
+        )
     except ValidationError as exc:
         raise MatchError(f"unusable judgement for {name}: {exc}") from exc
     allowed = {"met", "partial", "missing"}

@@ -89,9 +89,16 @@ class LlmGateway:
         self.router: TargetRouter | None = None
 
     # ------------------------------------------------------------------ model choice
-    def target(self, role: str = ROLE_CHAT) -> ChatTarget:
-        """The model that will serve ``role``, or a clear error."""
-        if self.router is not None and (routed := self.router(role, self._power)) is not None:
+    def target(self, role: str = ROLE_CHAT, *, local_only: bool = False) -> ChatTarget:
+        """The model that will serve ``role``, or a clear error.
+
+        ``local_only`` bypasses cloud routing (used for files that must never leave the machine).
+        """
+        if (
+            not local_only
+            and self.router is not None
+            and (routed := self.router(role, self._power)) is not None
+        ):
             return routed
         if not self._power.local_chat_allowed():
             raise ChatBlockedError("on battery: plug in to chat (or configure a cloud provider)")
@@ -175,9 +182,14 @@ class LlmGateway:
             self._loaded.add(target.model)
 
     def stream(
-        self, messages: list[Message], role: str = ROLE_CHAT, *, session: bool = False
+        self,
+        messages: list[Message],
+        role: str = ROLE_CHAT,
+        *,
+        session: bool = False,
+        local_only: bool = False,
     ) -> Iterator[ChatChunk]:
-        target = self.target(role)
+        target = self.target(role, local_only=local_only)
         if target.local:
             self._free_embedder()
             self._loaded.add(target.model)
@@ -197,8 +209,9 @@ class LlmGateway:
         role: str = ROLE_CHAT,
         *,
         session: bool = False,
+        local_only: bool = False,
     ) -> JsonResult:
-        target = self.target(role)
+        target = self.target(role, local_only=local_only)
         if target.local:
             self._free_embedder()
             self._loaded.add(target.model)
