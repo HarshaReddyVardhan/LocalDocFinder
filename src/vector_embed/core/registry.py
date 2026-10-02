@@ -4,6 +4,8 @@ Extractors, doctypes, providers, skills and sources each own one ``Registry``. A
 one is a single file with a decorator; no core code is edited.
 """
 
+import importlib
+import pkgutil
 from collections.abc import Callable, Iterator
 from typing import Generic, TypeVar
 
@@ -57,3 +59,20 @@ class Registry(Generic[T]):  # plain Generic keeps 3.11 compatibility
 
     def __len__(self) -> int:
         return len(self._items)
+
+
+def discover_modules(package: str) -> list[str]:
+    """Import every module of ``package`` so its ``@register`` decorators run.
+
+    Dropping a new file into an extension package is all it takes to add a feature.
+    Returns the imported module names.
+    """
+    pkg = importlib.import_module(package)
+    imported: list[str] = []
+    for info in pkgutil.iter_modules(pkg.__path__):
+        if info.name.startswith("_"):
+            continue
+        name = f"{package}.{info.name}"
+        importlib.import_module(name)
+        imported.append(name)
+    return imported

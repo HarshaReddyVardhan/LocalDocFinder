@@ -136,6 +136,11 @@ class ScopeSettings(_Section):
             ".cjs", ".php", ".rb", ".lua", ".r", ".sh", ".bash", ".ps1",
         }
     )  # fmt: skip
+    # Machine-written / data-ish formats: skipped above ``ChunkingSettings.max_data_file_kb``.
+    data_exts: frozenset[str] = frozenset(
+        {".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".sql", ".html", ".htm",
+         ".css", ".scss", ".sass", ".less"}
+    )  # fmt: skip
     doc_exts: frozenset[str] = frozenset({".pdf", ".docx", ".pptx"})
     image_exts: frozenset[str] = frozenset(
         {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
@@ -228,6 +233,18 @@ class ChunkingSettings(_Section):
     worker_batch_files: int = Field(default=16, gt=0)
 
 
+class ImageSettings(_Section):
+    """Images become text (OCR, optional caption) so they share the text embedding space."""
+
+    enable_captions: bool = False  # off by default; runs only during idle indexing
+    caption_model: str = "qwen2.5vl:3b"
+    min_pixels: int = Field(default=150, gt=0)  # skip icons/logos below this on both sides
+    max_per_doc: int = Field(default=50, gt=0)  # a 500-page scan must not stall the queue
+    max_decode_pixels: int = Field(default=200_000_000, gt=0)  # decompression-bomb guard
+    thumbnail_size: int = Field(default=480, gt=0)
+    ocr_max_dimension: int = Field(default=4000, gt=0)
+
+
 class SearchSettings(_Section):
     rrf_k: int = Field(default=60, gt=0)
     candidates: int = Field(default=60, gt=0)
@@ -262,6 +279,7 @@ class Settings(BaseSettings):
     idle: IdleSettings = Field(default_factory=IdleSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
+    images: ImageSettings = Field(default_factory=ImageSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
 
