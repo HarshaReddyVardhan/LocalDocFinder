@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from vector_embed.core.logging_setup import JsonFormatter, configure_logging, install_excepthooks
+from vector_embed.core import logging_setup
+from vector_embed.core.logging_setup import (
+    JsonFormatter,
+    configure_logging,
+    install_excepthooks,
+    rotate_if_large,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -82,3 +88,43 @@ def test_uncaught_exceptions_reach_the_log(
     messages = [record.getMessage() for record in caplog.records]
     assert "uncaught exception" in messages
     assert "uncaught exception in thread job" in messages
+
+
+def test_log_files_rotate_instead_of_growing_forever(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(logging_setup, "LOG_MAX_BYTES", 2000)
+    monkeypatch.setattr(logging_setup, "LOG_BACKUPS", 2)
+    configure_logging("rot", tmp_path, "INFO")
+    logger = logging.getLogger("rot-test")
+    for i in range(200):
+        logger.info("filler line number %d with some padding to take space", i)
+    names = sorted(p.name for p in tmp_path.glob("rot.log*"))
+    assert names == ["rot.log", "rot.log.1", "rot.log.2"]  # a bounded set of files
+    assert all(p.stat().st_size < 3000 for p in tmp_path.glob("rot.log*"))
+
+
+class TestRotateIfLarge:
+    def test_a_big_file_moves_aside_and_older_ones_shift(self, tmp_path: Path) -> None:
+        log = tmp_path / "worker.out.log"
+        log.write_text("x" * 100)
+        (tmp_path / "worker.out.log.1").write_text("older")
+        rotate_if_large(log, max_bytes=50, backups=2)
+        assert not log.exists()  # the writer starts a fresh file
+        assert (tmp_path / "worker.out.log.1").read_text() == "x" * 100
+        assert (tmp_path / "worker.out.log.2").read_text() == "older"
+
+    def test_the_oldest_backup_is_dropped(self, tmp_path: Path) -> None:
+        log = tmp_path / "w.log"
+        for suffix, text in (("", "now"), (".1", "one"), (".2", "two")):
+            (tmp_path / f"w.log{suffix}").write_text(text * 40)
+        rotate_if_large(log, max_bytes=10, backups=2)
+        assert (tmp_path / "w.log.2").read_text() == "one" * 40  # "two" is gone
+        assert not (tmp_path / "w.log.3").exists()
+
+    def test_a_small_or_missing_file_is_left_alone(self, tmp_path: Path) -> None:
+        small = tmp_path / "small.log"
+        small.write_text("tiny")
+        rotate_if_large(small, max_bytes=50)
+        assert small.read_text() == "tiny"
+        rotate_if_large(tmp_path / "missing.log")  # no error

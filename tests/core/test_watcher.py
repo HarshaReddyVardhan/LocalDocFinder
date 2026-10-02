@@ -692,6 +692,22 @@ class TestHelpers:
         monkeypatch.setattr(watcher, "load_settings", broken)
         assert watcher._current_embed_model(env.settings) == env.settings.embedding.model
 
+    def test_the_workers_redirected_output_is_rotated_before_each_start(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        big = logs / "worker.out.log"
+        big.write_text("x" * 100)
+        monkeypatch.setattr(watcher, "rotate_if_large", lambda p: p.rename(p.with_suffix(".old")))
+        started: list[list[str]] = []
+        monkeypatch.setattr(
+            watcher.subprocess, "Popen", lambda argv, **_kw: started.append(argv) or object()
+        )
+        watcher.SubprocessLauncher(logs).start(reconcile=False)
+        assert (logs / "worker.out.old").exists()
+        assert started
+
     def test_build_watcher_wires_real_collaborators(self, env: Env) -> None:
         w = watcher.build_watcher(env.settings, env.state)
         assert isinstance(w.launcher, watcher.SubprocessLauncher)

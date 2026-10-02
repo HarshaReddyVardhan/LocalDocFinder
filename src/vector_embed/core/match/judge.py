@@ -113,6 +113,18 @@ class Judgement:
     prompt_tokens: int
 
 
+def _describe(exc: Exception) -> str:
+    """An error for logs and messages. A pydantic error quotes the offending value, which here is
+    model output that may repeat the user's document: say where and what, never the input."""
+    if isinstance(exc, ValidationError):
+        problems = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc']) or 'response'}: {error['type']}"
+            for error in exc.errors(include_input=False)
+        )
+        return f"the model's reply did not match the expected shape ({problems})"
+    return str(exc)
+
+
 def _json(
     gateway: LlmGateway,
     messages: list[Message],
@@ -145,7 +157,7 @@ def extract_requirements(
             parsed = _RequirementsPayload.model_validate(data)
         except (ValidationError, ProviderError) as exc:
             last = exc
-            logger.info("match: checklist attempt %d failed: %s", attempt + 1, exc)
+            logger.info("match: checklist attempt %d failed: %s", attempt + 1, _describe(exc))
             if isinstance(exc, ProviderUnavailableError):
                 break  # retrying a dead server only wastes time
             continue
@@ -254,7 +266,7 @@ def judge_document(
             _json(gateway, messages, JUDGE_SCHEMA, session, local_only)
         )
     except ValidationError as exc:
-        raise MatchError(f"unusable judgement for {name}: {exc}") from exc
+        raise MatchError(f"unusable judgement for {name}: {_describe(exc)}") from exc
     allowed = {"met", "partial", "missing"}
     rows = [
         RowResult(r.id, r.status if r.status in allowed else "missing", r.evidence_quote.strip())  # type: ignore[arg-type]

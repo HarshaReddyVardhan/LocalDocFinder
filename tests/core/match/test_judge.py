@@ -203,6 +203,31 @@ class TestJudge:
                 chat.gateway, reqs(), JD, name="r", document_text=RESUME, match=MATCH, chat=CHAT
             )
 
+    def test_a_malformed_reply_never_quotes_its_content_in_the_error(
+        self, chat: Chat, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        secret = "the candidate's private salary history 123456"
+        chat.client.chat_json_reply = json.dumps({"results": secret})
+        with pytest.raises(MatchError) as caught:
+            judge.judge_document(
+                chat.gateway, reqs(), JD, name="r", document_text=RESUME, match=MATCH, chat=CHAT
+            )
+        assert secret not in str(caught.value)
+        assert "results" in str(caught.value)  # where it went wrong is still said
+
+    def test_a_malformed_checklist_reply_is_logged_without_its_content(
+        self, chat: Chat, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        secret = "confidential job description text"
+        chat.client.chat_json_reply = json.dumps({"requirements": secret})
+        with (
+            caplog.at_level("INFO", logger="vector_embed.core.match.judge"),
+            pytest.raises(MatchError),
+        ):
+            judge.extract_requirements(chat.gateway, JD, MATCH)
+        assert caplog.records
+        assert all(secret not in record.getMessage() for record in caplog.records)
+
     def test_judgement_json_is_compact_and_readable(self, chat: Chat) -> None:
         chat.client.chat_json_reply = self.reply(
             [{"id": 1, "status": "met", "evidence_quote": "Built payment systems in Python"}]

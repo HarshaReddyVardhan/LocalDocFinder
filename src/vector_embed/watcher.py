@@ -23,7 +23,7 @@ from watchdog.observers import Observer
 from watchdog.observers.api import ObservedWatch
 
 from vector_embed.core.idle import IdleGate
-from vector_embed.core.logging_setup import configure_logging
+from vector_embed.core.logging_setup import configure_logging, rotate_if_large
 from vector_embed.core.models.hardware import on_ac_power
 from vector_embed.core.ollama_http import unload_model
 from vector_embed.core.power import PowerGate
@@ -202,7 +202,9 @@ class SubprocessLauncher:
         if reconcile:
             command.append("--reconcile")
         self._log_dir.mkdir(parents=True, exist_ok=True)
-        with (self._log_dir / "worker.out.log").open("a", encoding="utf-8") as out:
+        output = self._log_dir / "worker.out.log"
+        rotate_if_large(output)  # the worker redirects its streams here, so it cannot rotate it
+        with output.open("a", encoding="utf-8") as out:
             logger.info("starting worker: %s", " ".join(command))
             return subprocess.Popen(  # noqa: S603  # fixed argv, our own interpreter and module
                 command,
