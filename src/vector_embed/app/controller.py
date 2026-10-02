@@ -151,7 +151,11 @@ class SearchService:
         self.skill.warm()
 
     def on_battery(self) -> bool:
-        return self.skill.ctx.query_on_cpu()
+        """Whether queries run on the CPU right now; ``False`` until the skill exists.
+
+        Called from the UI thread for a cosmetic status line, so it never builds the context.
+        """
+        return self._skill.ctx.query_on_cpu() if self._skill is not None else False
 
     def search(self, query: str, project: str | None) -> SearchOutcome:
         started = time.perf_counter()

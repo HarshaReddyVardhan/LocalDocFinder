@@ -291,6 +291,7 @@ class TestChat:
         self, qapp: QApplication, parts: tuple[SearchWindow, FakeAssistant, list]
     ) -> None:
         window, assistant, _ = parts
+        window.show()
         assistant.maintain_result = "idle"
         window.maintain_model()
         wait_for(qapp, lambda: "unloaded" in window.status.text())
@@ -301,6 +302,29 @@ class TestChat:
         wait_for(qapp, lambda: kinds(assistant).count("maintain") == 2)
         qapp.processEvents()
         assert window.status.text() == "unchanged"
+
+    def test_the_timer_stops_when_there_is_no_window_and_no_loaded_model(
+        self, qapp: QApplication, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, assistant, _ = parts
+        window.show()
+        window._maintain.start()
+        window.hide()
+        window.maintain_model()
+        assert not window._maintain.isActive()  # nothing left to watch
+        assert "maintain" not in kinds(assistant)  # and no pointless check was run
+
+    def test_the_timer_keeps_running_while_a_chat_model_is_loaded(
+        self, qapp: QApplication, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, assistant, _ = parts
+        assistant.session_active = True  # a model is still loaded: idle unload must stay possible
+        window.show()
+        window._maintain.start()
+        window.hide()
+        window.maintain_model()
+        wait_for(qapp, lambda: "maintain" in kinds(assistant))
+        assert window._maintain.isActive()
 
     def test_maintenance_without_an_assistant_is_a_noop(
         self, qapp: QApplication, tmp_path: Path
@@ -392,3 +416,30 @@ class TestReloadContext:
         window, assistant, _ = parts
         window.reload_context()
         assert kinds(assistant) == ["reset"]
+
+
+class TestStreamingRender:
+    def test_a_burst_of_tokens_is_rendered_far_fewer_times_than_it_arrives(
+        self, qapp: QApplication, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, _, _ = parts
+        window.set_mode(Mode.ASK)
+        renders: list[int] = []
+        original = window.answer.setMarkdown
+        window.answer.setMarkdown = lambda text: renders.append(len(text)) or original(text)  # type: ignore[method-assign]
+        for i in range(200):
+            window._on_event(window._generation, Delta(f"token{i} "))
+        assert len(renders) < 20  # not one markdown parse per token
+        wait_for(qapp, lambda: "token199" in window.answer.toPlainText())
+        assert "token0 " in window.answer.toPlainText()
+        assert "token199" in window.answer.toPlainText()  # the trailing flush shows everything
+
+    def test_finishing_flushes_immediately(
+        self, qapp: QApplication, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, _, _ = parts
+        window.set_mode(Mode.ASK)
+        window._on_event(window._generation, Delta("first "))
+        window._on_event(window._generation, Delta("second"))  # held back by the throttle
+        window._on_event(window._generation, Finished([], ""))
+        assert "second" in window.answer.toPlainText()  # no wait for the timer

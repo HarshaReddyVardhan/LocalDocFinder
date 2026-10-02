@@ -87,19 +87,22 @@ def ask(window: SearchWindow, text: str = "how do retries work") -> None:
 
 
 def test_the_button_only_appears_in_ask_and_chat_when_a_cloud_is_configured(
-    parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]],
+    qapp: QApplication, parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]]
 ) -> None:
     window, assistant, _ = parts
     window.show()
     assert not window.cloud_button.isVisible()  # search mode
     window.set_mode(Mode.ASK)
+    wait_for(qapp, window.cloud_button.isVisible)  # found out in the background
     assert window.cloud_button.isVisible()
     window.set_mode(Mode.CHAT)
+    wait_for(qapp, window.cloud_button.isVisible)
     assert window.cloud_button.isVisible()
     window.set_mode(Mode.SEARCH)
     assert not window.cloud_button.isVisible()
     assistant.available = False
     window.set_mode(Mode.ASK)
+    wait_for(qapp, lambda: False, timeout=0.3)
     assert not window.cloud_button.isVisible()
 
 
@@ -123,6 +126,7 @@ def test_answer_better_shows_the_preview_and_asks_the_cloud_after_consent(
     ask(window)
     wait_for(qapp, lambda: window.status.text() == "done")
     window.answer_better()
+    wait_for(qapp, lambda: shown)
     assert shown == [PREVIEW]
     wait_for(qapp, lambda: assistant.escalations == 1)
     assert assistant.escalations == 1
@@ -140,6 +144,7 @@ def test_declining_sends_nothing(
     ask(window)
     wait_for(qapp, lambda: window.status.text() == "done")
     window.answer_better()
+    wait_for(qapp, lambda: window.status.text() == "cancelled: nothing was sent")
     assert window.status.text() == "cancelled: nothing was sent"
     assert assistant.escalations == 0
 
@@ -153,6 +158,7 @@ def test_chat_mode_previews_the_chat_request(
     window.submit()
     wait_for(qapp, lambda: window.status.text().startswith("done"))
     window.answer_better()
+    wait_for(qapp, lambda: shown)
     assert ("preview_chat", "what is missing?") in assistant.calls
     assert shown == [PREVIEW]
     wait_for(qapp, lambda: assistant.escalations == 1)
@@ -166,9 +172,11 @@ def test_missing_cloud_and_preview_errors_are_reported(
     wait_for(qapp, lambda: window.status.text() == "done")
     assistant.preview = None
     window.answer_better()
+    wait_for(qapp, lambda: "no cloud provider is configured" in window.status.text())
     assert "no cloud provider is configured" in window.status.text()
     assistant.preview_error = RuntimeError("secret.md is private and cannot be sent")
     window.answer_better()
+    wait_for(qapp, lambda: "private and cannot be sent" in window.status.text())
     assert "private and cannot be sent" in window.status.text()
 
 
@@ -193,3 +201,25 @@ def test_failures_during_an_escalated_answer_are_shown(
     window.answer_better()
     wait_for(qapp, lambda: "budget" in window.status.text())
     assert "budget" in window.answer.toPlainText()
+
+
+def test_the_preview_is_built_off_the_ui_thread(
+    qapp: QApplication, parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]]
+) -> None:
+    import threading
+
+    window, assistant, _ = parts
+    threads: list[str] = []
+    original = assistant.cloud_preview_ask
+
+    def spy(question: str) -> CloudPreview | None:
+        threads.append(threading.current_thread().name)
+        return original(question)
+
+    assistant.cloud_preview_ask = spy  # type: ignore[method-assign]
+    ask(window)
+    wait_for(qapp, lambda: window.status.text() == "done")
+    window.answer_better()
+    wait_for(qapp, lambda: threads)
+    assert threads
+    assert threads[0] != threading.main_thread().name

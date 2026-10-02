@@ -468,3 +468,15 @@ def test_main_exits_when_another_copy_is_running(
     with app_main.single_instance("app", env.settings.storage.data_dir) as first:
         assert first
         assert app_main.main([]) == app_main.EXIT_OK
+
+
+def test_the_battery_hint_never_builds_the_context_on_the_ui_thread() -> None:
+    built: list[int] = []
+
+    def factory() -> SkillContext:
+        built.append(1)
+        raise AssertionError("must not be built from the UI thread")
+
+    service = controller.SearchService(factory)
+    assert service.on_battery() is False
+    assert built == []

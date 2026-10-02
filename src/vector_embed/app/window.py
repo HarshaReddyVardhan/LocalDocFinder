@@ -10,6 +10,7 @@ pane appear only outside Search. Models, health and settings live in the Setting
 
 import enum
 import threading
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -57,6 +58,7 @@ COMPACT_HEIGHT = 84  # just the search bar and the status line
 EXPANDED_HEIGHT = 520
 POPUP_WIDTH = 820
 DEBOUNCE_MS = 180
+RENDER_MS = 80  # streamed text is re-rendered at most this often
 MAINTAIN_MS = 15_000
 STREAM_STOP_WAIT_SECONDS = 10.0  # how long ending a chat waits for the answer to stop
 SCRATCH_MIN_CHARS = 200  # pasted text longer than this (or multi-line) becomes a scratch document
@@ -90,6 +92,8 @@ class _Signals(QObject):
     done = Signal(int, object)  # generation, SearchOutcome
     streamed = Signal(int, object)  # generation, assistant Event
     status = Signal(str)
+    cloud_checked = Signal(int, bool)  # mode-change token, is a cloud provider configured
+    preview_ready = Signal(object, str)  # CloudPreview or None, error text
 
 
 class _SearchJob(QRunnable):
@@ -154,6 +158,35 @@ class _StreamJob(QRunnable):
             self.finished.set()
 
 
+class _CloudProbeJob(QRunnable):
+    """Asks whether a cloud provider is configured; building the context is not UI-thread work."""
+
+    def __init__(self, token: int, assistant: AssistantService, signals: _Signals) -> None:
+        super().__init__()
+        self._token, self._assistant, self._signals = token, assistant, signals
+
+    def run(self) -> None:
+        try:
+            available = self._assistant.cloud_available()
+        except Exception:  # no index yet, say: the button is optional
+            available = False
+        self._signals.cloud_checked.emit(self._token, available)
+
+
+class _PreviewJob(QRunnable):
+    """Builds the "what will be sent" preview (retrieval and masking) off the UI thread."""
+
+    def __init__(self, build: Callable[[], object], signals: _Signals) -> None:
+        super().__init__()
+        self._build, self._signals = build, signals
+
+    def run(self) -> None:
+        try:
+            self._signals.preview_ready.emit(self._build(), "")
+        except Exception as exc:  # e.g. a private pinned file: shown, not raised
+            self._signals.preview_ready.emit(None, str(exc))
+
+
 class _CallJob(QRunnable):
     """Runs a blocking call (model load/unload) in the background and reports a status line."""
 
@@ -208,6 +241,15 @@ class SearchWindow(QWidget):
         self._signals.done.connect(self._on_outcome)
         self._signals.streamed.connect(self._on_event)
         self._signals.status.connect(self._set_status)
+        self._signals.cloud_checked.connect(self._on_cloud_checked)
+        self._signals.preview_ready.connect(self._on_preview)
+        self._mode_token = 0  # which mode switch a cloud probe answers
+        self._pending_cloud: tuple[Mode, str] | None = None
+        self._last_render = 0.0
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.setInterval(RENDER_MS)
+        self._render_timer.timeout.connect(self._render_answer)
 
         self._build_ui()
         self._timer = QTimer(self)
@@ -326,7 +368,7 @@ class SearchWindow(QWidget):
         self.mode_label.setVisible(not searching)
         self.input.setPlaceholderText(PLACEHOLDERS[self._mode.value])
         self.body.setCurrentIndex(self._body_index())
-        self.cloud_button.setVisible(self._cloud_possible())
+        self._check_cloud_async()
         self.answer.setVisible(not searching)
         self.answer.clear()
         self._answer_text = ""
@@ -341,14 +383,20 @@ class SearchWindow(QWidget):
             layout.activate()  # drop the stale minimum height before shrinking
         self.resize(self.width(), EXPANDED_HEIGHT if expanded else COMPACT_HEIGHT)
 
-    def _cloud_possible(self) -> bool:
-        """The cloud button shows in Ask/Chat when a provider with a key is configured."""
+    def _check_cloud_async(self) -> None:
+        """The cloud button shows in Ask/Chat when a provider with a key is configured.
+
+        Found out in the background: the answer may need the whole skill context built first.
+        """
+        self.cloud_button.setVisible(False)
+        self._mode_token += 1
         if self._assistant is None or self._mode not in (Mode.ASK, Mode.CHAT):
-            return False
-        try:
-            return self._assistant.cloud_available()
-        except Exception:  # building the context can fail (no index yet); the button is optional
-            return False
+            return
+        self._pool.start(_CloudProbeJob(self._mode_token, self._assistant, self._signals))
+
+    def _on_cloud_checked(self, token: int, available: bool) -> None:
+        if token == self._mode_token:  # not a stale answer for a mode we already left
+            self.cloud_button.setVisible(available and self._mode in (Mode.ASK, Mode.CHAT))
 
     def _body_index(self) -> int:
         if self._mode is Mode.MATCH:
@@ -393,6 +441,9 @@ class SearchWindow(QWidget):
         if self._assistant is None:
             return
         service = self._assistant
+        if not self.isVisible() and not service.session_active:
+            self._maintain.stop()  # nothing to watch: no window, no loaded model
+            return
 
         def check() -> str:
             reason = service.maintain()
@@ -480,19 +531,34 @@ class SearchWindow(QWidget):
         if assistant is None or not self._last_text or self._mode not in (Mode.ASK, Mode.CHAT):
             return
         question = self._last_text
-        try:
-            if self._mode is Mode.ASK:
-                preview = assistant.cloud_preview_ask(question)
-            else:
-                preview = assistant.cloud_preview_chat(question, self._chat)
-        except (
-            Exception
-        ) as exc:  # preview failures (e.g. private pinned file) are shown, not raised
-            self.status.setText(str(exc))
+        mode, chat = self._mode, self._chat
+        self._pending_cloud = (mode, question)
+        self.status.setText("preparing what will be sent…")
+        self.cloud_button.setEnabled(False)
+        build = (
+            (lambda: assistant.cloud_preview_ask(question))
+            if mode is Mode.ASK
+            else (lambda: assistant.cloud_preview_chat(question, chat))
+        )
+        self._pool.start(_PreviewJob(build, self._signals))
+
+    def _on_preview(self, preview: object, error: str) -> None:
+        """The preview is ready: show it, and send only what the user approves."""
+        self.cloud_button.setEnabled(True)
+        pending, self._pending_cloud = self._pending_cloud, None
+        assistant = self._assistant
+        if pending is None or assistant is None:
+            return
+        mode, question = pending
+        if mode is not self._mode:  # the user moved on while it was being prepared
+            return
+        if error:
+            self.status.setText(error)
             return
         if preview is None:
             self.status.setText("no cloud provider is configured (see: ve keys set)")
             return
+        assert isinstance(preview, CloudPreview)
         if not self.cloud_confirm(preview):
             self.status.setText("cancelled: nothing was sent")
             return
@@ -511,19 +577,42 @@ class SearchWindow(QWidget):
             return
         if isinstance(event, Delta):
             self._answer_text += event.text
-            self.answer.setMarkdown(self._answer_text)
-            scrollbar = self.answer.verticalScrollBar()
-            scrollbar.setValue(scrollbar.maximum())
+            self._schedule_render()
         elif isinstance(event, Finished):
+            self._render_now()
             self._finish_answer(event)
         elif isinstance(event, Failed):
+            self._render_timer.stop()
             self.answer.setMarkdown(f"**{event.message}**")
             self.status.setText(event.message)
+
+    def _schedule_render(self) -> None:
+        """Re-parsing the whole answer as Markdown per token is slow: render at most every 80 ms.
+
+        The first token of a burst shows at once; the rest is flushed by a trailing timer.
+        """
+        if (
+            time.monotonic() - self._last_render >= RENDER_MS / 1000
+            and not self._render_timer.isActive()
+        ):
+            self._render_answer()
+        elif not self._render_timer.isActive():
+            self._render_timer.start()
+
+    def _render_now(self) -> None:
+        self._render_timer.stop()
+        self._render_answer()
+
+    def _render_answer(self) -> None:
+        self._last_render = time.monotonic()
+        self.answer.setMarkdown(self._answer_text)
+        scrollbar = self.answer.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
 
     def _finish_answer(self, event: Finished) -> None:
         if event.note:
             self._answer_text += event.note
-            self.answer.setMarkdown(self._answer_text)
+            self._render_now()
         self._sources = event.sources
         self.list.clear()
         for source in event.sources:
