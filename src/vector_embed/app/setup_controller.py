@@ -12,12 +12,14 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from vector_embed.core.providers.base import ProviderError
 from vector_embed.core.settings import Settings
 from vector_embed.core.setup.flow import (
+    EnvironmentProbe,
     SetupError,
     SetupFlow,
     SetupOptions,
     SetupPreview,
     SlowOffer,
 )
+from vector_embed.core.setup.ollama_install import OllamaState
 from vector_embed.core.setup.plan import SetupChoices, SetupPlanError
 from vector_embed.core.setup.wiring import FlowBuilder
 from vector_embed.core.store.sqlite import StateDb
@@ -33,6 +35,7 @@ class SetupController(QObject):
     finished = Signal(object)  # SetupResult
     failed = Signal(str)
     downgrade_offered = Signal(object)  # SlowOffer
+    probed = Signal(object)  # EnvironmentProbe
 
     def __init__(
         self,
@@ -47,10 +50,35 @@ class SetupController(QObject):
         self._accepted = False
         self._flow: SetupFlow = build(settings, state, self.progressed.emit, self._ask_downgrade)
         self.running = False
+        self._probe: EnvironmentProbe | None = None
 
-    def preview(self, choices: SetupChoices = SetupChoices()) -> SetupPreview:  # noqa: B008
-        """What setup would do; a quick, read-only probe (no changes)."""
-        return self._flow.preview(SetupOptions(choices))
+    def probe_async(self) -> None:
+        """Look at Ollama and the disk in the background; ``probed`` fires when it is known."""
+        self._pool.start(_ProbeJob(self))
+
+    def run_probe(self) -> None:
+        try:
+            probe = self._flow.probe()
+        except _KNOWN_ERRORS as exc:
+            logger.warning("setup probe failed: %s", exc)
+            probe = EnvironmentProbe(OllamaState.MISSING, (), 0)
+        self._probe = probe
+        self.probed.emit(probe)
+
+    @property
+    def environment(self) -> EnvironmentProbe | None:
+        """The last probe, or ``None`` before the first one has finished."""
+        return self._probe
+
+    def preview(self, choices: SetupChoices = SetupChoices()) -> SetupPreview | None:  # noqa: B008
+        """What setup would do for ``choices``; instant, from the last probe (no changes).
+
+        ``None`` until a probe has finished: the caller shows "checking..." and waits for
+        ``probed``. It never touches the network or the disk itself.
+        """
+        if self._probe is None:
+            return None
+        return self._flow.preview_from(self._probe, SetupOptions(choices))
 
     def start(self, options: SetupOptions) -> None:
         if self.running:
@@ -81,6 +109,15 @@ class SetupController(QObject):
             self.finished.emit(result)
         finally:
             self.running = False
+
+
+class _ProbeJob(QRunnable):
+    def __init__(self, controller: SetupController) -> None:
+        super().__init__()
+        self._controller = controller
+
+    def run(self) -> None:
+        self._controller.run_probe()
 
 
 class _FlowJob(QRunnable):

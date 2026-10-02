@@ -11,7 +11,7 @@ from tests.core.setup.fakes import GPU8, Harness
 from vector_embed.app import main as app_main
 from vector_embed.app.settings_controller import SettingsController
 from vector_embed.app.setup_controller import SetupController
-from vector_embed.app.setup_wizard import SetupWizard
+from vector_embed.app.setup_wizard import ModelsPage, SetupWizard
 from vector_embed.core.models.benchmark import BenchKind
 from vector_embed.core.models.catalog import load_catalog
 from vector_embed.core.models.hardware import Hardware
@@ -145,6 +145,12 @@ def test_downgrade_question_round_trips_through_the_gui_thread(
 
 
 # ------------------------------------------------------------------ pages
+def load_models_page(qapp: QApplication, page: ModelsPage) -> None:
+    """Show the page and wait for the background look at Ollama and the disk to finish."""
+    page.initializePage()
+    wait_for(qapp, lambda: page.embed.count() > 0 and "Checking" not in page.disk.text())
+
+
 def test_welcome_describes_the_hardware(qapp: QApplication, harness: Harness) -> None:
     gpu_wizard = wizard_for(harness)
     cpu_wizard = wizard_for(harness, NO_GPU)
@@ -157,6 +163,7 @@ def test_ollama_page_requires_consent_to_install(qapp: QApplication, tmp_path: P
     wizard = wizard_for(harness)
     page = wizard.ollama
     page.initializePage()
+    wait_for(qapp, lambda: "not installed" in page.status.text())
     assert "not installed" in page.status.text()
     assert not page.isComplete()
     assert not page.install_consented
@@ -169,6 +176,7 @@ def test_ollama_page_needs_nothing_when_it_is_running(qapp: QApplication, harnes
     wizard = wizard_for(harness)
     page = wizard.ollama
     page.initializePage()
+    wait_for(qapp, lambda: "running" in page.status.text())
     assert page.isComplete()
     assert not page.install_consented
     assert "running" in page.status.text()
@@ -182,6 +190,7 @@ def test_ollama_page_starts_an_installed_but_stopped_server(
     wizard = wizard_for(harness)
     page = wizard.ollama
     page.initializePage()
+    wait_for(qapp, lambda: "will start it" in page.status.text())
     assert "will start it" in page.status.text()
     assert page.isComplete()
 
@@ -189,7 +198,7 @@ def test_ollama_page_starts_an_installed_but_stopped_server(
 def test_models_page_is_prefilled_with_the_auto_picks(qapp: QApplication, harness: Harness) -> None:
     wizard = wizard_for(harness)
     page = wizard.models
-    page.initializePage()
+    load_models_page(qapp, page)
     assert page.embed.currentData() == "qwen3-embedding:0.6b"
     assert page.chat.currentData() == "qwen3.5:9b"
     assert page.chat.currentText() == "qwen3.5:9b (6100 MB)"
@@ -203,7 +212,7 @@ def test_models_page_lists_every_catalog_model_and_flags_misfits(
 ) -> None:
     wizard = wizard_for(harness, GPU4)
     page = wizard.models
-    page.initializePage()
+    load_models_page(qapp, page)
     names = [page.chat.itemText(i) for i in range(page.chat.count())]
     assert len(names) == len(load_catalog().preferences("chat"))
     assert "qwen3.5:9b (6100 MB) - won't fit" in names
@@ -215,7 +224,7 @@ def test_models_page_updates_the_download_size_for_choices(
 ) -> None:
     wizard = wizard_for(harness)
     page = wizard.models
-    page.initializePage()
+    load_models_page(qapp, page)
     page.chat.setCurrentIndex(page.chat.findData("llama3.2"))
     page.extras["caption"].setChecked(True)
     assert page.choices().chat == "llama3.2"
@@ -229,7 +238,7 @@ def test_models_page_blocks_when_the_disk_is_too_small(
     harness.system.free_mb = 3000
     wizard = wizard_for(harness)
     page = wizard.models
-    page.initializePage()
+    load_models_page(qapp, page)
     assert not page.isComplete()
     assert "Not enough free space" in page.disk.text()
 
@@ -384,3 +393,64 @@ def test_a_frozen_app_starts_the_watcher_and_the_update_scheduler(
     monkeypatch.setattr(app_main.UpdateScheduler, "start", lambda _self: started.append("updates"))
     assert app_main.main([]) == 0
     assert started == ["updates", "watcher"]
+
+
+# ------------------------------------------------------------------ nothing blocks the UI thread
+def test_the_environment_probe_runs_in_the_background(qapp: QApplication, harness: Harness) -> None:
+    import threading
+
+    controller = controller_for(harness)
+    threads: list[str] = []
+    original = controller._flow.probe
+
+    def spy() -> object:
+        threads.append(threading.current_thread().name)
+        return original()
+
+    controller._flow.probe = spy  # type: ignore[method-assign]
+    probes: list[object] = []
+    controller.probed.connect(probes.append)
+    assert controller.environment is None
+    assert controller.preview() is None  # nothing is known yet; it does not block to find out
+    controller.probe_async()
+    wait_for(qapp, lambda: bool(probes))
+    assert threads
+    assert threads[0] != threading.main_thread().name
+    assert controller.environment is probes[0]
+    assert controller.preview() is not None
+
+
+def test_previews_for_other_choices_reuse_the_probe_and_do_no_io(
+    qapp: QApplication, harness: Harness
+) -> None:
+    controller = controller_for(harness)
+    probes: list[object] = []
+    controller.probed.connect(probes.append)
+    controller.probe_async()
+    wait_for(qapp, lambda: bool(probes))
+
+    def forbidden(*_a: object) -> object:
+        raise AssertionError("a preview must not touch the network or the disk again")
+
+    controller._flow.probe = forbidden  # type: ignore[method-assign]
+    harness.system.free_mb = 1  # the disk filling up later changes nothing until a new probe
+    first = controller.preview(SetupChoices(chat="llama3.2"))
+    second = controller.preview(SetupChoices(chat="qwen3.5:9b"))
+    assert first is not None
+    assert second is not None
+    assert first.download_mb != second.download_mb  # still a real calculation per choice
+
+
+def test_a_failed_probe_degrades_to_ollama_missing(qapp: QApplication, harness: Harness) -> None:
+    controller = controller_for(harness)
+
+    def broken() -> object:
+        raise OSError("network stack unavailable")
+
+    controller._flow.probe = broken  # type: ignore[method-assign]
+    probes: list[object] = []
+    controller.probed.connect(probes.append)
+    controller.probe_async()
+    wait_for(qapp, lambda: bool(probes))
+    assert controller.environment is not None
+    assert controller.environment.ollama.value == "missing"

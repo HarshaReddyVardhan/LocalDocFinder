@@ -27,6 +27,7 @@ from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_EMBED, Catalog
 from vector_embed.core.models.fit import budget_mb, fits
 from vector_embed.core.models.hardware import Hardware
 from vector_embed.core.setup.flow import (
+    EnvironmentProbe,
     SetupEvent,
     SetupOptions,
     SetupPreview,
@@ -95,9 +96,17 @@ class OllamaPage(QWizardPage):
         layout.addWidget(self.status)
         layout.addWidget(self.consent)
         self.consent.toggled.connect(lambda _on: self.completeChanged.emit())
+        self._controller.probed.connect(self._on_probed)
 
     def initializePage(self) -> None:  # noqa: N802
-        state = self._controller.preview().ollama
+        self._needs_install = True  # not complete until we know: Next stays off while checking
+        self.consent.setVisible(False)
+        self.status.setText("Checking for Ollama…")
+        self.completeChanged.emit()
+        self._controller.probe_async()  # network and disk, so not on the UI thread
+
+    def _on_probed(self, probe: EnvironmentProbe) -> None:
+        state = probe.ollama
         self._needs_install = state is OllamaState.MISSING
         self.consent.setVisible(self._needs_install)
         self.status.setText(
@@ -133,6 +142,7 @@ class ModelsPage(QWizardPage):
         self._catalog = catalog
         self._hardware = hardware
         self._preview: SetupPreview | None = None
+        self._filled = False
         self.embed = QComboBox()
         self.chat = QComboBox()
         self.extras = {
@@ -154,6 +164,7 @@ class ModelsPage(QWizardPage):
             combo.currentIndexChanged.connect(self._update_disk)
         for box in self.extras.values():
             box.toggled.connect(self._update_disk)
+        self._controller.probed.connect(self._on_probed)
 
     def _fill(self, combo: QComboBox, role: str, selected: str | None) -> None:
         combo.clear()
@@ -169,12 +180,29 @@ class ModelsPage(QWizardPage):
         combo.setCurrentIndex(max(index, 0))
 
     def initializePage(self) -> None:  # noqa: N802
+        self._preview = None
+        self.disk.setText("Checking free disk space…")
+        self.completeChanged.emit()
+        if self._controller.environment is not None:
+            self._on_probed(self._controller.environment)  # the Ollama page already looked
+        else:
+            self._controller.probe_async()
+
+    def _on_probed(self, _probe: EnvironmentProbe) -> None:
+        """The machine has been looked at: pre-fill the picks, then keep the numbers live."""
+        if self._filled:  # a later probe only refreshes the disk numbers
+            self._update_disk()
+            return
+        preview = self._controller.preview()
+        if preview is None:
+            return
         self._filling = True
-        plan = self._controller.preview().plan
+        plan = preview.plan
         embed, chat = plan.model_for(ROLE_EMBED), plan.model_for(ROLE_CHAT)
         self._fill(self.embed, ROLE_EMBED, embed.model if embed else None)
         self._fill(self.chat, ROLE_CHAT, chat.model if chat else None)
         self._filling = False
+        self._filled = True
         self._update_disk()
 
     def choices(self) -> SetupChoices:
@@ -187,8 +215,12 @@ class ModelsPage(QWizardPage):
     def _update_disk(self) -> None:
         if self._filling:
             return
-        self._preview = self._controller.preview(self.choices())
-        preview = self._preview
+        preview = self._controller.preview(self.choices())
+        self._preview = preview
+        if preview is None:
+            self.disk.setText("Checking free disk space…")
+            self.completeChanged.emit()
+            return
         text = f"To download: {preview.download_mb} MB. Free disk space: {preview.free_disk_mb} MB."
         if not preview.enough_disk:
             text += " Not enough free space; choose smaller models or free some space."

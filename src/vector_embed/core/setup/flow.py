@@ -95,6 +95,15 @@ class SetupPreview:
 
 
 @dataclass(frozen=True)
+class EnvironmentProbe:
+    """What the machine looks like right now (see ``SetupFlow.probe``)."""
+
+    ollama: OllamaState
+    installed: tuple[str, ...]
+    free_disk_mb: int
+
+
+@dataclass(frozen=True)
 class SetupResult:
     embed_model: str | None
     chat_model: str | None
@@ -153,21 +162,33 @@ class SetupFlow:
         """The embedder an existing index depends on, if there is an index."""
         return self._current_embed if self._state.manifest_count() > 0 else None
 
-    def preview(self, options: SetupOptions) -> SetupPreview:
+    def probe(self) -> EnvironmentProbe:
+        """Look at the machine: is Ollama up, what is installed, how much disk is free.
+
+        This is the slow part of a preview (network and disk), so it is separate: a UI asks once,
+        in the background, and then previews every choice against the same answer.
+        """
         state = self._ollama.detect()
-        installed = self._installed_names() if state is OllamaState.RUNNING else []
+        installed = tuple(self._installed_names()) if state is OllamaState.RUNNING else ()
+        return EnvironmentProbe(state, installed, self._ollama.free_disk_mb())
+
+    def preview_from(self, probe: EnvironmentProbe, options: SetupOptions) -> SetupPreview:
+        """What ``run`` would do given ``probe`` and the choices: pure arithmetic, instant."""
         plan = plan_setup(
             self._catalog, self._hardware, options.choices, locked_embed=self._locked_embed()
         )
-        free = self._ollama.free_disk_mb()
+        installed = list(probe.installed)
         return SetupPreview(
-            ollama=state,
+            ollama=probe.ollama,
             plan=plan,
             to_download=plan.to_download(installed),
             download_mb=plan.download_mb(installed),
-            free_disk_mb=free,
-            enough_disk=has_enough_disk(plan, installed, free),
+            free_disk_mb=probe.free_disk_mb,
+            enough_disk=has_enough_disk(plan, installed, probe.free_disk_mb),
         )
+
+    def preview(self, options: SetupOptions) -> SetupPreview:
+        return self.preview_from(self.probe(), options)
 
     # ------------------------------------------------------------------ run
     def run(self, options: SetupOptions) -> SetupResult:
