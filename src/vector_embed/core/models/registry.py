@@ -108,8 +108,10 @@ class ModelRegistry:
         overrides: Mapping[str, str] | None = None,
         pinned_embed: str | None = None,
         clock: Callable[[], float] = time.time,
+        resident_vram_mb: Callable[[], int] = lambda: 0,
     ) -> None:
         self._catalog = catalog
+        self._resident_vram_mb = resident_vram_mb
         self._providers = list(providers)
         self._state = state
         self._probe = hardware_probe
@@ -187,11 +189,22 @@ class ModelRegistry:
             return int(info.size_bytes / _MB * _SIZE_TO_VRAM)
         return None
 
-    def _fits(self, name: str, info: ModelInfo | None, hardware: Hardware) -> bool:
+    def _budget(self, hardware: Hardware) -> int:
+        """Memory a model may use: what is free plus what our own loaded models give back.
+
+        Models Ollama already holds are unloaded or reused before the next one loads, so counting
+        them against the free figure would reject the very model that is resident now.
+        """
+        budget = budget_mb(hardware)
+        if not hardware.has_gpu:
+            return budget
+        return min(budget + self._resident_vram_mb(), hardware.vram_total_mb)
+
+    def _fits(self, name: str, info: ModelInfo | None, hardware: Hardware, budget: int) -> bool:
         needed = self._catalog.vram_mb(name)
         if needed is None and info is not None:
             needed = self._needs_mb(info)
-        return fits(self._catalog.entry(name), needed, hardware, budget_mb(hardware))
+        return fits(self._catalog.entry(name), needed, hardware, budget)
 
     @staticmethod
     def _suits_role(role: str, info: ModelInfo) -> bool:
@@ -210,6 +223,7 @@ class ModelRegistry:
             raise ValueError(f"unknown role {role!r}")
         hw = hardware or self._probe()
         installed = self._lookup()
+        budget = self._budget(hw)
 
         pinned = self._pinned_embed if role == ROLE_EMBED else None
         chosen = pinned or self._overrides.get(role)
@@ -221,7 +235,7 @@ class ModelRegistry:
 
         for name in self._catalog.preferences(role):
             info = installed.get(_canonical(name))
-            if info is not None and self._fits(name, info, hw):
+            if info is not None and self._fits(name, info, hw, budget):
                 return Resolution(role, info.name, "preferred")
 
         fallbacks = [
@@ -230,7 +244,7 @@ class ModelRegistry:
             if self._suits_role(role, m)
             and _canonical(m.name) not in self._catalog.warnings
             and m.name not in self._catalog.preferences(role)
-            and self._fits(m.name, m, hw)
+            and self._fits(m.name, m, hw, budget)
         ]
         if fallbacks:
             best = max(fallbacks, key=lambda m: m.size_bytes or 0)
@@ -246,6 +260,7 @@ class ModelRegistry:
         self, resolutions: Mapping[str, Resolution], hardware: Hardware
     ) -> list[Recommendation]:
         installed = self._lookup()
+        budget = self._budget(hardware)
         out: list[Recommendation] = []
         for role, resolution in resolutions.items():
             prefs = self._catalog.preferences(role)
@@ -259,7 +274,7 @@ class ModelRegistry:
             for rank, name in enumerate(prefs):
                 if rank >= current:
                     break
-                if _canonical(name) in installed or not self._fits(name, None, hardware):
+                if _canonical(name) in installed or not self._fits(name, None, hardware, budget):
                     continue
                 reason = (
                     "pull it; re-index required (embeddings are model-specific)"

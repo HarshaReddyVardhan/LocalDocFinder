@@ -39,6 +39,7 @@ ClientLike: TypeAlias = Any  # ollama.Client or a test double
 Response: TypeAlias = Any
 
 PROVIDER_NAME = "ollama"
+_MB = 1024 * 1024
 _MAX_BATCH_CHARS = 60_000  # keeps one request's total prompt size sane
 _RETRIES = 4
 _TRANSIENT = (ConnectionError, TimeoutError, httpx.TransportError)
@@ -296,6 +297,14 @@ class OllamaProvider:
         """Names of models currently resident (``ollama ps``)."""
         response = self._call(self._client.ps)
         return [m.model for m in response.models]
+
+    def resident_vram_mb(self) -> int:
+        """VRAM held by every loaded model right now; 0 when the server cannot be reached."""
+        try:
+            response = self._call(self._client.ps)
+        except ProviderError:
+            return 0
+        return sum(int(getattr(m, "size_vram", 0) or 0) for m in response.models) // _MB
 
     def _resident(self, model: str) -> Response | None:
         """The ``ollama ps`` entry for ``model``, or ``None`` when it is not loaded."""

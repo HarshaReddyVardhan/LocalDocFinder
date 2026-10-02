@@ -89,6 +89,7 @@ class LlmGateway:
         self._refresh_seconds = refresh_seconds
         self._loaded: set[str] = set()
         self._last_activity = clock()
+        self._session_models: dict[str, str] = {}  # role -> model, fixed for one session
         self._lease_ttl = 0.0  # > 0 while this gateway holds the chat lock
         self._lease_renewed = 0.0
         self.session_active = False
@@ -108,10 +109,14 @@ class LlmGateway:
             return routed
         if not self._power.local_chat_allowed():
             raise ChatBlockedError("on battery: plug in to chat (or configure a cloud provider)")
+        if self.session_active and (pinned := self._session_models.get(role)) is not None:
+            return ChatTarget(role, pinned, self._local, local=True)  # no mid-chat model switch
         self._registry.refresh_if_stale(self._refresh_seconds)
         resolution = self._registry.resolve(role)
         if resolution.model is None and role != ROLE_CHAT:
             resolution = self._registry.resolve(ROLE_CHAT)
+        if resolution.model is not None and self.session_active:
+            self._session_models[role] = resolution.model
         if resolution.model is None:
             preferred = self._registry.preferences(role)
             hint = preferred[0] if preferred else "qwen3.5:9b"
@@ -201,6 +206,7 @@ class LlmGateway:
         self._loaded.clear()
         self._state.release_lock(CHAT_LOCK, self._owner)
         self._lease_ttl = 0.0
+        self._session_models.clear()
         self.session_active = False
 
     def check(self) -> str | None:

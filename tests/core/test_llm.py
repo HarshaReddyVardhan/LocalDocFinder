@@ -177,6 +177,24 @@ class TestLease:
         assert renewals == [1]
 
 
+class TestSessionPinning:
+    def test_the_model_does_not_change_mid_session(self, world: World) -> None:
+        gw = world.gateway
+        gw.begin_chat()
+        first = gw.target().model
+        calls: list[str] = []
+        original = gw._registry.resolve
+        gw._registry.resolve = lambda role, hw=None: (  # type: ignore[method-assign,assignment]
+            calls.append(role),
+            original(role, hw),
+        )[1]
+        assert gw.target().model == first
+        assert calls == []  # answered from the pin, not re-resolved
+        gw.end_chat()
+        gw.target()
+        assert calls == ["chat"]
+
+
 class TestSession:
     def test_begin_takes_the_lock_and_moves_queries_to_the_cpu(self, world: World) -> None:
         gw = world.gateway

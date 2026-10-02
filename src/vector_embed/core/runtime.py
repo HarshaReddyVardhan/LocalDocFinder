@@ -120,6 +120,7 @@ def build_model_registry(
         state,
         overrides=settings.models.overrides,
         pinned_embed=settings.embedding.model,
+        resident_vram_mb=provider.resident_vram_mb,
     )
 
 

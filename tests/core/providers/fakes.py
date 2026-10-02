@@ -66,6 +66,7 @@ class FakeOllamaClient:
 
     def ps(self) -> ollama.ProcessResponse:
         self.calls.append(("ps", {}))
+        self._maybe_fail()
         return ollama.ProcessResponse(
             models=[
                 ollama.ProcessResponse.Model(

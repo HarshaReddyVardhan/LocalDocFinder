@@ -112,6 +112,25 @@ class TestResolve:
         assert resolution.model == "llama3.2"
         assert resolution.reason == "preferred"
 
+    def test_a_resident_model_does_not_count_against_free_vram(self) -> None:
+        # Free VRAM is low because our own chat model is loaded; it must still resolve to it.
+        starved = hw(free_vram=1500)
+        assert registry([CHAT9, LLAMA], starved).resolve("chat").model is None
+        reg = registry([CHAT9, LLAMA], starved, resident_vram_mb=lambda: 5800)
+        assert reg.resolve("chat").model == "qwen3.5:9b"
+
+    def test_reclaimable_vram_is_capped_at_the_card_size(self) -> None:
+        reg = registry([CHAT9], hw(free_vram=100), resident_vram_mb=lambda: 999_999)
+        assert reg.resolve("chat").model == "qwen3.5:9b"  # 8192 MB card holds the 5.5 GB model
+        small = Hardware("tiny", 2048, 100, 32000, 16000, 8, True)
+        assert (
+            registry([CHAT9], small, resident_vram_mb=lambda: 999_999).resolve("chat").model is None
+        )
+
+    def test_resident_memory_is_ignored_without_a_gpu(self) -> None:
+        reg = registry([LLAMA], hw(gpu=False), resident_vram_mb=lambda: 99999)
+        assert reg.resolve("chat", hw(gpu=False)).model in {None, "llama3.2"}
+
     def test_missing_preferred_falls_back_down_the_list(self) -> None:
         reg = registry([CODER, LLAMA])
         assert reg.resolve("chat").model == "qwen2.5-coder:7b"

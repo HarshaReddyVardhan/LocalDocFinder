@@ -128,6 +128,13 @@ class TestEmbeddings:
         assert unload["keep_alive"] == 0
         assert unload["options"]["num_gpu"] == 0  # matches how it was loaded: no second runner
 
+    def test_resident_vram_sums_loaded_models_and_survives_an_outage(self) -> None:
+        client = FakeOllamaClient()
+        client.loaded = ["a", "b"]
+        assert make(client).resident_vram_mb() == 1  # two fake 1,000,000-byte entries
+        client.failures = [ConnectionError("down")] * 10
+        assert make(client).resident_vram_mb() == 0
+
     def test_unload_does_not_load_a_model_that_is_not_resident(self) -> None:
         client = FakeOllamaClient()
         make(client).unload_embedder()
