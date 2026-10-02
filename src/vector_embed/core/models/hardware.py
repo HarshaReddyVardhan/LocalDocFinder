@@ -45,14 +45,19 @@ def probe_gpu() -> tuple[str, int, int] | None:
 
 
 def on_ac_power() -> bool:
-    """True if plugged in. No battery (a desktop) counts as plugged in."""
+    """True if plugged in. No battery at all (a desktop) counts as plugged in.
+
+    Anything unclear (a probe error, an unknown state) counts as unplugged: indexing never runs
+    on battery, so a guess must go the safe way.
+    """
     try:
         battery = psutil.sensors_battery()
-    except Exception:  # psutil can raise on odd platforms; assume plugged in
+    except Exception:  # psutil can raise on odd platforms
+        logger.debug("hardware: battery probe failed; assuming unplugged", exc_info=True)
+        return False
+    if battery is None:
         return True
-    if battery is None or battery.power_plugged is None:
-        return True
-    return bool(battery.power_plugged)
+    return battery.power_plugged is True
 
 
 def probe_hardware() -> Hardware:

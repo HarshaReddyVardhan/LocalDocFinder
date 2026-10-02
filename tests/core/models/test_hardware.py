@@ -48,7 +48,7 @@ def test_probe_gpu_accepts_str_names(monkeypatch: pytest.MonkeyPatch) -> None:
     ("battery", "expected"),
     [
         (None, True),
-        (SimpleNamespace(power_plugged=None), True),
+        (SimpleNamespace(power_plugged=None), False),  # unknown: fail closed
         (SimpleNamespace(power_plugged=True), True),
         (SimpleNamespace(power_plugged=False), False),
     ],
@@ -60,12 +60,12 @@ def test_on_ac_power(
     assert hwmod.on_ac_power() is expected
 
 
-def test_on_ac_power_survives_psutil_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_on_ac_power_fails_closed_on_psutil_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     def boom() -> None:
         raise OSError
 
     monkeypatch.setattr(hwmod.psutil, "sensors_battery", boom)
-    assert hwmod.on_ac_power() is True
+    assert hwmod.on_ac_power() is False  # an unreadable probe must never allow battery indexing
 
 
 def test_probe_hardware_combines_sources(monkeypatch: pytest.MonkeyPatch) -> None:

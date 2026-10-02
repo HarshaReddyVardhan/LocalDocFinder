@@ -191,6 +191,9 @@ class IdleSettings(_Section):
     cpu_seconds: int = Field(default=60, gt=0)
     no_input_seconds: int = Field(default=60, ge=0)
     gpu_max_util_percent: float = Field(default=20, ge=0, le=100)
+    # Checked before every batch while the embedder is loaded; utilisation is not, because the
+    # worker's own embedding work would trip it.
+    min_free_vram_mb: int = Field(default=300, ge=0)
     worker_yield_input_seconds: int = Field(default=3, ge=0)  # running worker yields on user input
     file_debounce_seconds: int = Field(default=30, ge=0)
     reconcile_interval_hours: float = Field(default=6, gt=0)

@@ -5,7 +5,7 @@ import logging
 import time
 from collections.abc import Callable
 from ctypes import wintypes
-from typing import Protocol
+from typing import Any, Protocol
 
 import psutil
 
@@ -22,6 +22,11 @@ REASON_CHAT = "chat active"
 REASON_RETURNED = "user returned"
 
 _NEVER = 1e9
+_MB = 1024 * 1024
+_TICK_MASK = 0xFFFFFFFF  # LASTINPUTINFO.dwTime is a 32-bit tick count that wraps every ~49 days
+# SHQueryUserNotificationState values that mean "do not disturb": a full-screen or Direct3D
+# program, or a presentation (this is what Focus Assist reports for those cases).
+_BUSY_NOTIFICATION_STATES = frozenset({2, 3, 4})
 _SHELL_CLASSES = ("Progman", "WorkerW", "Shell_TrayWnd")
 _MONITOR_DEFAULTTONEAREST = 2
 
@@ -36,6 +41,13 @@ class ActivityProbe(Protocol):
     def fullscreen_app_active(self) -> bool: ...
 
     def gpu_utilization(self) -> int | None: ...
+
+    def gpu_free_vram_mb(self) -> int | None: ...
+
+
+def elapsed_ticks(now: int, last: int) -> int:
+    """Milliseconds between two 32-bit tick counts, correct across the wrap-around."""
+    return (now - last) & _TICK_MASK
 
 
 class _LastInputInfo(ctypes.Structure):
@@ -56,6 +68,8 @@ class SystemActivity:
 
     def __init__(self) -> None:
         psutil.cpu_percent(None)  # prime the counter
+        self._nvml: tuple[Any, Any] | None = None
+        self._nvml_failed = False
 
     def cpu_percent(self) -> float:
         return float(psutil.cpu_percent(None))
@@ -65,11 +79,29 @@ class SystemActivity:
         info.cbSize = ctypes.sizeof(_LastInputInfo)
         if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):  # type: ignore[attr-defined,unused-ignore]
             return _NEVER
-        millis = ctypes.windll.kernel32.GetTickCount() - info.dwTime  # type: ignore[attr-defined,unused-ignore]
-        return float(max(0, millis)) / 1000.0
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined,unused-ignore]
+        kernel32.GetTickCount64.restype = ctypes.c_uint64
+        now = int(kernel32.GetTickCount64()) & _TICK_MASK
+        return elapsed_ticks(now, int(info.dwTime)) / 1000.0
 
     def fullscreen_app_active(self) -> bool:
-        """True if the foreground window covers its whole monitor (game, video, presentation)."""
+        """True for a full-screen window, a Direct3D game or a presentation."""
+        return self._notification_state_busy() or self._foreground_covers_monitor()
+
+    @staticmethod
+    def _notification_state_busy() -> bool:
+        try:
+            state = ctypes.c_int(0)
+            result = ctypes.windll.shell32.SHQueryUserNotificationState(  # type: ignore[attr-defined,unused-ignore]
+                ctypes.byref(state)
+            )
+        except Exception:  # an old Windows without the API: fall back on the window check
+            logger.debug("idle: notification state unavailable", exc_info=True)
+            return False
+        return result == 0 and state.value in _BUSY_NOTIFICATION_STATES
+
+    @staticmethod
+    def _foreground_covers_monitor() -> bool:
         try:
             user32 = ctypes.windll.user32  # type: ignore[attr-defined,unused-ignore]
             hwnd = user32.GetForegroundWindow()
@@ -96,18 +128,42 @@ class SystemActivity:
             logger.debug("idle: fullscreen probe failed", exc_info=True)
             return False
 
-    def gpu_utilization(self) -> int | None:
-        try:
-            import pynvml
-
-            pynvml.nvmlInit()
+    def _nvml_handle(self) -> tuple[Any, Any] | None:
+        """The first GPU's NVML handle, initialised once (init/shutdown per tick is wasteful)."""
+        if self._nvml_failed:
+            return None
+        if self._nvml is None:
             try:
-                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-                return int(pynvml.nvmlDeviceGetUtilizationRates(handle).gpu)
-            finally:
-                pynvml.nvmlShutdown()
-        except Exception:  # no NVIDIA GPU or driver
-            logger.debug("idle: gpu probe unavailable", exc_info=True)
+                import pynvml
+
+                pynvml.nvmlInit()
+                self._nvml = (pynvml, pynvml.nvmlDeviceGetHandleByIndex(0))
+            except Exception:  # no NVIDIA GPU or driver
+                logger.debug("idle: gpu probe unavailable", exc_info=True)
+                self._nvml_failed = True
+                return None
+        return self._nvml
+
+    def gpu_utilization(self) -> int | None:
+        nvml = self._nvml_handle()
+        if nvml is None:
+            return None
+        module, handle = nvml
+        try:
+            return int(module.nvmlDeviceGetUtilizationRates(handle).gpu)
+        except Exception:  # the driver went away mid-run
+            logger.debug("idle: gpu utilisation read failed", exc_info=True)
+            return None
+
+    def gpu_free_vram_mb(self) -> int | None:
+        nvml = self._nvml_handle()
+        if nvml is None:
+            return None
+        module, handle = nvml
+        try:
+            return int(module.nvmlDeviceGetMemoryInfo(handle).free) // _MB
+        except Exception:
+            logger.debug("idle: gpu memory read failed", exc_info=True)
             return None
 
 
@@ -194,6 +250,12 @@ class IdleGate:
             return REASON_RETURNED
         if self._probe.fullscreen_app_active():
             return REASON_FULLSCREEN
+        return self._gpu_memory_blocker()
+
+    def _gpu_memory_blocker(self) -> str:
+        free = self._probe.gpu_free_vram_mb()
+        if free is not None and free < self._settings.min_free_vram_mb:
+            return f"gpu memory low ({free} MB free)"  # something else needs the card
         return ""
 
 

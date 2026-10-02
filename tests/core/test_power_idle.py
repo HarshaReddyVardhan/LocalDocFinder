@@ -23,6 +23,7 @@ class Env:
         self.input_idle = 10_000.0
         self.fullscreen = False
         self.gpu: int | None = 0
+        self.free_vram: int | None = 6000
         self.chat = False
 
     def on_ac(self) -> bool:
@@ -39,6 +40,9 @@ class Env:
 
     def gpu_utilization(self) -> int | None:
         return self.gpu
+
+    def gpu_free_vram_mb(self) -> int | None:
+        return self.free_vram
 
 
 @pytest.fixture
@@ -181,6 +185,27 @@ class TestIdleGate:
         assert gate.worker_may_continue() == (False, "unplugged")
         assert gate.worker_may_continue(allow_battery=True) == (True, "")
 
+    def test_worker_stops_when_something_else_takes_the_gpu_memory(
+        self, gate: IdleGate, env: Env
+    ) -> None:
+        env.free_vram = 100
+        ok, why = gate.worker_may_continue()
+        assert not ok
+        assert "gpu memory low" in why
+        assert gate.worker_may_continue(respect_activity=False) == (True, "")  # CLI --now
+        env.free_vram = None  # no NVML: not a blocker
+        assert gate.worker_may_continue() == (True, "")
+
+
+class TestTickArithmetic:
+    def test_elapsed_ticks_is_plain_subtraction_without_wrap(self) -> None:
+        assert idle.elapsed_ticks(10_000, 4_000) == 6_000
+
+    def test_elapsed_ticks_survives_the_32_bit_wrap(self) -> None:
+        # ~24.8 days of uptime: the signed 32-bit counter wrapped; 49.7 days: the unsigned one
+        assert idle.elapsed_ticks(5, 0xFFFFFFFF - 994) == 1000
+        assert idle.elapsed_ticks(0x80000000 + 500, 0x7FFFFFFF - 499) == 1000
+
 
 class TestSystemActivity:
     """Smoke tests against the real machine: values only need to be sane."""
@@ -192,13 +217,58 @@ class TestSystemActivity:
         assert isinstance(probe.fullscreen_app_active(), bool)
         util = probe.gpu_utilization()
         assert util is None or 0 <= util <= 100
+        free = probe.gpu_free_vram_mb()
+        assert free is None or free >= 0
 
     def test_gpu_probe_without_nvml(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import sys
 
         monkeypatch.setitem(sys.modules, "pynvml", None)
-        assert SystemActivity().gpu_utilization() is None
+        probe = SystemActivity()
+        assert probe.gpu_utilization() is None
+        assert probe.gpu_free_vram_mb() is None
         assert idle.gpu_present() in {True, False}
 
     def test_default_probe_is_the_system(self, power: PowerGate) -> None:
         assert isinstance(IdleGate(power, IdleSettings())._probe, SystemActivity)
+
+
+class TestNvmlHandleIsReused:
+    def test_nvml_is_initialised_once_across_many_ticks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys
+        from types import SimpleNamespace
+
+        inits: list[int] = []
+        fake = SimpleNamespace(
+            nvmlInit=lambda: inits.append(1),
+            nvmlShutdown=lambda: inits.append(-1),
+            nvmlDeviceGetHandleByIndex=lambda _i: "handle",
+            nvmlDeviceGetUtilizationRates=lambda _h: SimpleNamespace(gpu=7),
+            nvmlDeviceGetMemoryInfo=lambda _h: SimpleNamespace(free=2048 * 1024 * 1024),
+        )
+        monkeypatch.setitem(sys.modules, "pynvml", fake)
+        probe = SystemActivity()
+        for _ in range(5):
+            assert probe.gpu_utilization() == 7
+            assert probe.gpu_free_vram_mb() == 2048
+        assert inits == [1]  # no init/shutdown per tick
+
+    def test_a_failed_nvml_init_is_not_retried_every_tick(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys
+        from types import SimpleNamespace
+
+        attempts: list[int] = []
+
+        def broken() -> None:
+            attempts.append(1)
+            raise OSError("no driver")
+
+        monkeypatch.setitem(sys.modules, "pynvml", SimpleNamespace(nvmlInit=broken))
+        probe = SystemActivity()
+        for _ in range(4):
+            assert probe.gpu_utilization() is None
+        assert attempts == [1]
