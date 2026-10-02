@@ -19,6 +19,7 @@ from vector_embed import mcp_server, watcher, worker
 from vector_embed.cli_cloud import CloudCommandError, add_cloud_parsers, run_cloud, run_keys
 from vector_embed.cli_setup import add_setup_parser, run_setup
 from vector_embed.core import runtime
+from vector_embed.core.autostart import Autostart, AutostartError
 from vector_embed.core.doctor import format_checks, run_doctor
 from vector_embed.core.evaluation import (
     EvalSpec,
@@ -192,6 +193,13 @@ def cmd_mcp(settings: Settings) -> int:
     return EXIT_OK
 
 
+def cmd_autostart(args: argparse.Namespace) -> int:
+    enabled = args.state == "on"
+    Autostart().apply(enabled)
+    out("startup tasks registered" if enabled else "startup tasks removed")
+    return EXIT_OK
+
+
 def cmd_health(settings: Settings) -> int:
     provider = runtime.build_provider(settings)
     with StateDb(settings.storage.data_dir) as state:
@@ -243,6 +251,8 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--reuse", action="store_true", help="reuse indexes from a previous run")
     add_cloud_parsers(sub)
     add_setup_parser(sub)
+    autostart = sub.add_parser("autostart", help="start the watcher and tray app with Windows")
+    autostart.add_argument("state", choices=("on", "off"))
     sub.add_parser("mcp", help="serve search, ask and match to MCP clients over stdio")
     sub.add_parser("doctor", help="check the environment and explain any problem")
     sub.add_parser("status", help="index and queue state")
@@ -256,6 +266,7 @@ _ERRORS: tuple[tuple[type[Exception], int, str], ...] = (
     (ModelChangeError, EXIT_USAGE, "{}"),
     (CloudCommandError, EXIT_USAGE, "{}"),
     (EvaluationError, EXIT_USAGE, "{}"),
+    (AutostartError, EXIT_ERROR, "{}"),
     (SetupPlanError, EXIT_USAGE, "{}"),
     (SetupError, EXIT_ERROR, "{}"),
     (KeyStoreError, EXIT_ERROR, "{}"),
@@ -302,6 +313,7 @@ def _dispatch(args: argparse.Namespace, settings: Settings) -> int:
         "keys": lambda: run_keys(args, settings, KeyringStore(), out),
         "cloud": lambda: run_cloud(args, settings, KeyringStore(), out),
         "setup": lambda: run_setup(args, settings, out, err),
+        "autostart": lambda: cmd_autostart(args),
         "doctor": lambda: cmd_doctor(settings),
         "status": lambda: _status(settings),
     }

@@ -435,10 +435,10 @@ class TestHelpers:
         monkeypatch.setattr(watcher.subprocess, "Popen", fake_popen)
         launcher = watcher.SubprocessLauncher(tmp_path / "logs")
         assert launcher.start(reconcile=True) == "handle"
-        assert captured["command"][-2:] == ["vector_embed.worker", "--reconcile"]  # type: ignore[index]
+        assert captured["command"][-4:] == ["-m", "vector_embed", "worker", "--reconcile"]  # type: ignore[index]
         assert captured["flags"] == 0x00004000 | 0x08000000
         launcher.start(reconcile=False)
-        assert captured["command"][-1] == "vector_embed.worker"  # type: ignore[index]
+        assert captured["command"][-3:] == ["-m", "vector_embed", "worker"]  # type: ignore[index]
 
     def test_main_status(
         self, env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

@@ -7,6 +7,7 @@ import argparse
 import logging
 import sys
 from collections.abc import Callable, Sequence
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
@@ -23,6 +24,7 @@ from vector_embed.app.setup_controller import SetupController
 from vector_embed.app.setup_wizard import SetupWizard
 from vector_embed.app.window import SearchWindow
 from vector_embed.core import runtime
+from vector_embed.core.autostart import Autostart
 from vector_embed.core.idle import SystemActivity
 from vector_embed.core.logging_setup import configure_logging
 from vector_embed.core.models.catalog import load_catalog
@@ -89,6 +91,10 @@ def build_window(
     )
 
 
+def make_settings_controller(path: Path, state: StateDb) -> SettingsController:
+    return SettingsController(path, state, KeyringStore(), apply_autostart=Autostart().apply)
+
+
 def build_settings_window(
     settings: Settings,
     state: StateDb,
@@ -96,9 +102,7 @@ def build_settings_window(
     on_hotkey: Callable[[str], None],
 ) -> SettingsWindow:
     path = settings.storage.data_dir / SETTINGS_FILENAME
-    window = SettingsWindow(
-        SettingsController(path, state, KeyringStore()), ModelsController(context, path)
-    )
+    window = SettingsWindow(make_settings_controller(path, state), ModelsController(context, path))
     window.hotkey_changed.connect(on_hotkey)
     return window
 
@@ -112,7 +116,7 @@ def run_setup_wizard(settings: Settings, state: StateDb, build: FlowBuilder = bu
     path = settings.storage.data_dir / SETTINGS_FILENAME
     wizard = SetupWizard(
         SetupController(build, settings, state),
-        SettingsController(path, state, KeyringStore()),
+        make_settings_controller(path, state),
         load_catalog(settings.storage.data_dir),
         probe_hardware(),
     )
@@ -136,6 +140,7 @@ def hotkey_applier(hotkey: HotkeyFilter, tray: QSystemTrayIcon) -> Callable[[str
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--show", action="store_true", help="show the window immediately")
+    parser.add_argument("--setup", action="store_true", help="run the setup wizard now")
     args = parser.parse_args(argv)
     settings = load_settings()
     configure_logging("app", runtime.log_dir(settings), settings.log_level)
@@ -184,7 +189,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 QSystemTrayIcon.MessageIcon.Warning,
                 5000,
             )
-        if setup_needed(state):
+        if args.setup or setup_needed(state):
             run_setup_wizard(settings, state)
         if args.show:
             window.summon()

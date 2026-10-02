@@ -26,7 +26,7 @@ from vector_embed.core.idle import IdleGate
 from vector_embed.core.logging_setup import configure_logging
 from vector_embed.core.models.hardware import on_ac_power
 from vector_embed.core.power import PowerGate
-from vector_embed.core.process import single_instance
+from vector_embed.core.process import self_command, single_instance
 from vector_embed.core.projects import Projects
 from vector_embed.core.scope import ScopePolicy
 from vector_embed.core.settings import Settings, load_settings
@@ -136,7 +136,7 @@ class SubprocessLauncher:
         self._log_dir = log_dir
 
     def start(self, reconcile: bool) -> WorkerHandle:
-        command = [sys.executable, "-m", "vector_embed.worker"]
+        command = self_command("worker")
         if reconcile:
             command.append("--reconcile")
         self._log_dir.mkdir(parents=True, exist_ok=True)

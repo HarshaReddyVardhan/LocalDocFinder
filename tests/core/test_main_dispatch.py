@@ -1,0 +1,37 @@
+import pytest
+
+from vector_embed import __main__ as entry
+from vector_embed import watcher, worker
+from vector_embed.app import main as app_main
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_main", "expected_args"),
+    [
+        (["watcher", "--status"], watcher.main, ["--status"]),
+        (["worker", "--reconcile"], worker.main, ["--reconcile"]),
+        (["app", "--show"], app_main.main, ["--show"]),
+        (["setup"], app_main.main, ["--setup"]),
+        ([], app_main.main, []),
+        (["--show"], app_main.main, ["--show"]),  # no entry named: the app, with its own flags
+    ],
+)
+def test_dispatch_picks_the_entry_point(
+    argv: list[str], expected_main: object, expected_args: list[str]
+) -> None:
+    handler, args = entry.resolve(argv)
+    assert handler is expected_main
+    assert args == expected_args
+
+
+def test_main_runs_the_resolved_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[list[str]] = []
+    monkeypatch.setattr(worker, "main", lambda args: seen.append(list(args)) or 5)
+    assert entry.main(["worker", "--now"]) == 5
+    assert seen == [["--now"]]
+
+
+def test_main_reads_sys_argv_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.argv", ["VectorEmbed.exe", "watcher", "--status"])
+    monkeypatch.setattr(watcher, "main", lambda args: 0 if list(args) == ["--status"] else 9)
+    assert entry.main() == 0
