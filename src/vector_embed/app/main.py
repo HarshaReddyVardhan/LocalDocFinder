@@ -19,12 +19,18 @@ from vector_embed.app.match_controller import MatchController
 from vector_embed.app.models_controller import ModelsController
 from vector_embed.app.settings_controller import SettingsController
 from vector_embed.app.settings_window import SettingsWindow
+from vector_embed.app.setup_controller import SetupController
+from vector_embed.app.setup_wizard import SetupWizard
 from vector_embed.app.window import SearchWindow
 from vector_embed.core import runtime
 from vector_embed.core.idle import SystemActivity
 from vector_embed.core.logging_setup import configure_logging
+from vector_embed.core.models.catalog import load_catalog
+from vector_embed.core.models.hardware import probe_hardware
 from vector_embed.core.secrets import KeyringStore
 from vector_embed.core.settings import SETTINGS_FILENAME, Settings, load_settings
+from vector_embed.core.setup.flow import SETUP_COMPLETED_KEY
+from vector_embed.core.setup.wiring import FlowBuilder, build_flow
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.store.sqlite import StateDb
 
@@ -98,6 +104,22 @@ def build_settings_window(
     return window
 
 
+def setup_needed(state: StateDb) -> bool:
+    return state.get_meta(SETUP_COMPLETED_KEY) is None
+
+
+def run_setup_wizard(settings: Settings, state: StateDb, build: FlowBuilder = build_flow) -> None:
+    """Show the first-run wizard (also reachable from the tray); returns when it closes."""
+    path = settings.storage.data_dir / SETTINGS_FILENAME
+    wizard = SetupWizard(
+        SetupController(build, settings, state),
+        SettingsController(path, state, KeyringStore()),
+        load_catalog(settings.storage.data_dir),
+        probe_hardware(),
+    )
+    wizard.exec()
+
+
 def hotkey_applier(hotkey: HotkeyFilter, tray: QSystemTrayIcon) -> Callable[[str], None]:
     """Re-register the global hotkey right away when the user changes it in Settings."""
 
@@ -145,6 +167,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         menu.addAction("Search", window.summon)
         menu.addAction("Settings…", open_settings)
+        menu.addAction("Run setup again…", lambda: run_setup_wizard(settings, state))
         menu.addAction("Quit", app.quit)
         tray.setContextMenu(menu)
         suffix = "" if registered else " - hotkey unavailable"
@@ -162,6 +185,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 QSystemTrayIcon.MessageIcon.Warning,
                 5000,
             )
+        if setup_needed(state):
+            run_setup_wizard(settings, state)
         if args.show:
             window.summon()
         code = app.exec()

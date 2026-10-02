@@ -348,6 +348,7 @@ def test_main_runs_the_event_loop(
     monkeypatch.setattr(app_main.HotkeyFilter, "register", lambda _self, _spec: hotkey_ok)
     monkeypatch.setattr(QSystemTrayIcon, "show", lambda _self: None)
     monkeypatch.setattr(QSystemTrayIcon, "showMessage", lambda *_a: None)
+    monkeypatch.setattr(app_main, "run_setup_wizard", lambda *_a: None)
     summoned: list[int] = []
     monkeypatch.setattr(app_main.SearchWindow, "summon", lambda _self: summoned.append(1))
     assert app_main.main(["--show"]) == 7
@@ -366,4 +367,5 @@ def test_main_survives_an_invalid_hotkey(
     monkeypatch.setattr(qapp, "exec", lambda: 0)
     monkeypatch.setattr(QSystemTrayIcon, "show", lambda _self: None)
     monkeypatch.setattr(QSystemTrayIcon, "showMessage", lambda *_a: None)
+    monkeypatch.setattr(app_main, "run_setup_wizard", lambda *_a: None)
     assert app_main.main([]) == 0

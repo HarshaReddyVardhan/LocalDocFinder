@@ -1,0 +1,376 @@
+"""First-run setup wizard: hardware, Ollama, models, download, speed test, settings, done.
+
+The wizard only collects choices and shows progress; ``SetupFlow`` (via ``SetupController``)
+does the work, so ``ve setup`` and the wizard behave the same.
+"""
+
+from collections.abc import Callable
+
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QLabel,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QTabWidget,
+    QVBoxLayout,
+    QWizard,
+    QWizardPage,
+)
+
+from vector_embed.app.settings_controller import SettingsController
+from vector_embed.app.settings_tabs import CloudTab, GeneralTab, UpdatesTab
+from vector_embed.app.setup_controller import SetupController
+from vector_embed.core.models.benchmark import Verdict, judge
+from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_EMBED, Catalog
+from vector_embed.core.models.fit import budget_mb, fits
+from vector_embed.core.models.hardware import Hardware
+from vector_embed.core.setup.flow import (
+    SetupEvent,
+    SetupOptions,
+    SetupPreview,
+    SetupResult,
+    SlowOffer,
+    Stage,
+)
+from vector_embed.core.setup.ollama_install import INSTALLER_SIZE_MB, OllamaState
+from vector_embed.core.setup.plan import EXTRA_ROLES, SetupChoices
+
+WIZARD_TITLE = "Set up Vector Embed"
+WIZARD_SIZE = (680, 520)
+PROGRESS_SCALE = 100
+_DOWNLOAD_STAGES = {Stage.OLLAMA, Stage.PLAN, Stage.DISK, Stage.PULL}  # before the speed test
+
+
+def _label(text: str = "") -> QLabel:
+    label = QLabel(text)
+    label.setWordWrap(True)
+    return label
+
+
+def ask_downgrade_with_dialog(offer: SlowOffer) -> bool:
+    answer = QMessageBox.question(
+        None,
+        "Slow model",
+        f"{offer.model} runs at {offer.result.rate:.1f} {offer.result.unit} on this PC.\n"
+        f"Switch to the smaller {offer.alternative}?",
+    )
+    return answer == QMessageBox.StandardButton.Yes
+
+
+class WelcomePage(QWizardPage):
+    def __init__(self, hardware: Hardware) -> None:
+        super().__init__()
+        self.setTitle("Welcome")
+        gpu = (
+            f"{hardware.gpu_name} with {hardware.vram_total_mb} MB of video memory"
+            if hardware.has_gpu
+            else "no NVIDIA graphics card (models will run on the CPU)"
+        )
+        self.summary = _label(
+            "Vector Embed searches your files by meaning, and answers questions about them, "
+            "entirely on this PC.\n\n"
+            f"Your PC: {gpu}, {hardware.ram_total_mb} MB of memory.\n\n"
+            "Setup will choose models that fit this hardware, download them, and test their "
+            "speed. You can change everything."
+        )
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.summary)
+
+
+class OllamaPage(QWizardPage):
+    """Ollama runs the models. Installing it needs the user's explicit tick."""
+
+    def __init__(self, controller: SetupController) -> None:
+        super().__init__()
+        self.setTitle("Ollama")
+        self._controller = controller
+        self._needs_install = False
+        self.status = _label()
+        self.consent = QCheckBox(
+            f"Download and install Ollama from ollama.com (about {INSTALLER_SIZE_MB} MB)"
+        )
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.status)
+        layout.addWidget(self.consent)
+        self.consent.toggled.connect(lambda _on: self.completeChanged.emit())
+
+    def initializePage(self) -> None:  # noqa: N802
+        state = self._controller.preview().ollama
+        self._needs_install = state is OllamaState.MISSING
+        self.consent.setVisible(self._needs_install)
+        self.status.setText(
+            {
+                OllamaState.RUNNING: "Ollama is installed and running.",
+                OllamaState.INSTALLED_NOT_RUNNING: "Ollama is installed; setup will start it.",
+                OllamaState.MISSING: "Ollama, the program that runs the models, is not installed. "
+                "Nothing is downloaded until you agree below.",
+            }[state]
+        )
+        self.completeChanged.emit()
+
+    def isComplete(self) -> bool:  # noqa: N802
+        return not self._needs_install or self.consent.isChecked()
+
+    @property
+    def install_consented(self) -> bool:
+        return self._needs_install and self.consent.isChecked()
+
+
+class ModelsPage(QWizardPage):
+    """Pre-filled with the auto-picks; every catalog model is listed with its size."""
+
+    def __init__(
+        self,
+        controller: SetupController,
+        catalog: Catalog,
+        hardware: Hardware,
+    ) -> None:
+        super().__init__()
+        self.setTitle("Models")
+        self._controller = controller
+        self._catalog = catalog
+        self._hardware = hardware
+        self._preview: SetupPreview | None = None
+        self.embed = QComboBox()
+        self.chat = QComboBox()
+        self.extras = {
+            role: QCheckBox(f"Also download a {role.replace('_', ' ')} model")
+            for role in EXTRA_ROLES
+        }
+        self.disk = _label()
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Embedding model (finds your files)"))
+        layout.addWidget(self.embed)
+        layout.addWidget(QLabel("Chat model (answers questions)"))
+        layout.addWidget(self.chat)
+        for box in self.extras.values():
+            layout.addWidget(box)
+        layout.addWidget(self.disk)
+        self._filling = False
+        self.setCommitPage(True)  # downloading starts after this page, so there is no way back
+        for combo in (self.embed, self.chat):
+            combo.currentIndexChanged.connect(self._update_disk)
+        for box in self.extras.values():
+            box.toggled.connect(self._update_disk)
+
+    def _fill(self, combo: QComboBox, role: str, selected: str | None) -> None:
+        combo.clear()
+        budget = budget_mb(self._hardware, total=True)
+        for name in self._catalog.preferences(role):
+            entry = self._catalog.entry(name)
+            if entry is None:
+                continue
+            note = "" if fits(entry, entry.vram_mb, self._hardware, budget) else " - won't fit"
+            size = f"{entry.download_mb} MB" if entry.download_mb else "size unknown"
+            combo.addItem(f"{name} ({size}){note}", name)
+        index = combo.findData(selected)
+        combo.setCurrentIndex(max(index, 0))
+
+    def initializePage(self) -> None:  # noqa: N802
+        self._filling = True
+        plan = self._controller.preview().plan
+        embed, chat = plan.model_for(ROLE_EMBED), plan.model_for(ROLE_CHAT)
+        self._fill(self.embed, ROLE_EMBED, embed.model if embed else None)
+        self._fill(self.chat, ROLE_CHAT, chat.model if chat else None)
+        self._filling = False
+        self._update_disk()
+
+    def choices(self) -> SetupChoices:
+        return SetupChoices(
+            embed=self.embed.currentData(),
+            chat=self.chat.currentData(),
+            extras=tuple(role for role, box in self.extras.items() if box.isChecked()),
+        )
+
+    def _update_disk(self) -> None:
+        if self._filling:
+            return
+        self._preview = self._controller.preview(self.choices())
+        preview = self._preview
+        text = f"To download: {preview.download_mb} MB. Free disk space: {preview.free_disk_mb} MB."
+        if not preview.enough_disk:
+            text += " Not enough free space; choose smaller models or free some space."
+        text += "".join(f"\n{warning}" for warning in preview.plan.warnings)
+        self.disk.setText(text)
+        self.completeChanged.emit()
+
+    def isComplete(self) -> bool:  # noqa: N802
+        return self._preview is not None and self._preview.enough_disk
+
+
+class RunPage(QWizardPage):
+    """Shared by the download and speed-test pages: a progress bar, a log line and a retry."""
+
+    def __init__(self, title: str) -> None:
+        super().__init__()
+        self.setTitle(title)
+        self.line = _label()
+        self.bar = QProgressBar()
+        self.bar.setRange(0, PROGRESS_SCALE)
+        self.retry = QPushButton("Try again")
+        self.retry.setVisible(False)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.line)
+        layout.addWidget(self.bar)
+        layout.addWidget(self.retry)
+        self._done = False
+
+    def show_event(self, event: SetupEvent) -> None:
+        self.line.setText(event.message)
+        if event.fraction is not None:
+            self.bar.setValue(int(event.fraction * PROGRESS_SCALE))
+
+    def mark_done(self) -> None:
+        self._done = True
+        self.completeChanged.emit()
+
+    def show_failure(self, message: str) -> None:
+        self.line.setText(f"Setup stopped: {message}\nIt keeps what it already downloaded.")
+        self.retry.setVisible(True)
+
+    def isComplete(self) -> bool:  # noqa: N802
+        return self._done
+
+
+class DownloadPage(RunPage):
+    def __init__(self) -> None:
+        super().__init__("Downloading")
+
+
+class SpeedTestPage(RunPage):
+    def __init__(self) -> None:
+        super().__init__("Speed test")
+        self.results = _label()
+        self.layout().addWidget(self.results)  # type: ignore[union-attr]
+
+    def show_result(self, result: SetupResult) -> None:
+        lines = [
+            f"{r.model}: {r.rate:.1f} {r.unit}"
+            + ("  (slow on this PC)" if judge(r) is Verdict.SLOW else "")
+            for r in result.bench
+        ]
+        lines.extend(result.warnings)
+        self.results.setText("\n".join(lines) or "Speed test skipped.")
+
+
+class SettingsPage(QWizardPage):
+    """Every user setting, once: the same tabs as the Settings window."""
+
+    def __init__(self, controller: SettingsController) -> None:
+        super().__init__()
+        self.setTitle("Your settings")
+        self.general = GeneralTab(controller)
+        self.cloud = CloudTab(controller)
+        self.updates = UpdatesTab(controller)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.general, "General")
+        self.tabs.addTab(self.cloud, "Cloud & Privacy")
+        self.tabs.addTab(self.updates, "Updates")
+        self.status = _label()
+        for tab in (self.general, self.cloud, self.updates):
+            tab.message.connect(self.status.setText)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.tabs)
+        layout.addWidget(self.status)
+
+    def initializePage(self) -> None:  # noqa: N802
+        for tab in (self.general, self.cloud, self.updates):
+            tab.refresh()
+
+
+class DonePage(QWizardPage):
+    def __init__(self, hotkey: Callable[[], str]) -> None:
+        super().__init__()
+        self.setTitle("All set")
+        self._hotkey = hotkey
+        self.text = _label()
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.text)
+
+    def initializePage(self) -> None:  # noqa: N802
+        self.text.setText(
+            f"Press {self._hotkey()} anywhere to search your files.\n\n"
+            "Indexing happens in the background while the PC is idle and plugged in. "
+            "Settings are in the tray icon's menu."
+        )
+
+
+class SetupWizard(QWizard):
+    def __init__(
+        self,
+        controller: SetupController,
+        settings_controller: SettingsController,
+        catalog: Catalog,
+        hardware: Hardware,
+        *,
+        ask_downgrade: Callable[[SlowOffer], bool] = ask_downgrade_with_dialog,
+    ) -> None:
+        super().__init__()
+        self.setWindowTitle(WIZARD_TITLE)
+        self.resize(*WIZARD_SIZE)
+        self._controller = controller
+        self._settings = settings_controller
+        self._ask_downgrade = ask_downgrade
+        self.welcome = WelcomePage(hardware)
+        self.ollama = OllamaPage(controller)
+        self.models = ModelsPage(controller, catalog, hardware)
+        self.download = DownloadPage()
+        self.speed = SpeedTestPage()
+        self.settings_page = SettingsPage(settings_controller)
+        self.done_page = DonePage(lambda: settings_controller.settings().search.hotkey)
+        self._pages = (
+            self.welcome,
+            self.ollama,
+            self.models,
+            self.download,
+            self.speed,
+            self.settings_page,
+            self.done_page,
+        )
+        for page in self._pages:
+            self.addPage(page)
+        controller.progressed.connect(self._on_event)
+        controller.finished.connect(self._on_finished)
+        controller.failed.connect(self._on_failed)
+        controller.downgrade_offered.connect(self._on_downgrade)
+        self.download.retry.clicked.connect(self._start)
+        self.speed.retry.clicked.connect(self._start)
+        self.setButtonText(QWizard.WizardButton.CommitButton, "Download")
+        self.currentIdChanged.connect(self._on_page)
+
+    # ------------------------------------------------------------------ flow control
+    def _on_page(self, page_id: int) -> None:
+        if self.page(page_id) is self.download:
+            self._start()
+
+    def _start(self) -> None:
+        self.download.retry.setVisible(False)
+        self.speed.retry.setVisible(False)
+        options = SetupOptions(
+            self.models.choices(), install_ollama=self.ollama.install_consented, run_bench=True
+        )
+        self._controller.start(options)
+
+    def _on_event(self, event: SetupEvent) -> None:
+        if event.stage is Stage.BENCH and self.currentPage() is self.download:
+            self.download.mark_done()
+            self.next()
+        in_download = event.stage in _DOWNLOAD_STAGES and not self.download.isComplete()
+        (self.download if in_download else self.speed).show_event(event)
+
+    def _on_finished(self, result: SetupResult) -> None:
+        self.download.mark_done()
+        self.speed.show_result(result)
+        self.speed.mark_done()
+        if self.currentPage() is self.download:
+            self.next()
+
+    def _on_failed(self, message: str) -> None:
+        page = self.currentPage()
+        if isinstance(page, RunPage):
+            page.show_failure(message)
+
+    def _on_downgrade(self, offer: SlowOffer) -> None:
+        self._controller.answer_downgrade(self._ask_downgrade(offer))

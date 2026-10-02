@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
 INSTALLER_NAME = "OllamaSetup.exe"
+INSTALLER_SIZE_MB = 1200  # approximate; shown to the user before they consent
 EXPECTED_SIGNER = "Ollama Inc."
 INSTALLER_ARGS = ("/CURRENTUSER", "/SP-", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
 SERVER_WAIT_SECONDS = 60.0
