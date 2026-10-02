@@ -9,13 +9,14 @@ import logging
 import sys
 import types
 import typing
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 from pydantic.fields import FieldInfo
 
 from vector_embed import watcher, worker
+from vector_embed.cli_cloud import CloudCommandError, add_cloud_parsers, run_cloud, run_keys
 from vector_embed.core import runtime
 from vector_embed.core.doctor import format_checks, run_doctor
 from vector_embed.core.extractors.ocr import WindowsOcr
@@ -25,6 +26,7 @@ from vector_embed.core.models.hardware import probe_hardware
 from vector_embed.core.models.manager import ModelChangeError, ModelManager
 from vector_embed.core.models.report import format_report
 from vector_embed.core.providers.base import ProviderError
+from vector_embed.core.secrets import KeyringStore, KeyStoreError
 from vector_embed.core.settings import SETTINGS_FILENAME, Settings, SettingsError, load_settings
 from vector_embed.core.skills.base import Skill, load_skills
 from vector_embed.core.store.sqlite import StateDb
@@ -186,17 +188,36 @@ def build_parser() -> argparse.ArgumentParser:
     models.add_argument("--embedder", metavar="MODEL", help="switch the embedder (re-index needed)")
     models.add_argument("--yes", action="store_true", help="confirm the re-index for --embedder")
     sub.add_parser("health", help="queue, VRAM, loaded models and cloud spend")
+    add_cloud_parsers(sub)
     sub.add_parser("doctor", help="check the environment and explain any problem")
     sub.add_parser("status", help="index and queue state")
     return parser
+
+
+# Order matters: subclasses (ModelChangeError, ProviderError) before their base RuntimeError.
+_ERRORS: tuple[tuple[type[Exception], int, str], ...] = (
+    (SettingsError, EXIT_USAGE, "settings error: {}"),
+    (ProviderError, EXIT_ERROR, "model provider error: {}"),
+    (ModelChangeError, EXIT_USAGE, "{}"),
+    (CloudCommandError, EXIT_USAGE, "{}"),
+    (KeyStoreError, EXIT_ERROR, "{}"),
+    (RuntimeError, EXIT_ERROR, "{}"),  # skill-level errors, e.g. search disabled on battery
+)
+
+
+def _report(exc: Exception) -> int:
+    for kind, code, template in _ERRORS:
+        if isinstance(exc, kind):
+            err(template.format(exc))
+            return code
+    raise exc
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     tokens = list(sys.argv[1:] if argv is None else argv)
     if tokens and tokens[0] == "index":  # the worker has its own options; hand them over untouched
         return worker.main(tokens[1:])
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    args = build_parser().parse_args(argv)
     try:
         settings = load_settings()
         if args.data_dir:
@@ -204,34 +225,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             settings = settings.model_copy(update={"storage": storage})
         configure_logging("cli", None, "WARNING")
         return _dispatch(args, settings)
-    except SettingsError as exc:
-        err(f"settings error: {exc}")
-        return EXIT_USAGE
-    except ProviderError as exc:
-        err(f"model provider error: {exc}")
-        return EXIT_ERROR
-    except ModelChangeError as exc:
-        err(str(exc))
-        return EXIT_USAGE
-    except RuntimeError as exc:  # skill-level errors (e.g. search disabled on battery)
-        err(str(exc))
-        return EXIT_ERROR
+    except tuple(kind for kind, _, _ in _ERRORS) as exc:
+        return _report(exc)
+
+
+def _status(settings: Settings) -> int:
+    out(watcher.status(settings))
+    return EXIT_OK
 
 
 def _dispatch(args: argparse.Namespace, settings: Settings) -> int:
-    command: str = args.command
-    if command == "index":  # reached only through ``ve --data-dir X index``
-        return worker.main([])
-    if command == "models":
-        return cmd_models(settings, args)
-    if command == "health":
-        return cmd_health(settings)
-    if command == "doctor":
-        return cmd_doctor(settings)
-    if command == "status":
-        out(watcher.status(settings))
-        return EXIT_OK
-    return run_skill(args.skill, args, settings)
+    handlers: dict[str, Callable[[], int]] = {
+        "index": lambda: worker.main([]),  # reached only through ``ve --data-dir X index``
+        "models": lambda: cmd_models(settings, args),
+        "health": lambda: cmd_health(settings),
+        "keys": lambda: run_keys(args, settings, KeyringStore(), out),
+        "cloud": lambda: run_cloud(args, settings, KeyringStore(), out),
+        "doctor": lambda: cmd_doctor(settings),
+        "status": lambda: _status(settings),
+    }
+    handler = handlers.get(args.command)
+    return handler() if handler else run_skill(args.skill, args, settings)
 
 
 if __name__ == "__main__":
