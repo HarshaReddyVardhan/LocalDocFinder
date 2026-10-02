@@ -5,7 +5,9 @@ recorded in the state DB; a change wipes both tables and the manifest (a clean r
 """
 
 import logging
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from datetime import timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any, TypeAlias, TypeVar
 
@@ -48,6 +50,8 @@ DOCUMENT_COLUMNS = [
     "model_id",
 ]
 
+_KEEP_VERSIONS = timedelta(hours=1)  # older table versions are deleted at optimize
+_REINDEX_GROWTH = 2  # rebuild the vector index when the table has grown this many times
 _BATCH = 200
 _VECTOR_INDEX_MIN_ROWS = 100_000
 _T = TypeVar("_T")
@@ -340,29 +344,57 @@ class LanceStore:
         return any(column in (getattr(i, "columns", None) or ()) for i in table.list_indices())
 
     def maintain(self) -> None:
-        """Compact files, repair a missing keyword index, and build the vector index once the
-        table is large enough."""
+        """Keep the tables fast: keyword and lookup indexes, compaction, the vector index."""
+        steps: tuple[tuple[str, Callable[[LanceTable, str], object]], ...] = (
+            ("FTS check", self._repair_fts),
+            ("scalar indexes", self._scalar_indexes),
+            ("optimize", self._optimize),
+        )
         for name in (CHUNKS, DOCUMENTS):
             table = self.table(name)
             if table is None:
                 continue
-            text_column = "text" if name == CHUNKS else "full_text"
-            try:
-                if not self._has_index_on(table, text_column):  # its creation failed earlier
-                    self._create_fts(name, text_column)
-            except Exception:
-                logger.warning("lance: FTS check failed on %s", name, exc_info=True)
-            try:
-                table.optimize()
-            except Exception:
-                logger.warning("lance: optimize failed on %s", name, exc_info=True)
-            if table.count_rows() < self._min_rows:
-                continue
-            from lancedb.index import IvfPq
+            for what, step in steps:
+                self._guarded(name, what, partial(step, table, name))
+            if table.count_rows() >= self._min_rows:
+                self._guarded(name, "vector index", partial(self._vector_index, table, name))
 
-            vector_column = CHUNK_VECTOR if name == CHUNKS else DOC_VECTOR
-            try:
-                if not self._has_index_on(table, vector_column):
-                    table.create_index(vector_column, config=IvfPq(distance_type="cosine"))
-            except Exception:
-                logger.warning("lance: vector index failed on %s", name, exc_info=True)
+    @staticmethod
+    def _guarded(name: str, what: str, action: Callable[[], object]) -> None:
+        """Maintenance is an optimisation: a failure is logged and the next run tries again."""
+        try:
+            action()
+        except Exception:
+            logger.warning("lance: %s failed on %s", what, name, exc_info=True)
+
+    def _repair_fts(self, table: LanceTable, name: str) -> None:
+        column = "text" if name == CHUNKS else "full_text"
+        if not self._has_index_on(table, column):  # its creation failed earlier
+            self._create_fts(name, column)
+
+    @staticmethod
+    def _optimize(table: LanceTable, _name: str) -> None:
+        table.optimize(cleanup_older_than=_KEEP_VERSIONS)
+
+    def _scalar_indexes(self, table: LanceTable, name: str) -> None:
+        """BTREE indexes on the columns used by ``IN (...)`` lookups and deletes."""
+        from lancedb.index import BTree
+
+        columns = ("chunk_hash", "path") if name == CHUNKS else ("path",)
+        for column in columns:
+            if not self._has_index_on(table, column):
+                table.create_index(column, config=BTree(), replace=False)
+
+    def _vector_index(self, table: LanceTable, name: str) -> None:
+        """Build the vector index, and rebuild it when the table has doubled since it was made
+        (new rows are searched by brute force until then; a stale index degrades recall)."""
+        from lancedb.index import IvfPq
+
+        column = CHUNK_VECTOR if name == CHUNKS else DOC_VECTOR
+        key = f"vector_index_rows_{name}"
+        rows = int(table.count_rows())
+        built_at = int(self._state.get_meta(key, "0") or 0)
+        if self._has_index_on(table, column) and rows < built_at * _REINDEX_GROWTH:
+            return
+        table.create_index(column, config=IvfPq(distance_type="cosine"), replace=True)
+        self._state.set_meta(key, str(rows))

@@ -231,3 +231,59 @@ class TestIndexMaintenance:
         assert store._has_index_on(table, "text")  # repaired
         assert store._has_index_on(table, lc.CHUNK_VECTOR)  # FTS no longer hides the need for it
         assert store.fts_search(lc.CHUNKS, "alpha", ["path"], "", 5)
+
+    def test_lookup_columns_get_btree_indexes(self, tmp_path: Path, state: StateDb) -> None:
+        store = LanceStore(tmp_path, state, "m1", dim=DIM, vector_index_min_rows=10_000)
+        store.replace_rows(["a.py"], [chunk("a.py", "alpha", [1, 0, 0, 0])])
+        store.replace_documents(["a.py"], [document("a.py", "alpha text", [1, 0, 0, 0])])
+        store.maintain()
+        store.maintain()  # idempotent: no error, no second index
+        chunks, documents = store.chunks, store.documents
+        assert chunks is not None
+        assert documents is not None
+        assert store._has_index_on(chunks, "chunk_hash")
+        assert store._has_index_on(chunks, "path")
+        assert store._has_index_on(documents, "path")
+        assert store.vectors_for_hashes(["h-alpha"])  # lookups still answer through the index
+
+    def test_old_table_versions_are_cleaned_up(
+        self, tmp_path: Path, state: StateDb, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from datetime import timedelta
+
+        store = LanceStore(tmp_path, state, "m1", dim=DIM, vector_index_min_rows=10_000)
+        store.replace_rows(["a.py"], [chunk("a.py", "alpha", [1, 0, 0, 0])])
+        requested: list[object] = []
+        table = store.chunks
+        assert table is not None
+        original = table.optimize
+
+        def spy(**kwargs: object) -> object:
+            requested.append(kwargs.get("cleanup_older_than"))
+            return original(**kwargs)
+
+        monkeypatch.setattr(table, "optimize", spy)
+        store.maintain()
+        assert requested == [timedelta(hours=1)]
+
+    def test_the_vector_index_is_rebuilt_when_the_table_has_doubled(
+        self, tmp_path: Path, state: StateDb
+    ) -> None:
+        store = LanceStore(tmp_path, state, "m1", dim=DIM, vector_index_min_rows=1)
+
+        def add(start: int, count: int) -> None:
+            rows = [
+                chunk(f"f{i}.py", f"word{i}", [1.0, float(i % 7), 0.0, 1.0])
+                for i in range(start, start + count)
+            ]
+            store.replace_rows([r["path"] for r in rows], rows)
+
+        add(0, 300)
+        store.maintain()
+        assert state.get_meta("vector_index_rows_chunks") == "300"
+        add(300, 100)  # grew by a third: the index is kept
+        store.maintain()
+        assert state.get_meta("vector_index_rows_chunks") == "300"
+        add(400, 300)  # now more than double
+        store.maintain()
+        assert state.get_meta("vector_index_rows_chunks") == "700"
