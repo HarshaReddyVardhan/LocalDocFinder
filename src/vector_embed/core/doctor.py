@@ -10,6 +10,7 @@ from vector_embed.core.extractors.base import OcrEngine
 from vector_embed.core.models.hardware import Hardware
 from vector_embed.core.models.registry import ModelRegistry
 from vector_embed.core.settings import Settings
+from vector_embed.core.setup.flow import SETUP_COMPLETED_KEY
 from vector_embed.core.store.sqlite import StateDb
 
 MIN_PYTHON = (3, 11)
@@ -70,6 +71,7 @@ def run_doctor(
     )
     checks.append(Check("power", True, "AC" if hardware.on_ac else "battery (indexing paused)"))
     if state is not None:
+        checks.append(_setup_check(state))
         checks.append(
             Check(
                 "index",
@@ -82,6 +84,12 @@ def run_doctor(
 
 def format_checks(checks: list[Check]) -> str:
     return "\n".join(f"[{'ok' if c.ok else 'FAIL'}] {c.name}: {c.detail}" for c in checks)
+
+
+def _setup_check(state: StateDb) -> Check:
+    if state.get_meta(SETUP_COMPLETED_KEY) is not None:
+        return Check("setup", True, "completed")
+    return Check("setup", False, "not run yet; run: ve setup")
 
 
 def _python_check() -> Check:

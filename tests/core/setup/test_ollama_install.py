@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from tests.core.setup.fakes import Clock, FakeSystem
 
 from vector_embed.core.setup.ollama_install import (
     EXPECTED_SIGNER,
@@ -9,71 +10,8 @@ from vector_embed.core.setup.ollama_install import (
     OllamaSetup,
     OllamaSetupError,
     OllamaState,
-    ProgressCallback,
     Signature,
 )
-
-
-class FakeSystem:
-    def __init__(self) -> None:
-        self.up = False
-        self.exe: Path | None = None
-        self.sig = Signature(valid=True, signer=EXPECTED_SIGNER)
-        self.installer_exit = 0
-        self.up_after_pings: int | None = None  # server answers after this many failed pings
-        self.pings = 0
-        self.calls: list[str] = []
-        self.free_mb = 50_000
-        self.queried: list[Path] = []
-
-    def ping(self) -> bool:
-        self.pings += 1
-        if self.up_after_pings is not None and self.pings > self.up_after_pings:
-            self.up = True
-        return self.up
-
-    def find_executable(self) -> Path | None:
-        return self.exe
-
-    def download(self, url: str, destination: Path, progress: ProgressCallback) -> None:
-        self.calls.append(f"download {url}")
-        destination.write_bytes(b"MZ")
-        progress(2, 2)
-
-    def signature(self, path: Path) -> Signature:
-        self.calls.append("signature")
-        return self.sig
-
-    def run_installer(self, path: Path, args: tuple[str, ...]) -> int:
-        self.calls.append(f"run {args}")
-        if self.installer_exit == 0:
-            self.exe = Path("ollama.exe")
-            self.up = self.up_after_pings is None
-        return self.installer_exit
-
-    def spawn_server(self, executable: Path) -> None:
-        self.calls.append("spawn")
-        self.up = self.up_after_pings is None
-
-    def models_dir(self) -> Path:
-        return Path("models")
-
-    def free_disk_mb(self, path: Path) -> int:
-        self.queried.append(path)
-        return self.free_mb
-
-
-class Clock:
-    """Fake time: ``sleep`` advances it, so wait loops finish instantly."""
-
-    def __init__(self) -> None:
-        self.now = 0.0
-
-    def sleep(self, seconds: float) -> None:
-        self.now += seconds
-
-    def __call__(self) -> float:
-        return self.now
 
 
 def make(system: FakeSystem, wait: float = 10.0) -> OllamaSetup:

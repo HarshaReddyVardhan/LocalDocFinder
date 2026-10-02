@@ -8,6 +8,7 @@ from vector_embed.core.models.catalog import load_catalog
 from vector_embed.core.models.hardware import Hardware
 from vector_embed.core.models.registry import ModelRegistry
 from vector_embed.core.providers.base import CAP_COMPLETION, CAP_EMBEDDING, ModelInfo
+from vector_embed.core.setup.flow import SETUP_COMPLETED_KEY
 
 GPU = Hardware("RTX 2070", 8192, 7000, 32000, 16000, 8, True)
 
@@ -43,6 +44,7 @@ def test_healthy_machine(env: Env) -> None:
         "qwen3-embedding:0.6b", "ollama", capabilities=frozenset({CAP_EMBEDDING}), size_bytes=1
     )
     chat = ModelInfo("qwen3.5:9b", "ollama", capabilities=frozenset({CAP_COMPLETION}), size_bytes=1)
+    env.state.set_meta(SETUP_COMPLETED_KEY, "1.0")
     checks = names(
         doctor.run_doctor(
             env.settings,
@@ -97,3 +99,9 @@ def test_old_python_is_flagged(monkeypatch: object) -> None:
         sys.version_info = original
     assert not check.ok
     assert "3.11" in check.detail
+
+
+def test_setup_not_run_is_reported(env: Env) -> None:
+    checks = names(doctor.run_doctor(env.settings, registry([]), GPU, Ocr(), state=env.state))
+    assert not checks["setup"].ok
+    assert "ve setup" in checks["setup"].detail

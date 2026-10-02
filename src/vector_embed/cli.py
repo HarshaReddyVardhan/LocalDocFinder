@@ -1,4 +1,4 @@
-"""Command line front-end: ``ve <skill> ...``, ``ve index``, ``ve models``, ``ve doctor``.
+"""Command line front-end: ``ve <skill> ...``, ``ve index``, ``ve models``, ``ve setup`` and more.
 
 Skill commands are generated from the skill registry, so a new skill appears here without
 editing this file.
@@ -17,6 +17,7 @@ from pydantic.fields import FieldInfo
 
 from vector_embed import mcp_server, watcher, worker
 from vector_embed.cli_cloud import CloudCommandError, add_cloud_parsers, run_cloud, run_keys
+from vector_embed.cli_setup import add_setup_parser, run_setup
 from vector_embed.core import runtime
 from vector_embed.core.doctor import format_checks, run_doctor
 from vector_embed.core.evaluation import (
@@ -36,6 +37,8 @@ from vector_embed.core.providers.base import ProviderError
 from vector_embed.core.providers.ollama import OllamaProvider
 from vector_embed.core.secrets import KeyringStore, KeyStoreError
 from vector_embed.core.settings import SETTINGS_FILENAME, Settings, SettingsError, load_settings
+from vector_embed.core.setup.flow import SetupError
+from vector_embed.core.setup.plan import SetupPlanError
 from vector_embed.core.skills.base import Skill, load_skills
 from vector_embed.core.store.sqlite import StateDb
 
@@ -239,6 +242,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--corpus", nargs="+", help="directories to index instead of the spec's")
     evaluate.add_argument("--reuse", action="store_true", help="reuse indexes from a previous run")
     add_cloud_parsers(sub)
+    add_setup_parser(sub)
     sub.add_parser("mcp", help="serve search, ask and match to MCP clients over stdio")
     sub.add_parser("doctor", help="check the environment and explain any problem")
     sub.add_parser("status", help="index and queue state")
@@ -252,6 +256,8 @@ _ERRORS: tuple[tuple[type[Exception], int, str], ...] = (
     (ModelChangeError, EXIT_USAGE, "{}"),
     (CloudCommandError, EXIT_USAGE, "{}"),
     (EvaluationError, EXIT_USAGE, "{}"),
+    (SetupPlanError, EXIT_USAGE, "{}"),
+    (SetupError, EXIT_ERROR, "{}"),
     (KeyStoreError, EXIT_ERROR, "{}"),
     (RuntimeError, EXIT_ERROR, "{}"),  # skill-level errors, e.g. search disabled on battery
 )
@@ -295,6 +301,7 @@ def _dispatch(args: argparse.Namespace, settings: Settings) -> int:
         "mcp": lambda: cmd_mcp(settings),
         "keys": lambda: run_keys(args, settings, KeyringStore(), out),
         "cloud": lambda: run_cloud(args, settings, KeyringStore(), out),
+        "setup": lambda: run_setup(args, settings, out, err),
         "doctor": lambda: cmd_doctor(settings),
         "status": lambda: _status(settings),
     }
