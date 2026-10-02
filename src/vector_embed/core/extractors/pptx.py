@@ -1,5 +1,6 @@
 """PPTX: one chunk per slide (text, tables, notes), pictures through OCR."""
 
+import logging
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,9 @@ from vector_embed.core.extractors.base import (
     Untyped,
     register_extractor,
 )
-from vector_embed.core.extractors.image import image_chunk
+from vector_embed.core.extractors.image import image_chunk, image_key
+
+logger = logging.getLogger(__name__)
 
 
 def _walk(shapes: Untyped, group_type: Untyped) -> Iterator[Any]:
@@ -21,6 +24,16 @@ def _walk(shapes: Untyped, group_type: Untyped) -> Iterator[Any]:
             yield from _walk(shape.shapes, group_type)
         else:
             yield shape
+
+
+def _embedded_blob(shape: Untyped) -> bytes | None:
+    """A picture's bytes, or ``None`` for a linked picture (it names a file, not deck data)."""
+    try:
+        blob: bytes = shape.image.blob
+    except (ValueError, KeyError, AttributeError):
+        logger.debug("pptx: picture without embedded image data", exc_info=True)
+        return None
+    return blob
 
 
 @register_extractor("pptx")
@@ -56,10 +69,11 @@ class PptxExtractor(Extractor):
                         for row in shape.table.rows
                     )
                 elif shape.shape_type == MSO_SHAPE_TYPE.PICTURE and budget > 0:
+                    blob = _embedded_blob(shape)
+                    if blob is None or image_key(blob) in seen:
+                        continue  # linked or missing picture, or one already read: free
                     budget -= 1
-                    picture = image_chunk(
-                        ctx, shape.image.blob, number, seen, f"image on slide {number}"
-                    )
+                    picture = image_chunk(ctx, blob, number, seen, f"image on slide {number}")
                     if picture:
                         chunks.append(picture)
             if slide.has_notes_slide and slide.notes_slide.notes_text_frame is not None:

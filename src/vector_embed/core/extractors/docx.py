@@ -15,7 +15,7 @@ from vector_embed.core.extractors.base import (
     register_extractor,
 )
 from vector_embed.core.extractors.chunking import split_by_lines
-from vector_embed.core.extractors.image import image_chunk
+from vector_embed.core.extractors.image import image_chunk, image_key
 
 logger = logging.getLogger(__name__)
 
@@ -99,8 +99,11 @@ def _embedded_image_chunks(ctx: ExtractContext, path: Path) -> list[Chunk]:
                 if budget <= 0:
                     break
                 if name.startswith("word/media/") and name.lower().endswith(_IMAGE_SUFFIXES):
+                    data = archive.read(name)
+                    if image_key(data) in seen:
+                        continue  # the same picture used twice: no second OCR, no allowance spent
                     budget -= 1
-                    chunk = image_chunk(ctx, archive.read(name), 0, seen, "embedded image")
+                    chunk = image_chunk(ctx, data, 0, seen, "embedded image")
                     if chunk:
                         chunks.append(chunk)
     except zipfile.BadZipFile:

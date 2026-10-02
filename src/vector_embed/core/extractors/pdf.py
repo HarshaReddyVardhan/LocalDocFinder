@@ -87,7 +87,8 @@ def _figure_chunks(
             with Image.open(io.BytesIO(data["image"])) as image:
                 image.load()
                 body = describe(ctx, image)
-        except (OSError, ValueError):
+        except (OSError, ValueError, Image.DecompressionBombError):
+            logger.debug("pdf: skipping an unreadable or oversized figure on p.%d", page_no)
             continue
         if body:
             chunks.append(Chunk(body, KIND_IMAGE, f"figure on p.{page_no}", page=page_no))
@@ -118,14 +119,16 @@ class PdfExtractor(Extractor):
     def _pages(self, doc: Untyped) -> list[Chunk]:
         ctx = self.ctx
         chunks: list[Chunk] = []
-        budget = ctx.images.max_per_doc  # OCR operations: scanned pages + embedded figures
+        # Separate allowances: a long scanned document must not leave its figures un-read.
+        page_budget = ctx.images.max_per_doc  # whole-page OCR
+        budget = ctx.images.max_per_doc  # embedded figures
         seen: set[str] = set()
         for page_no, page in enumerate(doc, 1):
             text = page.get_text("text", sort=True)
             scanned = len(text.strip()) < _SCANNED_PAGE_MIN_CHARS and bool(page.get_images())
             if scanned:
-                if budget > 0:
-                    budget -= 1
+                if page_budget > 0:
+                    page_budget -= 1
                     text = _ocr_scanned_page(ctx, page)
                 chunks += _page_chunks(ctx, text, page_no)
                 continue

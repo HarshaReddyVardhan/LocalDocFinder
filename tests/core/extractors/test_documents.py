@@ -81,6 +81,42 @@ class TestPdf:
         build_with_ocr(ImageSettings(max_per_doc=2)).extract(pdf)
         assert ocr.calls == 2
 
+    def test_scanned_pages_do_not_use_up_the_allowance_for_figures(
+        self, build_with_ocr: Build, tmp_path: Path, ocr: FakeOcr
+    ) -> None:
+        doc = pymupdf.open()
+        for color in ("red", "green"):  # two scanned pages
+            page = doc.new_page()
+            page.insert_image(pymupdf.Rect(0, 0, 400, 600), stream=png_bytes((600, 800), color))
+        text_page = doc.new_page()  # then a normal page with a figure
+        text_page.insert_text((72, 72), "regular page text " * 5)
+        text_page.insert_image(
+            pymupdf.Rect(72, 200, 372, 500), stream=png_bytes((300, 300), "blue")
+        )
+        target = tmp_path / "mixed.pdf"
+        doc.save(target)
+        doc.close()
+        chunks = build_with_ocr(ImageSettings(max_per_doc=2)).extract(target)
+        assert any(c.kind == "image" and c.page == 3 for c in chunks)  # the figure was still read
+        assert ocr.calls == 3
+
+    def test_an_image_bomb_in_a_pdf_skips_that_image_not_the_file(
+        self, build_with_ocr: Build, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from PIL import Image
+
+        from vector_embed.core.extractors import pdf as pdf_module
+
+        def bomb(*_args: object, **_kwargs: object) -> None:
+            raise Image.DecompressionBombError("too many pixels")
+
+        monkeypatch.setattr(pdf_module, "describe", bomb)
+        pdf = make_pdf(
+            tmp_path / "bomb.pdf", ["body text " * 10], images={1: png_bytes((300, 300))}
+        )
+        chunks = build_with_ocr().extract(pdf)
+        assert [c.kind for c in chunks] == ["doc"]  # the text survives
+
     def test_duplicate_figures_are_ocrd_once(
         self, build_with_ocr: Build, tmp_path: Path, ocr: FakeOcr
     ) -> None:
@@ -146,6 +182,21 @@ class TestDocx:
         picture = next(c for c in chunks if c.kind == "image")
         assert "OAuth login flow" in picture.text
 
+    def test_the_same_picture_twice_costs_one_ocr_and_one_allowance(
+        self, build_with_ocr: Build, tmp_path: Path, ocr: FakeOcr
+    ) -> None:
+        import docx
+
+        document = docx.Document()
+        same = png_bytes()
+        for _ in range(3):
+            document.add_picture(io.BytesIO(same))
+        document.add_picture(io.BytesIO(png_bytes((310, 310), "gray")))
+        document.save(tmp_path / "dup.docx")
+        chunks = build_with_ocr(ImageSettings(max_per_doc=2)).extract(tmp_path / "dup.docx")
+        assert ocr.calls == 2  # one for the repeated picture, one for the different one
+        assert len([c for c in chunks if c.kind == "image"]) == 2
+
     def test_long_section_is_split(
         self, with_chunking: Callable[..., ExtractorSet], tmp_path: Path
     ) -> None:
@@ -195,6 +246,18 @@ class TestPptx:
         assert (chunk.symbol, chunk.page) == ("slide 1", 1)
         for expected in ("Quarterly roadmap", "Ship the indexer", "Q1 | Search", "Notes: mention"):
             assert expected in chunk.text
+
+    def test_a_linked_picture_does_not_break_the_deck(
+        self, extractors: ExtractorSet, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pptx.shapes.picture import Picture
+
+        def linked(_self: object) -> None:
+            raise ValueError("no embedded image")  # python-pptx's answer for a linked picture
+
+        monkeypatch.setattr(Picture, "image", property(linked))
+        chunks = extractors.extract(self.build(tmp_path / "linked.pptx", with_image=True))
+        assert "Ship the indexer" in chunks[0].text  # the slide's text is still indexed
 
     def test_pictures_are_ocrd(self, build_with_ocr: Build, tmp_path: Path) -> None:
         chunks = build_with_ocr().extract(self.build(tmp_path / "p.pptx", with_image=True))

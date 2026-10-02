@@ -131,11 +131,16 @@ def describe(ctx: ExtractContext, image: Image.Image, with_caption: bool = True)
     return "\n".join(parts)
 
 
+def image_key(data: bytes) -> str:
+    """Content hash used to skip an image that already appeared in the same document."""
+    return xxhash.xxh3_64_hexdigest(data)
+
+
 def image_chunk(
     ctx: ExtractContext, data: bytes, page: int, seen: set[str], label: str
 ) -> Chunk | None:
     """A chunk for an embedded image (PDF/Office); skips duplicates, tiny or unreadable ones."""
-    key = xxhash.xxh3_64_hexdigest(data)
+    key = image_key(data)
     if key in seen:
         return None
     seen.add(key)
