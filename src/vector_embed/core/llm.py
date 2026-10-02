@@ -1,0 +1,211 @@
+"""LLM gateway: picks the model for a role and owns its GPU lifecycle.
+
+Rules from the design:
+* the embedder and the chat model are never on the GPU together (the embedder is unloaded
+  first; queries embed on the CPU while a chat session is active);
+* the chat model loads on demand and stays for ``keep_alive`` between follow-ups;
+* it is unloaded when the session closes, after ``idle_unload_seconds``, when the laptop is
+  unplugged, or when a fullscreen app starts;
+* a ``chat`` lock in the state DB keeps the indexing worker from starting meanwhile.
+"""
+
+import logging
+import time
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+from vector_embed.core.models.catalog import ROLE_CHAT
+from vector_embed.core.models.registry import ModelRegistry
+from vector_embed.core.power import PowerGate
+from vector_embed.core.providers.base import (
+    ChatChunk,
+    ChatOptions,
+    ChatProvider,
+    JsonResult,
+    Message,
+    ProviderError,
+)
+from vector_embed.core.providers.ollama import OllamaProvider
+from vector_embed.core.settings import ChatSettings
+from vector_embed.core.store.sqlite import CHAT_LOCK, StateDb
+
+logger = logging.getLogger(__name__)
+
+REASON_UNPLUGGED = "unplugged"
+REASON_FULLSCREEN = "fullscreen app"
+REASON_IDLE = "idle"
+_LOCK_GRACE_SECONDS = 60
+
+
+class ChatBlockedError(RuntimeError):
+    """Chat cannot run right now (for example on battery with no cloud provider)."""
+
+
+class NoChatModelError(RuntimeError):
+    """No installed model can serve the role; the message says what to pull."""
+
+
+@dataclass(frozen=True)
+class ChatTarget:
+    role: str
+    model: str
+    provider: ChatProvider
+    local: bool
+
+
+class TargetRouter(Protocol):
+    """Hook for cloud routing (step 9): may replace the local target for a role."""
+
+    def __call__(self, role: str, power: PowerGate) -> ChatTarget | None: ...
+
+
+class LlmGateway:
+    def __init__(
+        self,
+        settings: ChatSettings,
+        registry: ModelRegistry,
+        local: OllamaProvider,
+        state: StateDb,
+        power: PowerGate,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        fullscreen: Callable[[], bool] = lambda: False,
+        owner: str = "app",
+        refresh_seconds: int = 3600,
+    ) -> None:
+        self._cfg = settings
+        self._registry = registry
+        self._local = local
+        self._state = state
+        self._power = power
+        self._clock = clock
+        self._fullscreen = fullscreen
+        self._owner = owner
+        self._refresh_seconds = refresh_seconds
+        self._loaded: set[str] = set()
+        self._last_activity = clock()
+        self.session_active = False
+        self.router: TargetRouter | None = None
+
+    # ------------------------------------------------------------------ model choice
+    def target(self, role: str = ROLE_CHAT) -> ChatTarget:
+        """The model that will serve ``role``, or a clear error."""
+        if self.router is not None and (routed := self.router(role, self._power)) is not None:
+            return routed
+        if not self._power.local_chat_allowed():
+            raise ChatBlockedError("on battery: plug in to chat (or configure a cloud provider)")
+        self._registry.refresh_if_stale(self._refresh_seconds)
+        resolution = self._registry.resolve(role)
+        if resolution.model is None and role != ROLE_CHAT:
+            resolution = self._registry.resolve(ROLE_CHAT)
+        if resolution.model is None:
+            preferred = self._registry.preferences(role)
+            hint = preferred[0] if preferred else "qwen3.5:9b"
+            raise NoChatModelError(f"no usable chat model; run: ollama pull {hint}")
+        return ChatTarget(role, resolution.model, self._local, local=True)
+
+    def options(self, *, session: bool) -> ChatOptions:
+        """Request options: sessions keep the model warm, one-shot calls unload right after."""
+        return ChatOptions(
+            num_ctx=self._cfg.num_ctx,
+            temperature=self._cfg.temperature,
+            keep_alive=self._cfg.keep_alive if session else 0,
+        )
+
+    @property
+    def query_on_cpu(self) -> bool:
+        """While a session owns the GPU, embed queries on the CPU."""
+        return self.session_active
+
+    # ------------------------------------------------------------------ session lifecycle
+    def begin_chat(self) -> None:
+        """Start a session: take the chat lock and clear the embedder off the GPU."""
+        ttl = self._cfg.idle_unload_seconds + _LOCK_GRACE_SECONDS
+        if not self._state.acquire_lock(CHAT_LOCK, self._owner, ttl):
+            raise ChatBlockedError("another chat session is active")
+        self.session_active = True
+        self._last_activity = self._clock()
+        self._free_embedder()
+
+    def touch(self) -> None:
+        """Record activity: refreshes the idle timer and the lock lease."""
+        self._last_activity = self._clock()
+        if self.session_active:
+            ttl = self._cfg.idle_unload_seconds + _LOCK_GRACE_SECONDS
+            self._state.acquire_lock(CHAT_LOCK, self._owner, ttl)
+
+    def end_chat(self, reason: str = "closed") -> None:
+        """Unload every chat model this gateway loaded and release the lock."""
+        logger.info("chat session ended", extra={"reason": reason})
+        for model in sorted(self._loaded):
+            self._local.unload(model)
+        self._loaded.clear()
+        self._state.release_lock(CHAT_LOCK, self._owner)
+        self.session_active = False
+
+    def check(self) -> str | None:
+        """Poll the unload conditions; ends the session and returns the reason if one applies."""
+        if not self.session_active and not self._loaded:
+            return None
+        reason: str | None = None
+        if not self._power.local_chat_allowed() and self._loaded:
+            reason = REASON_UNPLUGGED
+        elif self._fullscreen():
+            reason = REASON_FULLSCREEN
+        elif self._clock() - self._last_activity > self._cfg.idle_unload_seconds:
+            reason = REASON_IDLE
+        if reason is not None:
+            self.end_chat(reason)
+        return reason
+
+    # ------------------------------------------------------------------ calls
+    def _free_embedder(self) -> None:
+        try:
+            self._local.unload_embedder()
+        except ProviderError:
+            logger.debug("llm: embedder unload failed", exc_info=True)
+
+    def prewarm(self, role: str = ROLE_CHAT) -> None:
+        """Start loading the model while the user is still typing."""
+        target = self.target(role)
+        if target.local:
+            self._free_embedder()
+            self._local.prewarm(target.model, self.options(session=True))
+            self._loaded.add(target.model)
+
+    def stream(
+        self, messages: list[Message], role: str = ROLE_CHAT, *, session: bool = False
+    ) -> Iterator[ChatChunk]:
+        target = self.target(role)
+        if target.local:
+            self._free_embedder()
+            self._loaded.add(target.model)
+        options = self.options(session=session)
+        try:
+            for chunk in target.provider.stream_chat(messages, target.model, options):
+                self.touch()
+                yield chunk
+        finally:
+            if not session and target.local:
+                self._loaded.discard(target.model)  # keep_alive=0 already unloaded it
+
+    def chat_json(
+        self,
+        messages: list[Message],
+        schema: dict[str, Any],
+        role: str = ROLE_CHAT,
+        *,
+        session: bool = False,
+    ) -> JsonResult:
+        target = self.target(role)
+        if target.local:
+            self._free_embedder()
+            self._loaded.add(target.model)
+        result = target.provider.chat_json(
+            messages, target.model, schema, self.options(session=session)
+        )
+        self.touch()
+        if not session and target.local:
+            self._loaded.discard(target.model)
+        return result
