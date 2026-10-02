@@ -294,3 +294,34 @@ def test_ordinary_code_with_password_assignments_is_left_alone(env: "Env") -> No
     env.indexer.index_paths([path])
     text = " ".join(r["text"] for r in env.store.scan(CHUNKS, ["text"], limit=50))
     assert "get_token(request)" in text
+
+
+def test_a_locked_file_keeps_its_rows_instead_of_being_deleted(
+    env: "Env", monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = write(env, "report.md", "# Report quarterly numbers for the team " * 5)
+    env.indexer.index_paths([path])
+    assert env.store.count(CHUNKS) > 0
+    env.state.enqueue(path, delay=0)
+    original = env.indexer.prepare
+
+    def locked(p: str, seq: int = 0, force: bool = False) -> object:
+        raise PermissionError("another process has the file open")
+
+    monkeypatch.setattr(env.indexer, "prepare", locked)
+    items = env.state.claim(10, ignore_debounce=True)
+    finished = env.indexer.process(items)
+    monkeypatch.setattr(env.indexer, "prepare", original)
+    assert finished == []  # not marked done: it stays queued for a retry
+    assert env.store.count(CHUNKS) > 0  # nothing was deleted
+    assert env.state.manifest_get(path) is not None
+    assert env.state.queue_size() == 1
+
+
+def test_a_vanished_file_is_still_deleted(env: "Env") -> None:
+    path = write(env, "temp.md", "# Temp some words here " * 5)
+    env.indexer.index_paths([path])
+    Path(path).unlink()
+    env.state.enqueue(path, delay=0)
+    env.indexer.process(env.state.claim(10, ignore_debounce=True))
+    assert env.state.manifest_get(path) is None

@@ -179,6 +179,40 @@ def test_provider_failure_returns_2_and_backs_off(
     assert unload.count == 1
 
 
+def test_a_provider_outage_does_not_use_up_the_files_attempts(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = write(env, "a.txt", "alpha text " * 20)
+    env.state.enqueue(path, delay=0)
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise ProviderError("ollama down")
+
+    monkeypatch.setattr(env.embedder, "embed", boom)
+    for _ in range(5):  # Ollama is down for five runs in a row
+        run_worker(make_parts(env), WorkerOptions(now=True))
+    assert env.state.manifest_get(path) is None  # not given up on: it was never the file's fault
+    assert env.state.queue_size() == 1
+    monkeypatch.undo()
+    run_worker(make_parts(env), WorkerOptions(now=True))
+    assert env.state.queue_size() == 0  # indexed once the server is back
+
+
+def test_a_poisonous_batch_is_marked_failed_instead_of_looping(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = write(env, "a.txt", "alpha text " * 20)
+    env.state.enqueue(path, delay=0)
+
+    def poison(*_a: object, **_k: object) -> None:
+        raise RuntimeError("corrupt row")
+
+    parts = make_parts(env)
+    monkeypatch.setattr(worker.Indexer, "process", poison)
+    assert run_worker(parts, WorkerOptions(now=True)) == 0  # the run ends cleanly
+    assert env.state.claim(10, ignore_debounce=False) == []  # backed off, not re-extracted now
+
+
 def test_limit_stops_after_n_files(env: Env) -> None:
     env.settings = env.settings.model_copy(
         update={"chunking": env.settings.chunking.model_copy(update={"worker_batch_files": 1})}

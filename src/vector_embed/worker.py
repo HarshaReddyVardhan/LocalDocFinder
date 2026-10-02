@@ -150,9 +150,14 @@ def _drain(
             break
         except ProviderError:
             logger.exception("embedding failed; is Ollama running?")
-            for item in items:
-                state.fail(item.path, delay=_PROVIDER_RETRY_SECONDS)
+            for item in items:  # the files are fine: wait for the server without using attempts
+                state.defer(item.path, delay=_PROVIDER_RETRY_SECONDS)
             return EXIT_PROVIDER
+        except Exception:  # one poisonous batch must not be extracted again and again
+            logger.exception("batch failed; marking its files failed")
+            for item in items:
+                state.fail(item.path)
+            continue
         state.done(finished)
         logger.info(
             "progress", extra={"stats": indexer.stats.__dict__, "queued": state.queue_size()}

@@ -233,8 +233,14 @@ class Indexer:
                     finished.append((path, item.seq))
                 else:
                     prepared.append(result)
-            except (PermissionError, FileNotFoundError):
+            except FileNotFoundError:
                 deletes.append((path, item.seq))
+            except PermissionError:
+                # A sharing violation (another program has the file open) is not a deletion:
+                # keep the index rows and try again later.
+                logger.info("locked or unreadable for now: %s", path)
+                self.stats.errors += 1
+                self.state.fail(path)
             except Exception:  # one bad file must not stop the batch; it is retried later
                 logger.warning("failed %s", path, exc_info=True)
                 self.stats.errors += 1

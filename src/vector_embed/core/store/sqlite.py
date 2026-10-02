@@ -284,6 +284,10 @@ class StateDb:
         if row and row[0] >= _MAX_ATTEMPTS:
             self._give_up(path)
 
+    def defer(self, path: str, delay: float) -> None:
+        """Retry later without counting an attempt (the file is fine; the environment is not)."""
+        self._run("UPDATE queue SET not_before=? WHERE path=?", (self._clock() + delay, path))
+
     def _give_up(self, path: str) -> None:
         """Stop retrying a file that keeps failing: record it as seen, until it changes.
 
