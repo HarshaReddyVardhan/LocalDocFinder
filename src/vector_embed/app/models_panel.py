@@ -3,7 +3,8 @@
 import logging
 from collections.abc import Callable
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, SignalInstance
+from PySide6.QtGui import QHideEvent, QShowEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -27,7 +28,7 @@ from vector_embed.core.providers.base import ProviderError
 logger = logging.getLogger(__name__)
 
 AUTOMATIC = "(automatic)"
-HEALTH_REFRESH_MS = 5000
+HEALTH_REFRESH_MS = 15_000  # the dashboard is a glance, not a monitor
 MODEL_HEADERS = ["Model", "Size", "Roles", "Status"]
 ROLE_HEADERS = ["Role", "Model", "Why", "Override"]
 _GB = 1024**3
@@ -39,22 +40,26 @@ class _Signals(QObject):
     health = Signal(str)
     pull_progress = Signal(str, float)
     pull_done = Signal(str)
-    failed = Signal(str)
+    failed = Signal(str)  # models, roles and pulls
+    health_failed = Signal(str)  # the dashboard has its own: its hiccups must not cancel a pull
 
 
 class _Job(QRunnable):
-    def __init__(self, fn: Callable[[], None], signals: _Signals) -> None:
+    def __init__(
+        self, fn: Callable[[], None], signals: _Signals, failed: SignalInstance | None = None
+    ) -> None:
         super().__init__()
         self._fn, self._signals = fn, signals
+        self._failed = failed if failed is not None else signals.failed
 
     def run(self) -> None:
         try:
             self._fn()
         except _KNOWN_ERRORS as exc:
-            self._signals.failed.emit(str(exc))
+            self._failed.emit(str(exc))
         except Exception as exc:  # unexpected: surface it rather than die in the pool
             logger.exception("models job crashed")
-            self._signals.failed.emit(f"{type(exc).__name__}: {exc}")
+            self._failed.emit(f"{type(exc).__name__}: {exc}")
 
 
 def _confirm_with_dialog(message: str) -> bool:
@@ -81,6 +86,8 @@ class ModelsPanel(QWidget):
         self._signals.pull_progress.connect(self._on_progress)
         self._signals.pull_done.connect(self._on_pulled)
         self._signals.failed.connect(self._on_failed)
+        self._signals.health_failed.connect(self._on_health_failed)
+        self._health_running = False  # one dashboard refresh at a time
         self._updating = False
         self._pulling: set[str] = set()
         self._build()
@@ -135,6 +142,15 @@ class ModelsPanel(QWidget):
     def deactivate(self) -> None:
         self._timer.stop()
 
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._timer.isActive():
+            self._timer.start()  # refresh only while somebody can see the numbers
+
+    def hideEvent(self, event: QHideEvent) -> None:  # noqa: N802
+        super().hideEvent(event)
+        self._timer.stop()
+
     def refresh(self) -> None:
         self.status_changed.emit("reading installed models…")
         self._pool.start(
@@ -143,13 +159,25 @@ class ModelsPanel(QWidget):
         self.refresh_health()
 
     def refresh_health(self) -> None:
+        if self._health_running:  # a slow Ollama must not stack up refreshes behind it
+            return
+        self._health_running = True
         self._pool.start(
-            _Job(lambda: self._signals.health.emit(self._controller.health_text()), self._signals)
+            _Job(
+                lambda: self._signals.health.emit(self._controller.health_text()),
+                self._signals,
+                self._signals.health_failed,
+            )
         )
 
     # ------------------------------------------------------------------ rendering
     def _show_health(self, text: str) -> None:
+        self._health_running = False
         self.health_view.setPlainText(text)
+
+    def _on_health_failed(self, message: str) -> None:
+        self._health_running = False
+        self.health_view.setPlainText(f"could not read the health report: {message}")
 
     def _show_report(self, report: Report) -> None:
         hw = report.hardware

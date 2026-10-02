@@ -218,6 +218,72 @@ class TestActions:
         wait_for(qapp, lambda: widget.models.rowCount() > 0)
 
 
+class TestHealthRefresh:
+    def test_refreshes_do_not_stack_up_behind_a_slow_server(
+        self,
+        qapp: QApplication,
+        panel: tuple[ModelsPanel, list[str], list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import threading
+
+        widget, _, _ = panel
+        release = threading.Event()
+        calls: list[int] = []
+
+        def slow() -> str:
+            calls.append(1)
+            release.wait(5)
+            return "health text"
+
+        monkeypatch.setattr(widget._controller, "health_text", slow)
+        for _ in range(5):  # the timer fires while the first call is still waiting
+            widget.refresh_health()
+        wait_for(qapp, lambda: calls)
+        release.set()
+        wait_for(qapp, lambda: widget.health_view.toPlainText() == "health text")
+        assert calls == [1]
+        widget.refresh_health()  # and a fresh one is allowed once it finished
+        wait_for(qapp, lambda: len(calls) == 2)
+
+    def test_a_health_failure_is_shown_there_and_does_not_cancel_a_pull(
+        self,
+        qapp: QApplication,
+        panel: tuple[ModelsPanel, list[str], list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        widget, _, _ = panel
+        widget._pulling.add("big-model:70b")  # a download is in progress
+        widget.progress.setVisible(True)
+
+        def boom() -> str:
+            raise RuntimeError("ollama is not answering")
+
+        monkeypatch.setattr(widget._controller, "health_text", boom)
+        widget.refresh_health()
+        wait_for(qapp, lambda: "not answering" in widget.health_view.toPlainText())
+        assert "not answering" in widget.health_view.toPlainText()
+        assert widget._pulling == {"big-model:70b"}  # the download keeps its place
+        assert not widget.progress.isHidden()  # still showing the download
+        widget.refresh_health()  # a failure also frees the slot for the next refresh
+        wait_for(qapp, lambda: not widget._health_running)
+
+    def test_the_timer_follows_visibility(
+        self, qapp: QApplication, panel: tuple[ModelsPanel, list[str], list[str]]
+    ) -> None:
+        widget, _, _ = panel
+        assert not widget._timer.isActive()
+        widget.show()
+        assert widget._timer.isActive()
+        widget.hide()
+        assert not widget._timer.isActive()
+
+    def test_the_interval_is_a_glance_not_a_monitor(self) -> None:
+        from vector_embed.app import models_panel
+
+        assert models_panel.HEALTH_REFRESH_MS >= 10_000
+
+
 def test_models_live_in_settings_not_in_the_popup(qapp: QApplication, tmp_path: Path) -> None:
     window = SearchWindow(
         FakeService(),  # type: ignore[arg-type]
