@@ -35,6 +35,9 @@ class World:
         self.provider = OllamaProvider(
             EmbeddingSettings(), client=self.client, sleep=lambda _s: None
         )
+        self.client.loaded = [
+            self.provider.embed_model
+        ]  # the embedder is resident, as after a search
         self.state = StateDb(tmp_path / "data")
         self.ac = True
         self.fullscreen = False

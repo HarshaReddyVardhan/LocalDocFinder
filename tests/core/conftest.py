@@ -153,6 +153,7 @@ class Chat:
 def chat(skill_ctx: SkillContext, env: Env) -> Chat:
     client = FakeOllamaClient(models={k: dict(v) for k, v in CHAT_MODELS.items()})
     provider = OllamaProvider(EmbeddingSettings(), client=client, sleep=lambda _s: None)
+    client.loaded = [provider.embed_model]  # the embedder is resident, as after a search
     registry = ModelRegistry(
         load_catalog(),
         [provider],
