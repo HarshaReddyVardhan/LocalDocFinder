@@ -7,6 +7,7 @@ Esc closes the window and unloads the model; Tab cycles the modes.
 """
 
 import enum
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
@@ -41,6 +42,8 @@ from vector_embed.app.controller import (
     guess_project,
     result_label,
 )
+from vector_embed.app.match_controller import MatchController
+from vector_embed.app.match_panel import MatchPanel
 from vector_embed.core.extractors.image import thumbnail_path
 from vector_embed.core.rag import Source
 from vector_embed.core.skills.search import SearchResult
@@ -53,6 +56,7 @@ PLACEHOLDERS = {
     "   ·   ? to ask   ·   Tab for modes",
     "ask": "Ask a question about your files…  (Enter to ask)",
     "chat": "Chat about the pinned documents…  (Enter to send, Ctrl+V pastes a document)",
+    "match": "Paste a job description (Ctrl+V) and press Enter to rank your documents…",
 }
 STYLE = """
 QWidget { background:#1e1f24; color:#e6e6e6; font-size:13px; }
@@ -73,10 +77,7 @@ class Mode(enum.Enum):
     SEARCH = "search"
     ASK = "ask"
     CHAT = "chat"
-
-    def next(self) -> "Mode":
-        order = list(Mode)
-        return order[(order.index(self) + 1) % len(order)]
+    MATCH = "match"
 
 
 class _Signals(QObject):
@@ -153,6 +154,9 @@ class SearchWindow(QWidget):
         launcher: Launcher,
         thumbs_dir: Path,
         assistant: AssistantService | None = None,
+        *,
+        matcher: MatchController | None = None,
+        pick_file: Callable[[], str | None] = lambda: None,
     ) -> None:
         super().__init__(
             None,
@@ -162,6 +166,9 @@ class SearchWindow(QWidget):
         )
         self._service = service
         self._assistant = assistant
+        self._matcher = matcher
+        self._pick_file = pick_file
+        self._jd_text = ""
         self._launcher = launcher
         self._thumbs_dir = thumbs_dir
         self._generation = 0
@@ -221,10 +228,18 @@ class SearchWindow(QWidget):
         split.addWidget(self.list)
         split.addWidget(self.pane)
         split.setSizes([520, 480])
+        self.panel: MatchPanel | None = None
+        self.body = QStackedWidget()
+        self.body.addWidget(split)
+        if self._matcher is not None:
+            self.panel = MatchPanel(self._matcher, self._pick_file)
+            self.panel.chat_requested.connect(self._chat_from_match)
+            self.panel.status_changed.connect(self._set_status)
+            self.body.addWidget(self.panel)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 6)
         layout.addLayout(top)
-        layout.addWidget(split, 1)
+        layout.addWidget(self.body, 1)
         layout.addWidget(self.status)
 
     # ------------------------------------------------------------------ modes
@@ -232,10 +247,22 @@ class SearchWindow(QWidget):
     def mode(self) -> Mode:
         return self._mode
 
+    def available_modes(self) -> list[Mode]:
+        modes = [Mode.SEARCH]
+        if self._assistant is not None:
+            modes += [Mode.ASK, Mode.CHAT]
+        if self.panel is not None:
+            modes.append(Mode.MATCH)
+        return modes
+
+    def _next_mode(self) -> Mode:
+        modes = self.available_modes()
+        return modes[(modes.index(self._mode) + 1) % len(modes)]
+
     def set_mode(self, mode: Mode) -> None:
         if mode is self._mode:
             return
-        if self._assistant is None and mode is not Mode.SEARCH:
+        if mode not in self.available_modes():
             return
         leaving_chat = self._mode is Mode.CHAT
         self._mode = mode
@@ -250,6 +277,7 @@ class SearchWindow(QWidget):
     def _apply_mode(self) -> None:
         self.mode_label.setText(self._mode.value.upper())
         self.input.setPlaceholderText(PLACEHOLDERS[self._mode.value])
+        self.body.setCurrentIndex(1 if self._mode is Mode.MATCH else 0)
         self.pane.setCurrentIndex(PANE_PREVIEW if self._mode is Mode.SEARCH else PANE_ANSWER)
         if self._mode is Mode.SEARCH:
             self.preview.clear()
@@ -475,6 +503,33 @@ class SearchWindow(QWidget):
         self.status.setText(f"pasted document attached ({len(text)} chars)")
         return True
 
+    def paste_job_description(self) -> bool:
+        """Ctrl+V in Match mode: the pasted text is the job description."""
+        text = QGuiApplication.clipboard().text()
+        if self._mode is not Mode.MATCH or not text.strip():
+            return False
+        self._jd_text = text
+        self.status.setText(
+            f"pasted text attached ({len(text)} chars): press Enter to find matches"
+        )
+        return True
+
+    def start_match(self) -> None:
+        """Enter in Match mode: recall candidate documents for the pasted (or typed) text."""
+        text = self._jd_text or self.input.text().strip()
+        if not text or self.panel is None:
+            self.status.setText("paste the text to match first (Ctrl+V)")
+            return
+        self._jd_text = text
+        self.panel.reset()
+        self.panel.begin(text)
+
+    def _chat_from_match(self, state: ChatState) -> None:
+        """Follow-up chat: pinned documents plus the job description and their scores."""
+        self._chat = state
+        self.set_mode(Mode.CHAT)
+        self.status.setText("chatting about the match results")
+
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
         if obj is self.input and event.type() == QEvent.Type.KeyPress:
             return self._handle_key(event)
@@ -485,13 +540,13 @@ class SearchWindow(QWidget):
         modifiers = event.modifiers()  # type: ignore[attr-defined]
         ctrl = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
         if key == Qt.Key.Key_Tab:
-            self.set_mode(self._mode.next())
+            self.set_mode(self._next_mode())
             return True
         if ctrl and key == Qt.Key.Key_T:
             self.chat_with_selected()
             return True
         if ctrl and key == Qt.Key.Key_V:
-            return self.paste_scratch()
+            return self.paste_scratch() or self.paste_job_description()
         if key in (Qt.Key.Key_Down, Qt.Key.Key_Up):
             row = self.list.currentRow() + (1 if key == Qt.Key.Key_Down else -1)
             self.list.setCurrentRow(max(0, min(self.list.count() - 1, row)))
@@ -501,6 +556,9 @@ class SearchWindow(QWidget):
         return False
 
     def _handle_enter(self, ctrl: bool, shift: bool) -> bool:
+        if self._mode is Mode.MATCH:
+            self.start_match()
+            return True
         if self._mode is not Mode.SEARCH:
             if ctrl:
                 self.activate_selected()

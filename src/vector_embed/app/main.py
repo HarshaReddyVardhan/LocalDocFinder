@@ -10,11 +10,12 @@ from collections.abc import Sequence
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QSystemTrayIcon
 
 from vector_embed.app.assistant import AssistantService
 from vector_embed.app.controller import Launcher, SearchService
 from vector_embed.app.hotkey import HotkeyFilter
+from vector_embed.app.match_controller import MatchController
 from vector_embed.app.window import SearchWindow
 from vector_embed.core import runtime
 from vector_embed.core.idle import SystemActivity
@@ -41,6 +42,12 @@ def tray_icon() -> QIcon:
     return QIcon(pixmap)
 
 
+def pick_document() -> str | None:
+    """File dialog for ``+ Add file…`` in the Match panel."""
+    path, _ = QFileDialog.getOpenFileName(None, "Add a document to match")
+    return path or None
+
+
 def build_window(settings: Settings, state: StateDb) -> SearchWindow:
     """One lazily built skill context is shared by search and the assistant."""
     cache: list[SkillContext] = []
@@ -60,6 +67,8 @@ def build_window(settings: Settings, state: StateDb) -> SearchWindow:
         Launcher(),
         settings.storage.data_dir / runtime.THUMBS_DIRNAME,
         AssistantService(context),
+        matcher=MatchController(context),
+        pick_file=pick_document,
     )
 
 
