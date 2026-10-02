@@ -59,7 +59,9 @@ def build_extractors(
     """Extractors wired with Windows OCR and, when enabled, the vision captioner."""
     captioner = None
     if settings.images.enable_captions and provider is not None:
-        captioner = OllamaCaptioner(provider.client, settings.images.caption_model)
+        captioner = OllamaCaptioner(
+            provider.client, settings.images.caption_model, free_gpu=provider.unload_embedder
+        )
     ctx = ExtractContext(
         scope=scope,
         scope_settings=settings.scope,

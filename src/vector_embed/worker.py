@@ -128,6 +128,7 @@ def run_worker(parts: WorkerParts, options: WorkerOptions) -> int:
         logger.info("done in %.1fs", time.time() - started, extra={"stats": indexer.stats.__dict__})
         return EXIT_OK
     finally:
+        parts.extractors.release_models()
         parts.unload()  # keep_alive=0 -> VRAM back to 0
 
 

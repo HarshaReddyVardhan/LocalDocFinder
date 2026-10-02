@@ -106,6 +106,12 @@ class ExtractorSet:
         self.ctx = ctx
         self._extractors = [cls(ctx) for cls in classes]
 
+    def release_models(self) -> None:
+        """Unload any model an extractor loaded (the vision captioner); safe to call any time."""
+        release = getattr(self.ctx.captioner, "release", None)
+        if callable(release):
+            release()
+
     def select(self, path: Path) -> Extractor | None:
         return next((e for e in self._extractors if e.supports(path)), None)
 

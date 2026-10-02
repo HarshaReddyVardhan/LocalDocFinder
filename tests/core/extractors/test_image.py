@@ -104,6 +104,10 @@ class FakeVisionClient:
     def __init__(self, reply: str | Exception) -> None:
         self.reply = reply
         self.kwargs: dict[str, Any] = {}
+        self.generated: list[dict[str, Any]] = []
+
+    def generate(self, **kwargs: Any) -> None:
+        self.generated.append(kwargs)
 
     def chat(self, **kwargs: Any) -> dict[str, Any]:
         self.kwargs = kwargs
@@ -112,13 +116,27 @@ class FakeVisionClient:
         return {"message": {"content": self.reply}}
 
 
-def test_ollama_captioner_sends_image_and_unloads() -> None:
-    client = FakeVisionClient("  A cat\n on a sofa ")
-    caption = image_mod.OllamaCaptioner(client, "vision")(Image.new("RGB", (2000, 1000)))
-    assert caption == "A cat on a sofa"
-    assert client.kwargs["keep_alive"] == 0
+def test_ollama_captioner_sends_image_and_stays_loaded_until_released() -> None:
+    client = FakeVisionClient("  A cat   on a sofa ")
+    freed: list[int] = []
+    captioner = image_mod.OllamaCaptioner(client, "vision", free_gpu=lambda: freed.append(1))
+    assert captioner(Image.new("RGB", (2000, 1000))) == "A cat on a sofa"
+    assert captioner(Image.new("RGB", (10, 10))) == "A cat on a sofa"
+    assert client.kwargs["keep_alive"] == "5m"  # loaded once for the whole pass
     assert client.kwargs["model"] == "vision"
     assert len(client.kwargs["messages"][0]["images"]) == 1
+    assert freed == [1]  # the embedder was cleared once, before the vision model loaded
+    assert client.generated == []
+    captioner.release()
+    assert client.generated == [{"model": "vision", "prompt": "", "keep_alive": 0}]
+    captioner.release()
+    assert len(client.generated) == 1  # nothing resident: no request that would load it
+
+
+def test_releasing_an_unused_captioner_sends_nothing() -> None:
+    client = FakeVisionClient("x")
+    image_mod.OllamaCaptioner(client, "vision").release()
+    assert client.generated == []
 
 
 def test_ollama_captioner_swallows_errors() -> None:

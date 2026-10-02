@@ -254,3 +254,20 @@ class TestReconcile:
         write(env, "two/b.txt", "b " * 10)
         result = reconcile(env.state, env.projects, env.scope, roots=[str(env.root / "one")])
         assert result.queued == 1
+
+
+def test_extractor_models_are_released_before_embedding(
+    env: "Env", monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+    monkeypatch.setattr(env.extractors, "release_models", lambda: order.append("release"))
+    original = env.embedder.embed
+
+    def embed(*args: object, **kwargs: object) -> np.ndarray:
+        order.append("embed")
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(env.embedder, "embed", embed)
+    env.indexer.index_paths([write(env, "doc.md", "# Title\n\nsome words to embed " * 5)])
+    assert order[0] == "release"  # the vision model leaves the GPU before the embedder loads
+    assert "embed" in order

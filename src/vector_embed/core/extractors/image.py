@@ -3,7 +3,7 @@
 import base64
 import io
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import imagehash
@@ -29,15 +29,30 @@ _CAPTION_PROMPT = (
     "diagrams, UI, objects and scene."
 )
 _JPEG_QUALITY = 85
+_CAPTION_KEEP_ALIVE = "5m"  # between images of one pass; released explicitly after it
 _THUMB_QUALITY = 80
 
 
 class OllamaCaptioner:
-    """One-sentence captions from a small vision model (opt-in, run during idle indexing)."""
+    """One-sentence captions from a small vision model (opt-in, run during idle indexing).
 
-    def __init__(self, client: Untyped, model: str) -> None:
+    The vision model stays loaded between the images of one extraction pass, and ``release``
+    unloads it before embedding starts: it must never share the GPU with the embedder.
+    """
+
+    def __init__(
+        self,
+        client: Untyped,
+        model: str,
+        *,
+        free_gpu: Callable[[], None] = lambda: None,
+        keep_alive: str = _CAPTION_KEEP_ALIVE,
+    ) -> None:
         self._client = client
         self._model = model
+        self._free_gpu = free_gpu
+        self._keep_alive = keep_alive
+        self._resident = False
 
     def __call__(self, image: Image.Image) -> str:
         small = image.convert("RGB")
@@ -45,9 +60,12 @@ class OllamaCaptioner:
         buffer = io.BytesIO()
         small.save(buffer, format="JPEG", quality=_JPEG_QUALITY)
         try:
+            if not self._resident:
+                self._free_gpu()  # the embedder leaves before the vision model arrives
+                self._resident = True
             reply = self._client.chat(
                 model=self._model,
-                keep_alive=0,  # free the VRAM right after
+                keep_alive=self._keep_alive,
                 messages=[
                     {
                         "role": "user",
@@ -60,6 +78,16 @@ class OllamaCaptioner:
         except Exception:  # captioning is best-effort enrichment
             logger.debug("image: caption failed", exc_info=True)
             return ""
+
+    def release(self) -> None:
+        """Unload the vision model now (``keep_alive=0``); a no-op when nothing was captioned."""
+        if not self._resident:
+            return
+        self._resident = False
+        try:
+            self._client.generate(model=self._model, prompt="", keep_alive=0)
+        except Exception:  # best effort: the server may be gone already
+            logger.debug("image: caption model unload failed", exc_info=True)
 
 
 def phash(image: Image.Image) -> str:

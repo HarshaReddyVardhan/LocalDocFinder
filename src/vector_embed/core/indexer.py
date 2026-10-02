@@ -186,7 +186,10 @@ class Indexer:
     # ------------------------------------------------------------------ batches
     def process(self, items: Sequence[QueueItem], force: bool = False) -> list[tuple[str, int]]:
         """Process claimed queue items; returns the finished ``(path, seq)`` pairs."""
-        prepared, deletes, finished = self._prepare_all(items, force)
+        try:
+            prepared, deletes, finished = self._prepare_all(items, force)
+        finally:
+            self.extractors.release_models()  # the vision model leaves before the embedder loads
         vectors = self._vectors_for([m for p in prepared for m in p.metas])
         rows, doc_rows = self._build_rows(prepared, vectors)
         self.stats.chunks += len(rows)
