@@ -70,11 +70,15 @@ class Launcher:
         self._popen(["explorer", "/select,", os.path.normpath(result.path)])
 
     def open_in_editor(self, result: SearchResult) -> None:
+        self.open_at(result.path, result.start_line)
+
+    def open_at(self, path: str, line: int = 0) -> None:
+        """Open ``path`` in VS Code at ``line`` (default app if ``code`` is not installed)."""
         code = self._which("code")
         if code is None:
-            self._startfile(result.path)
+            self._startfile(path)
             return
-        target = f"{result.path}:{result.start_line}" if result.start_line else result.path
+        target = f"{path}:{line}" if line else path
         self._popen([code, "-g", target], creationflags=_NO_WINDOW)
 
 

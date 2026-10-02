@@ -12,10 +12,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
+from vector_embed.app.assistant import AssistantService
 from vector_embed.app.controller import Launcher, SearchService
 from vector_embed.app.hotkey import HotkeyFilter
 from vector_embed.app.window import SearchWindow
 from vector_embed.core import runtime
+from vector_embed.core.idle import SystemActivity
 from vector_embed.core.logging_setup import configure_logging
 from vector_embed.core.settings import Settings, load_settings
 from vector_embed.core.skills.base import SkillContext
@@ -40,13 +42,24 @@ def tray_icon() -> QIcon:
 
 
 def build_window(settings: Settings, state: StateDb) -> SearchWindow:
+    """One lazily built skill context is shared by search and the assistant."""
+    cache: list[SkillContext] = []
+    activity = SystemActivity()
+
     def context() -> SkillContext:
-        return runtime.build_skill_context(settings, state)
+        if not cache:
+            cache.append(
+                runtime.build_skill_context(
+                    settings, state, fullscreen=activity.fullscreen_app_active
+                )
+            )
+        return cache[0]
 
     return SearchWindow(
         SearchService(context),
         Launcher(),
         settings.storage.data_dir / runtime.THUMBS_DIRNAME,
+        AssistantService(context),
     )
 
 
