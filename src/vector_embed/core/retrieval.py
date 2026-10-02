@@ -4,6 +4,8 @@ import logging
 import re
 from dataclasses import dataclass
 
+import numpy as np
+
 from vector_embed.core.power import PowerGate
 from vector_embed.core.providers.base import ProviderError
 from vector_embed.core.settings import SearchSettings
@@ -36,11 +38,13 @@ def hybrid_candidates(
     limit: int | None = None,
     force_cpu: bool = False,
     unique_key: tuple[str, str] = ("path", "chunk_hash"),
+    query_vector: np.ndarray | None = None,
 ) -> list[Candidate]:
     """Vector and keyword hits for ``text`` in ``table``, fused with reciprocal-rank fusion.
 
-    ``force_cpu`` embeds the query on the CPU (used while a chat model owns the GPU). If the
-    model server is unreachable only the keyword leg contributes.
+    ``force_cpu`` embeds the query on the CPU (used while a chat model owns the GPU). A caller
+    that already embedded the query passes ``query_vector``. If the model server is unreachable
+    only the keyword leg contributes.
     """
     n = limit or cfg.candidates
     by_key: dict[tuple[str, str], Row] = {}
@@ -53,8 +57,11 @@ def hybrid_candidates(
             scores[key] = scores.get(key, 0.0) + 1.0 / (cfg.rrf_k + rank + 1)
 
     try:
-        cpu = force_cpu or power.search_on_cpu()
-        vector = embedder.embed([text], kind="query", cpu=cpu)[0]
+        if query_vector is not None:
+            vector = query_vector
+        else:
+            cpu = force_cpu or power.search_on_cpu()
+            vector = embedder.embed([text], kind="query", cpu=cpu)[0]
         add(store.vector_search(table, vector, columns, where, n))
     except ProviderError:
         logger.info("retrieval: embedding unavailable, using keyword search only")
