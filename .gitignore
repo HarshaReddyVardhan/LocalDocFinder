@@ -30,4 +30,3 @@ htmlcov/
 # Local Claude Code state (rules in .claude/ are committed)
 .claude/settings.local.json
 .claude/worktrees/
-tests/_work/

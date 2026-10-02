@@ -1,0 +1,108 @@
+[project]
+name = "vector-embed"
+version = "0.1.0"
+description = "Local semantic search and chat-with-documents engine (Ollama-backed)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "pathspec>=0.12",
+    "psutil>=5.9",
+    "ollama>=0.4",
+    "lancedb",
+    "pyarrow",
+    "numpy",
+    "xxhash",
+    "watchdog",
+    "pyyaml",
+    "pymupdf",
+    "python-docx",
+    "python-pptx",
+    "tree-sitter-language-pack",
+    "nvidia-ml-py",
+    "pillow",
+    "imagehash",
+    "PySide6",
+    "winrt-runtime; sys_platform == 'win32'",
+    "winrt-Windows.Foundation; sys_platform == 'win32'",
+    "winrt-Windows.Foundation.Collections; sys_platform == 'win32'",
+    "winrt-Windows.Media.Ocr; sys_platform == 'win32'",
+    "winrt-Windows.Graphics.Imaging; sys_platform == 'win32'",
+    "winrt-Windows.Storage; sys_platform == 'win32'",
+    "winrt-Windows.Storage.Streams; sys_platform == 'win32'",
+    "winrt-Windows.Globalization; sys_platform == 'win32'",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "pytest-mock>=3.14",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pre-commit>=3.8",
+    "pip-audit>=2.7",
+    "types-psutil",
+    "types-PyYAML",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vector_embed"]
+
+# ---------------------------------------------------------------- ruff
+# The flat prototype modules (pre-rebuild) are excluded until they are replaced (plan step 5).
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+extend-exclude = [
+    "embedder.py", "indexer_config.py", "power.py", "projects.py", "search.py", "store.py",
+    "watcher.py", "worker.py", "extract", "ui", "eval",
+    "tests/test_extract.py", "tests/test_indexer_config.py", "tests/test_pipeline.py",
+    "tests/test_ui.py", "tests/test_watcher.py", "tests/conftest.py",
+]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "B", "UP", "SIM", "C4", "PTH", "RET", "PL", "RUF", "S", "T20", "N", "ANN",
+]
+ignore = ["PLR2004", "S101"]  # magic-value compares in tests/guards; assert is fine under pytest
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "ANN", "PLR0913"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["vector_embed"]
+
+# ---------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["pathspec.*", "lancedb.*", "pynvml.*", "winrt.*", "imagehash.*", "fitz.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "src"]   # "." only for the legacy flat prototype tests; drop when they retire
+addopts = "-ra --strict-markers"
+markers = ["ollama: needs a running Ollama server with the model pulled"]
+
+# ---------------------------------------------------------------- coverage
+[tool.coverage.run]
+source = ["src/vector_embed"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true

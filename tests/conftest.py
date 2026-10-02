@@ -11,7 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 @pytest.fixture
 def tmp_path():
     """Work dir outside %TEMP% (which sits under the blocked AppData directory)."""
-    root = Path(__file__).resolve().parent / "_work"
+    # Outside the repo: inside it, git ls-files would hide the (ignored) scratch files.
+    root = Path.home() / "VectorEmbedTestWork"
     root.mkdir(exist_ok=True)
     d = Path(tempfile.mkdtemp(dir=root))
     yield d
