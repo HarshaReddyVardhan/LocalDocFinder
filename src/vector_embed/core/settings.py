@@ -357,6 +357,43 @@ class MatchSettings(_Section):
     max_fts_terms: int = Field(default=200, gt=0)  # job descriptions are long; cap keyword terms
 
 
+class PrivacySettings(_Section):
+    """What may leave the machine. Local models are never filtered; cloud requests always are."""
+
+    # Never sent to a cloud model: matched against the lowercase full path with "/" separators.
+    never_send_globs: tuple[str, ...] = (
+        "**/.claude/projects/*/memory/**",
+        "**/.claude/memory/**",
+    )
+    never_send_doc_types: frozenset[str] = frozenset()
+    redact_personal: bool = False  # name, email, phone, address, profile URLs -> placeholders
+    known_names: tuple[str, ...] = ()  # extra names to redact when redact_personal is on
+    mask_ids_locally: bool = False  # also mask IDs for local models (off: nothing leaves)
+
+
+class CloudProviderSettings(_Section):
+    """One OpenAI-compatible endpoint: OpenAI, OpenRouter, LM Studio, vLLM, Groq, ..."""
+
+    base_url: str
+    label: str = ""
+    models: dict[str, str] = Field(default_factory=dict)  # role -> model id
+    # USD per million tokens (input, output) for models whose catalog gives no pricing.
+    pricing: dict[str, tuple[float, float]] = Field(default_factory=dict)
+
+
+class CloudSettings(_Section):
+    """Cloud routing. Empty by default: nothing is sent anywhere until a provider is added."""
+
+    providers: dict[str, CloudProviderSettings] = Field(default_factory=dict)
+    active: str | None = None  # key of the provider used for cloud calls
+    routing: dict[str, Literal["local", "cloud", "auto"]] = Field(default_factory=dict)
+    monthly_budget_usd: float | None = Field(default=None, gt=0)
+
+    def policy(self, role: str) -> str:
+        """``local`` unless the user chose otherwise; the safe default."""
+        return self.routing.get(role, "local")
+
+
 class SearchSettings(_Section):
     rrf_k: int = Field(default=60, gt=0)
     candidates: int = Field(default=60, gt=0)
@@ -397,6 +434,8 @@ class Settings(BaseSettings):
     models: ModelSettings = Field(default_factory=ModelSettings)
     chat: ChatSettings = Field(default_factory=ChatSettings)
     match: MatchSettings = Field(default_factory=MatchSettings)
+    privacy: PrivacySettings = Field(default_factory=PrivacySettings)
+    cloud: CloudSettings = Field(default_factory=CloudSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
 

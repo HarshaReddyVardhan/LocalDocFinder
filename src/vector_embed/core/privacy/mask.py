@@ -49,6 +49,51 @@ _MIN_PHONE_DIGITS = 10
 _NAME_SCAN_LINES = 5
 
 
+_SECTION_WORDS = frozenset(
+    [
+        "experience",
+        "education",
+        "skills",
+        "summary",
+        "projects",
+        "certifications",
+        "objective",
+        "profile",
+        "contact",
+        "languages",
+        "references",
+        "awards",
+        "publications",
+        "interests",
+        "employment",
+        "work",
+        "professional",
+        "technical",
+        "technologies",
+        "curriculum",
+        "vitae",
+        "resume",
+    ]
+)
+_BLOCK_START = re.compile(r"^(?:Resume \(|=== )")
+
+
+def _looks_like_a_name(line: str) -> bool:
+    words = {w.lower().strip(".") for w in line.split()}
+    return bool(_NAME_LINE.fullmatch(line)) and not words & _SECTION_WORDS
+
+
+def _heading_names(text: str) -> list[str]:
+    """Names at the top of a document: its first lines, and the lines after each block header."""
+    lines = [ln.strip() for ln in text.splitlines()]
+    starts = [0] + [i + 1 for i, ln in enumerate(lines) if _BLOCK_START.match(ln)]
+    found: list[str] = []
+    for start in starts:
+        window = [ln for ln in lines[start : start + _NAME_SCAN_LINES] if ln]
+        found.extend(ln for ln in window if _looks_like_a_name(ln))
+    return list(dict.fromkeys(found))
+
+
 @dataclass
 class Redaction:
     """Result of ``redact_personal``: the cloud-safe text and the way back."""
@@ -76,6 +121,11 @@ class PersonalRedactor:
         self._reverse: dict[str, str] = {}
         self._counts: dict[str, int] = {}
 
+    @property
+    def mapping(self) -> dict[str, str]:
+        """Every placeholder handed out so far and the value it stands for."""
+        return dict(self._mapping)
+
     def _placeholder(self, kind: str, original: str) -> str:
         existing = self._reverse.get(original)
         if existing is not None:
@@ -102,9 +152,7 @@ class PersonalRedactor:
         names = list(self._known)
         for match in _NAME_LABEL.finditer(text):
             names.append(match.group(1).strip())
-        lines = [ln.strip() for ln in text.splitlines()[:_NAME_SCAN_LINES] if ln.strip()]
-        if lines and _NAME_LINE.fullmatch(lines[0]):
-            names.append(lines[0])
+        names.extend(_heading_names(text))
         for name in sorted(set(names), key=len, reverse=True):
             placeholder = self._placeholder("NAME", name)
             text = text.replace(name, placeholder)
