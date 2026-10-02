@@ -1,0 +1,62 @@
+# Evaluation set for eval/run.py. Replace/extend with 30-50 queries about YOUR real projects:
+#   corpus : directories to index for the comparison
+#   expect : any of these substrings in a result's path counts as a hit
+# The queries below are about this repo itself so the harness works out of the box.
+corpus:
+  - D:\Projects\Vector_Embed
+models:
+  - qwen3-embedding:0.6b
+  - bge-m3
+  - nomic-embed-text
+
+queries:
+  - q: where is the list of secret file patterns like .env and pem keys
+    expect: [indexer_config.py]
+  - q: decide whether indexing is allowed while the laptop is unplugged
+    expect: [power.py, worker.py]
+  - q: run OCR with the built-in Windows engine
+    expect: [extract/ocr.py]
+  - q: split a markdown file into sections by heading
+    expect: [extract/markdown.py]
+  - q: extract headings and tables from word documents
+    expect: [extract/office.py]
+  - q: render scanned pdf pages and OCR them
+    expect: [extract/pdf.py]
+  - q: register a global keyboard shortcut to open the search window
+    expect: [ui/app.py]
+  - q: combine vector and keyword rankings into one list
+    expect: [search.py]
+  - q: wait before processing a file that was just saved
+    expect: [watcher.py, store.py]
+  - q: reuse an existing embedding when identical code appears in another project
+    expect: [worker.py, store.py]
+  - q: free the GPU memory after indexing by unloading the model
+    expect: [embedder.py, worker.py]
+  - q: break source code into functions and classes with a syntax tree
+    expect: [extract/code.py]
+  - q: find the git root of the project a file belongs to
+    expect: [projects.py]
+  - q: make sure only one worker process runs at a time
+    expect: [store.py, worker.py]
+  - q: retry a failed ollama request with increasing delay
+    expect: [embedder.py]
+  - q: instruction prefix added to queries for the qwen embedding model
+    expect: [indexer_config.py, embedder.py]
+  - q: skip files that are only placeholders for cloud storage
+    expect: [indexer_config.py]
+  - q: how long has the user been away from the keyboard
+    expect: [power.py]
+  - q: jupyter notebook cells
+    expect: [extract/text.py]
+  - q: create small preview thumbnails for pictures
+    expect: [extract/image.py]
+  - q: parse filters like after:2026-01 and ext:py out of the search box
+    expect: [search.py]
+  - q: compare files on disk with what is recorded as indexed to find missed changes
+    expect: [worker.py]
+  - q: test that editing one function only re-embeds one chunk
+    expect: [tests/test_pipeline.py]
+  - q: ConnectionError retry
+    expect: [embedder.py]
+  - q: PaymentService.charge
+    expect: [tests/test_extract.py]

@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Secrets and local config (never commit)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+
+# Local runtime data
+*.lance/
+*.sqlite3
+*.db
+
+# Local Claude Code state (rules in .claude/ are committed)
+.claude/settings.local.json
+.claude/worktrees/
+tests/_work/
