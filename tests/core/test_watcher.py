@@ -449,7 +449,7 @@ class TestWatchScope:
             "src/b.py",
             "node_modules/pkg/c.js",
             ".hidden/d.txt",
-            "appdata/e.txt",
+            "dist/e.txt",
         ):
             write(env, rel)
         return env.root
