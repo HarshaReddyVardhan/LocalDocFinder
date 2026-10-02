@@ -96,3 +96,64 @@ def test_gitignored_files_can_still_be_chosen_explicitly(env: Env, loader: Docum
     write(env, ".gitignore", "ignored.txt\n")
     path = write(env, "ignored.txt", "the user picked this file on purpose")
     assert loader.load(path).text.startswith("the user picked")
+
+
+def lines(sentence: str, count: int = 30) -> str:
+    """Ordinary multi-line text (one long line would be mistaken for a minified file)."""
+    return chr(10).join([sentence] * count)
+
+
+class TestExtractionCache:
+    def count_extractions(self, env: Env, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        calls: list[str] = []
+        original = env.extractors.extract
+
+        def spy(path: str | Path) -> object:
+            calls.append(Path(path).name)
+            return original(path)
+
+        monkeypatch.setattr(env.extractors, "extract", spy)
+        return calls
+
+    def test_a_pinned_file_is_extracted_once_across_chat_turns(
+        self, env: Env, loader: DocumentLoader, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = write(env, "pinned.txt", lines("pinned words"))
+        calls = self.count_extractions(env, monkeypatch)
+        for _turn in range(5):
+            assert loader.load(path).text.startswith("pinned words")
+        assert calls == ["pinned.txt"]  # not once per turn
+
+    def test_editing_the_file_extracts_it_again(
+        self, env: Env, loader: DocumentLoader, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = write(env, "draft.txt", lines("first version"))
+        calls = self.count_extractions(env, monkeypatch)
+        assert "first version" in loader.load(path).text
+        path.write_text(lines("second version, now longer than before"), encoding="utf-8")
+        assert "second version" in loader.load(path).text
+        assert calls == ["draft.txt", "draft.txt"]
+
+    def test_the_cache_is_bounded(
+        self, env: Env, loader: DocumentLoader, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vector_embed.core import documents as documents_module
+
+        monkeypatch.setattr(documents_module, "_RECENT_DOCUMENTS", 2)
+        paths = [write(env, f"doc{i}.txt", lines(f"document {i}")) for i in range(4)]
+        for path in paths:
+            loader.load(path)
+        assert len(loader._recent) == 2
+        calls = self.count_extractions(env, monkeypatch)
+        loader.load(paths[0])  # the oldest was forgotten
+        loader.load(paths[3])  # the newest is still remembered
+        assert calls == ["doc0.txt"]
+
+    def test_indexed_documents_still_come_from_the_index(
+        self, env: Env, loader: DocumentLoader, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = write(env, "Resume_v1.txt", RESUME)
+        env.indexer.index_paths([str(path)])
+        calls = self.count_extractions(env, monkeypatch)
+        assert loader.load(path).from_index
+        assert calls == []

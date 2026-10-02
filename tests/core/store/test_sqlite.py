@@ -349,3 +349,18 @@ class TestUsage:
         assert db.spend_since(1050) == pytest.approx(1.0)
         assert db.spend_since(0, provider="openrouter") == pytest.approx(0.75)
         assert db.usage_totals(since=1050)[0].provider == "openai"
+
+
+class TestChatHistoryCap:
+    def test_a_long_chat_keeps_only_the_newest_messages(
+        self, db: StateDb, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sq, "MAX_STORED_MESSAGES", 5)
+        session = db.create_session("long chat")
+        other = db.create_session("other chat")
+        db.add_message(other, "user", "untouched")
+        for i in range(12):
+            db.add_message(session, "user", f"message {i}")
+        kept = [m.content for m in db.messages(session)]
+        assert kept == [f"message {i}" for i in range(7, 12)]  # the newest five, in order
+        assert [m.content for m in db.messages(other)] == ["untouched"]  # others are not trimmed

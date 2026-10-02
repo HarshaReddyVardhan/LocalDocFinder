@@ -20,6 +20,7 @@ from typing import Any, NamedTuple, Self
 logger = logging.getLogger(__name__)
 
 _MAX_ATTEMPTS = 3
+MAX_STORED_MESSAGES = 400  # per chat session
 _OPEN_ATTEMPTS = 8  # opening a database that another process is creating or upgrading
 _OPEN_RETRY_SECONDS = 0.05
 EMBEDDER_APPROVED_KEY = "embedder_change_approved"  # the model whose index rebuild the user OK'd
@@ -435,6 +436,13 @@ class StateDb:
                 (session_id, role, content, now),
             )
             self._sql.execute("UPDATE chat_sessions SET updated_at=? WHERE id=?", (now, session_id))
+            # A chat that runs for weeks must not grow without limit; the prompt only ever uses
+            # the newest messages that fit its token budget anyway.
+            self._sql.execute(
+                "DELETE FROM chat_messages WHERE session_id=? AND id NOT IN "
+                "(SELECT id FROM chat_messages WHERE session_id=? ORDER BY id DESC LIMIT ?)",
+                (session_id, session_id, MAX_STORED_MESSAGES),
+            )
 
     def messages(self, session_id: int) -> list[ChatMessage]:
         rows = self._all(

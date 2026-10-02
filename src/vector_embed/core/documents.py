@@ -1,6 +1,9 @@
 """Load whole documents for Chat and Match: from the index when stored there, else re-extract."""
 
 import logging
+import os
+import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +13,8 @@ from vector_embed.core.scope import ScopePolicy
 from vector_embed.core.store.lance import DOCUMENTS, LanceStore, sql_quote
 
 logger = logging.getLogger(__name__)
+
+_RECENT_DOCUMENTS = 16  # extracted documents kept in memory
 
 
 class DocumentError(RuntimeError):
@@ -37,6 +42,10 @@ class DocumentLoader:
         self._store = store
         self._scope = scope
         self._extractors = extractors
+        # Documents read straight from disk (not in the index), newest last. A chat asks for its
+        # pinned files on every turn; extracting them again, OCR included, each time is waste.
+        self._recent: OrderedDict[tuple[str, int, int], LoadedDocument] = OrderedDict()
+        self._lock = threading.Lock()
 
     def load(self, path: str | Path) -> LoadedDocument:
         target = Path(path)
@@ -60,7 +69,26 @@ class DocumentLoader:
             row = rows[0]
             return LoadedDocument(key, row["title"], row["full_text"], row["doc_type"], True)
         stored_type = rows[0]["doc_type"] if rows else ""  # keep the type the index knows
-        return self._extract(target, stored_type)
+        return self._extract_cached(target, stored_type)
+
+    def _extract_cached(self, target: Path, doc_type: str) -> LoadedDocument:
+        """``_extract``, remembered per file version (path, mtime, size): an edit is a new key."""
+        try:
+            info = target.stat()
+        except OSError as exc:
+            raise DocumentError(f"cannot read {target.name}: {exc}") from exc
+        key = (os.path.normcase(target), info.st_mtime_ns, info.st_size)
+        with self._lock:
+            hit = self._recent.get(key)
+            if hit is not None:
+                self._recent.move_to_end(key)
+                return hit
+        document = self._extract(target, doc_type)
+        with self._lock:
+            self._recent[key] = document
+            while len(self._recent) > _RECENT_DOCUMENTS:
+                self._recent.popitem(last=False)
+        return document
 
     def _extract(self, target: Path, doc_type: str = "") -> LoadedDocument:
         try:
