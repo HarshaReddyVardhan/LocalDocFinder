@@ -28,7 +28,7 @@ The installer work (setup wizard, minimal popup, Setup.exe with auto-update) is 
 - Code lives in `src/vector_embed/` (src layout): `core/` (no UI), `worker.py`, `watcher.py`, `cli.py`, `app/` (PySide6).
 - The prototype that predated the plan has been removed. Tests mirror the package under `tests/core/`; shared fixtures (`env`, `skill_ctx`, `FakeEmbedder`) are in `tests/core/conftest.py` and `tests/core/fakes.py`.
 - Done: plan steps 1-10 (core, search, ask/chat/match, models tab and health, cloud providers with privacy masking, `ve eval`), `ve mcp` (§11.1).
-- In progress: INSTALL_PLAN.md (installable app). Steps done: 1 (starter picker), 2 (Ollama install; signer "Ollama Inc."). Update this line after each step. Then: choose the embedder from `ve eval`, then the §11 feature ideas as new skills.
+- In progress: INSTALL_PLAN.md (installable app). Steps done: 1 (starter picker), 2 (Ollama install; signer "Ollama Inc."), 3 (speed test). Update this line after each step. Then: choose the embedder from `ve eval`, then the §11 feature ideas as new skills.
 - pytest's `tmp_path` lives under `AppData` (a blocked dir). Scope-sensitive tests use the `scope_settings` fixture, which unblocks it.
 - Avoid backslashes in Bash heredocs (the tool mangles them); use the Write/Edit tools for files containing regexes or Windows paths.
 
