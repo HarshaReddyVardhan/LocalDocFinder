@@ -219,6 +219,13 @@ def test_force_reindexes_unchanged_files(env: "Env") -> None:
 
 
 class TestReconcile:
+    @pytest.fixture(autouse=True)
+    def check_every_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Small test trees: ask the stop check about every file (production asks sparingly)."""
+        import vector_embed.core.reconcile as reconcile_module
+
+        monkeypatch.setattr(reconcile_module, "_CHECK_EVERY_FILES", 1)
+
     def test_queues_new_changed_and_vanished(self, env: "Env") -> None:
         a = write(env, "a.txt", "alpha " * 10)
         b = write(env, "b.txt", "bravo " * 10)
@@ -256,6 +263,22 @@ class TestReconcile:
         paths = {r["path"] for r in env.store.scan(CHUNKS, ["path"], limit=500)}
         assert len(paths) == 1  # one spelling in the index, not two copies of the file
         assert env.store.count(CHUNKS) >= before
+
+    def test_the_stop_check_is_asked_sparingly_on_a_big_tree(
+        self, env: "Env", monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vector_embed.core.reconcile as reconcile_module
+
+        monkeypatch.setattr(reconcile_module, "_CHECK_EVERY_FILES", 200)
+        monkeypatch.setattr(reconcile_module, "_CHECK_EVERY_SECONDS", 3600.0)
+        for i in range(450):
+            write(env, f"big/f{i}.txt", f"file {i} " * 5)
+        calls: list[int] = []
+        result = reconcile(
+            env.state, env.projects, env.scope, stop_check=lambda: calls.append(1) or False
+        )
+        assert result.queued == 450
+        assert len(calls) == 2  # after files 200 and 400, not 450 times
 
     def test_stop_check_interrupts(self, env: "Env") -> None:
         write(env, "a.txt", "alpha " * 10)

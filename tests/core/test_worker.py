@@ -155,7 +155,10 @@ def test_reconcile_option_records_the_time(env: Env) -> None:
     assert env.state.get_meta(worker.LAST_RECONCILE_KEY) is not None
 
 
-def test_interrupted_reconcile_is_not_recorded(env: Env) -> None:
+def test_interrupted_reconcile_is_not_recorded(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    import vector_embed.core.reconcile as reconcile_module
+
+    monkeypatch.setattr(reconcile_module, "_CHECK_EVERY_FILES", 1)
     write(env, "a.txt", "alpha text\n" * 20)
     gate = FakeGate(allowed=1)  # passes the start check, then stops during the scan
     run_worker(make_parts(env, gate), WorkerOptions(reconcile=True))

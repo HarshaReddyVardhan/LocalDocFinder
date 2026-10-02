@@ -5,6 +5,7 @@ Catches what the file watcher missed: reboots, crashes and watcher buffer overfl
 
 import logging
 import os
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,8 @@ from vector_embed.core.store.sqlite import StateDb
 logger = logging.getLogger(__name__)
 
 _DELETE_PRIORITY = 1e18  # deletes run before any upsert
+_CHECK_EVERY_FILES = 200  # the stop check runs power and idle probes: not once per file
+_CHECK_EVERY_SECONDS = 0.25
 _FLUSH_EVERY = 500  # changed files queued per transaction; an interrupt then loses little
 
 
@@ -24,6 +27,25 @@ class ReconcileResult:
     queued: int = 0
     deleted: int = 0
     interrupted: bool = False
+
+
+class _Throttled:
+    """Calls ``check`` at most every 200 files or 250 ms; it runs power and idle probes."""
+
+    def __init__(self, check: Callable[[], bool] | None) -> None:
+        self._check = check
+        self._files = 0
+        self._last = time.monotonic()
+
+    def __call__(self) -> bool:
+        if self._check is None:
+            return False
+        self._files += 1
+        now = time.monotonic()
+        if self._files < _CHECK_EVERY_FILES and now - self._last < _CHECK_EVERY_SECONDS:
+            return False
+        self._files, self._last = 0, now
+        return self._check()
 
 
 def reconcile(
@@ -39,8 +61,9 @@ def reconcile(
     seen: set[str] = set()
     upserts: list[tuple[str, str, float]] = []
     queued = 0
+    should_stop = _Throttled(stop_check)
     for found in projects.iter_files(scan_roots):
-        if stop_check is not None and stop_check():
+        if should_stop():
             queued += state.enqueue_many(upserts)  # what was found so far is kept
             logger.info("reconcile interrupted after queueing %d files", queued)
             return ReconcileResult(queued=queued, interrupted=True)
