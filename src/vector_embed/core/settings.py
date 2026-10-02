@@ -342,6 +342,21 @@ class ChatSettings(_Section):
     code_routing: bool = True  # code-heavy context goes to the ``code_chat`` role
 
 
+class MatchSettings(_Section):
+    """Document matching, e.g. a job description against resumes."""
+
+    default_doc_type: str = "resume"
+    recall_k: int = Field(default=10, gt=0)  # candidates recalled before the user picks
+    similarity_threshold: float = Field(default=0.3, ge=0, le=1)  # default ticked above this
+    scoring_budget_tokens: int = Field(default=5000, gt=0)  # one document per scoring call
+    reserved_output_tokens: int = Field(default=1200, gt=0)  # left free in the context window
+    must_weight: float = Field(default=2.0, gt=0)  # a must-have counts double a nice-to-have
+    nice_weight: float = Field(default=1.0, gt=0)
+    max_requirements: int = Field(default=25, gt=0)
+    evidence_threshold: float = Field(default=0.85, gt=0, le=1)  # fuzzy match of quoted evidence
+    max_fts_terms: int = Field(default=200, gt=0)  # job descriptions are long; cap keyword terms
+
+
 class SearchSettings(_Section):
     rrf_k: int = Field(default=60, gt=0)
     candidates: int = Field(default=60, gt=0)
@@ -381,6 +396,7 @@ class Settings(BaseSettings):
     doctypes: DocTypeSettings = Field(default_factory=DocTypeSettings)
     models: ModelSettings = Field(default_factory=ModelSettings)
     chat: ChatSettings = Field(default_factory=ChatSettings)
+    match: MatchSettings = Field(default_factory=MatchSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
 
