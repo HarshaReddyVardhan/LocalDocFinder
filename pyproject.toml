@@ -74,6 +74,7 @@ select = [
 ignore = [
     "PLR2004",  # magic-value compares in tests/guards
     "S101",  # assert is fine under pytest and for narrowing
+    "PLR0913",  # constructors take injected collaborators by design
     "PLC0415",  # heavy imports (lancedb, ollama, PySide6) are deliberately lazy
 ]
 

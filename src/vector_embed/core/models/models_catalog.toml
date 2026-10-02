@@ -1,0 +1,57 @@
+# Curated model catalog. Roles list models best-first; the resolver picks the first one that is
+# installed and fits free VRAM. Edit freely (or drop a copy into the data dir to override).
+# vram_mb is the approximate resident size at the default quantisation with an 8K context.
+
+[roles]
+embed = ["qwen3-embedding:0.6b", "embeddinggemma", "bge-m3", "nomic-embed-text"]
+chat = ["qwen3.5:9b", "qwen3:8b", "qwen2.5:7b", "qwen2.5-coder:7b", "llama3.2"]
+match_scorer = ["qwen3.5:9b", "qwen3:8b", "qwen2.5:7b", "llama3.2"]
+code_chat = ["qwen2.5-coder:7b", "qwen3.5:9b", "qwen2.5:7b"]
+summarizer = ["qwen2.5:7b", "llama3.2", "qwen3.5:9b"]
+caption = ["qwen2.5vl:3b"]
+reranker = ["dengcao/Qwen3-Reranker-0.6B:Q8_0"]
+
+[models."qwen3-embedding:0.6b"]
+vram_mb = 1200
+notes = "long context, strong on code"
+cpu_ok = true
+
+[models."embeddinggemma"]
+vram_mb = 800
+cpu_ok = true
+
+[models."bge-m3"]
+vram_mb = 1300
+cpu_ok = true
+
+[models."nomic-embed-text"]
+vram_mb = 600
+cpu_ok = true
+
+[models."qwen3.5:9b"]
+vram_mb = 6600
+notes = "top pick for 8 GB cards"
+
+[models."qwen3:8b"]
+vram_mb = 5600
+
+[models."qwen2.5:7b"]
+vram_mb = 5000
+
+[models."qwen2.5-coder:7b"]
+vram_mb = 5000
+
+[models."llama3.2"]
+vram_mb = 2300
+cpu_ok = true
+
+[models."qwen2.5vl:3b"]
+vram_mb = 3600
+
+[models."dengcao/Qwen3-Reranker-0.6B:Q8_0"]
+vram_mb = 900
+cpu_ok = true
+
+[warnings]
+"mxbai-embed-large" = "512-token limit; not recommended for code or long documents"
+"deepseek-r1:8b" = "long 'thinking' output makes interactive chat slow"
