@@ -42,6 +42,12 @@ PROVIDER_NAME = "ollama"
 _MB = 1024 * 1024
 _MAX_BATCH_CHARS = 60_000  # keeps one request's total prompt size sane
 _RETRIES = 4
+_CONNECT_ATTEMPTS = (
+    2  # a refused connection: Ollama is not running, waiting seconds will not fix it
+)
+_CONNECT_RETRY_SECONDS = 0.5
+_CONNECT_TIMEOUT_SECONDS = 3.0
+_READ_TIMEOUT_SECONDS = 600.0  # loading a big model or embedding a big batch can take minutes
 _TRANSIENT = (ConnectionError, TimeoutError, httpx.TransportError)
 
 
@@ -68,7 +74,10 @@ class OllamaProvider:
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._embedding = embedding or EmbeddingSettings()
-        self._client: ClientLike = client or ollama.Client(host=host)
+        self._client: ClientLike = client or ollama.Client(
+            host=host,
+            timeout=httpx.Timeout(_READ_TIMEOUT_SECONDS, connect=_CONNECT_TIMEOUT_SECONDS),
+        )
         self._sleep = sleep
         self._dim: int | None = None
         self.tokens_seen = 0  # prompt tokens reported by Ollama while embedding
@@ -93,6 +102,11 @@ class OllamaProvider:
                 last = exc
             except _TRANSIENT as exc:
                 last = exc
+                if isinstance(exc, ConnectionError):  # nobody is listening: do not keep knocking
+                    if attempt + 1 >= _CONNECT_ATTEMPTS:
+                        break
+                    self._sleep(_CONNECT_RETRY_SECONDS)
+                    continue
             if attempt < _RETRIES - 1:
                 self._sleep(1.5 * (attempt + 1))
         raise ProviderUnavailableError(f"ollama unavailable: {last}") from last

@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 _MB = 1024 * 1024
 _SIZE_TO_VRAM = 1.15  # resident size is a little over the file size once the KV cache exists
 _REFRESHED_KEY = "models_refreshed_at"
+_RETRY_AFTER_FAILURE = 30.0  # seconds before an unreachable provider is asked again
 _SECONDS_PER_FILE = 0.5  # rough embedding throughput used for the re-index estimate
 
 FLAG_OK = "ok"
@@ -119,16 +120,19 @@ class ModelRegistry:
         self._pinned_embed = pinned_embed
         self._clock = clock
         self._installed: list[ModelInfo] = []
+        self._retry_after = 0.0  # no automatic refresh before this time (a provider was down)
 
     # ------------------------------------------------------------------ discovery
     def refresh(self) -> list[ModelInfo]:
         """Re-discover models from every provider. An unreachable provider is skipped."""
         found: list[ModelInfo] = []
+        self._retry_after = 0.0  # set again below if a provider is still unreachable
         for provider in self._providers:
             try:
                 models = provider.list_models()
             except ProviderError:
                 logger.warning("models: cannot list models from %s", provider.name)
+                self._retry_after = self._clock() + _RETRY_AFTER_FAILURE
                 continue
             found.extend(models)
             if self._state is not None:
@@ -152,9 +156,16 @@ class ModelRegistry:
         return found
 
     def refresh_if_stale(self, max_age_seconds: float = 3600) -> bool:
-        """Refresh when the last discovery is older than ``max_age_seconds``."""
+        """Refresh when the last discovery is older than ``max_age_seconds``.
+
+        When a provider could not be reached, the next attempt waits ``_RETRY_AFTER_FAILURE``:
+        otherwise every request made while Ollama is down would try (and wait) again.
+        """
+        now = self._clock()
+        if now < self._retry_after:
+            return False
         last = self._state.get_meta(_REFRESHED_KEY) if self._state else None
-        if last is not None and self._clock() - float(last) < max_age_seconds and self._installed:
+        if last is not None and now - float(last) < max_age_seconds and self._installed:
             return False
         self.refresh()
         return True

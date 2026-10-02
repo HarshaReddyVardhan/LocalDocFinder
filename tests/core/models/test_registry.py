@@ -283,6 +283,38 @@ class TestDiscovery:
         assert [m.name for m in reg.refresh()] == ["qwen3.5:9b"]
         assert [m.name for m in reg.installed] == ["qwen3.5:9b"]
 
+    def test_a_down_provider_is_not_asked_again_on_every_request(self) -> None:
+        now = [1000.0]
+        provider = FakeProvider([CHAT9], fail=True)
+        calls: list[int] = []
+        original = provider.list_models
+        provider.list_models = lambda: calls.append(1) or original()  # type: ignore[method-assign]
+        reg = ModelRegistry(cat.load_catalog(), [provider], hardware_probe=hw, clock=lambda: now[0])
+        reg.refresh_if_stale()
+        for _ in range(10):  # ten requests while Ollama is down
+            reg.refresh_if_stale()
+        assert len(calls) == 1  # one attempt, not ten (each used to take seconds)
+        now[0] += 31
+        reg.refresh_if_stale()
+        assert len(calls) == 2  # but it does look again after a while
+        provider.fail = False
+        now[0] += 31
+        reg.refresh_if_stale()
+        assert [m.name for m in reg.installed] == ["qwen3.5:9b"]
+
+    def test_an_explicit_refresh_ignores_the_wait_and_clears_it(self) -> None:
+        now = [1000.0]
+        provider = FakeProvider([CHAT9], fail=True)
+        reg = ModelRegistry(cat.load_catalog(), [provider], hardware_probe=hw, clock=lambda: now[0])
+        reg.refresh_if_stale()
+        provider.fail = False
+        assert reg.refresh_if_stale() is False  # inside the waiting period
+        reg.refresh()  # the user pressed Refresh
+        assert [m.name for m in reg.installed] == ["qwen3.5:9b"]
+        provider.fail = True
+        now[0] += 3601
+        reg.refresh_if_stale()  # works normally again once it succeeded
+
     def test_refresh_if_stale(self, tmp_path: Path) -> None:
         now = [1000.0]
         with StateDb(tmp_path) as state:

@@ -165,12 +165,31 @@ class TestRetries:
         assert make(client).embed(["a"]).shape == (1, 4)
         assert len(client.calls) == 3
 
-    def test_gives_up_as_unavailable(self) -> None:
+    def test_a_refused_connection_gives_up_quickly(self) -> None:
         client = FakeOllamaClient()
         client.failures = [ConnectionError("down")] * 10
+        slept: list[float] = []
+        provider = om.OllamaProvider(EmbeddingSettings(), client=client, sleep=slept.append)
+        with pytest.raises(ProviderUnavailableError):
+            provider.embed(["a"])
+        assert len(client.calls) == 2  # nobody is listening: not four attempts and ten seconds
+        assert sum(slept) <= 1.0
+
+    def test_timeouts_and_server_errors_still_get_the_full_set_of_retries(self) -> None:
+        client = FakeOllamaClient()
+        client.failures = [TimeoutError("slow")] * 10
         with pytest.raises(ProviderUnavailableError):
             make(client).embed(["a"])
         assert len(client.calls) == 4
+
+    def test_the_real_client_has_a_short_connect_and_a_long_read_timeout(self) -> None:
+        import httpx
+
+        provider = om.OllamaProvider(EmbeddingSettings(), host="http://127.0.0.1:1")
+        timeout = provider.client._client.timeout
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.connect == om._CONNECT_TIMEOUT_SECONDS
+        assert timeout.read == om._READ_TIMEOUT_SECONDS
 
     def test_missing_model_is_not_retried(self) -> None:
         client = FakeOllamaClient()
