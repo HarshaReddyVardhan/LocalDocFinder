@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from vector_embed.core.store import sqlite as sq
-from vector_embed.core.store.sqlite import ManifestEntry, QueueItem, StateDb
+from vector_embed.core.store.sqlite import ManifestEntry, StateDb
 
 
 class FakeClock:
@@ -149,17 +149,49 @@ class TestQueue:
             db.enqueue_many(items())
         assert db.queue_size() == 0
 
-    def test_fail_backs_off_then_gives_up(self, db: StateDb, clock: FakeClock) -> None:
-        db.enqueue("a")
+    def test_fail_backs_off_then_gives_up(
+        self, db: StateDb, clock: FakeClock, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "bad.pdf"
+        target.write_bytes(b"x" * 10)
+        path = str(target)
+        db.enqueue(path)
         for _ in range(3):
             clock.now += 1000
             assert db.claim(1)
-            db.fail("a", delay=10)
+            assert db.queue_size(due_only=True) == 1
+            db.fail(path, delay=10)
         clock.now += 1000
-        assert db.claim(1) == []  # attempts exhausted
-        assert db.queue_size() == 1
-        db.enqueue("a")  # re-queue resets attempts
-        assert db.claim(1) == [QueueItem("a", "upsert", db.claim(1)[0].seq)]
+        assert db.claim(1) == []
+        assert db.queue_size(due_only=True) == 0  # a dead row is not work for the watcher
+        assert db.queue_size() == 0  # it left the queue
+        entry = db.manifest_get(path)
+        assert entry is not None
+        assert entry.content_hash == sq.FAILED_HASH  # remembered as seen, until it changes
+        assert (entry.mtime_ns, entry.size) == (target.stat().st_mtime_ns, 10)
+        db.enqueue(path)  # an explicit re-queue (the file changed) gets a fresh set of attempts
+        assert db.claim(1)
+
+    def test_dead_rows_do_not_count_as_due_while_failing(
+        self, db: StateDb, clock: FakeClock
+    ) -> None:
+        db.enqueue("a")
+        db.enqueue("b")
+        assert db.queue_size(due_only=True) == 2
+        db.fail("a", delay=10)
+        assert db.queue_size(due_only=True) == 1  # "a" is backing off
+        clock.now += 20
+        assert db.queue_size(due_only=True) == 2
+
+    def test_giving_up_on_a_vanished_file_clears_it_everywhere(
+        self, db: StateDb, clock: FakeClock
+    ) -> None:
+        db.manifest_set("gone.txt", 1, 1, "old")
+        db.enqueue("gone.txt")
+        for _ in range(3):
+            db.fail("gone.txt", delay=0)
+        assert db.manifest_get("gone.txt") is None
+        assert db.queue_size() == 0
 
 
 class TestLocks:

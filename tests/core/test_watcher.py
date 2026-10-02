@@ -261,8 +261,10 @@ class TestScheduling:
         w.tick()
         w.tick()
         assert launcher.started == [False]
+        env.state.done([("a", env.state.claim(1)[0].seq)])  # the worker finished something
+        env.state.enqueue("b", delay=0)
         launcher.handles[0].code = 0
-        w.tick()  # exit noticed; the queue is still due, so a fresh worker starts
+        w.tick()  # exit noticed; more work is queued, so a fresh worker starts
         assert launcher.started == [False, False]
 
     def test_failed_worker_backs_off(
@@ -292,6 +294,32 @@ class TestScheduling:
         w.tick()
         assert launcher.handles[0].terminated
         assert unloads == [1]
+
+    def test_a_worker_that_makes_no_progress_is_not_restarted_at_once(
+        self, parts: tuple[Watcher, FakeGate, FakeLauncher, list[int]], env: Env, clock: Clock
+    ) -> None:
+        w, _, launcher, _ = parts
+        env.state.enqueue("a", delay=0)
+        w.tick()
+        launcher.handles[0].code = 0  # exited cleanly, but the queue did not shrink
+        w.tick()
+        w.tick()
+        assert launcher.started == [False]
+        clock.now += 121
+        w.tick()
+        assert launcher.started == [False, False]
+
+    def test_a_worker_that_drains_the_queue_leaves_no_backoff(
+        self, parts: tuple[Watcher, FakeGate, FakeLauncher, list[int]], env: Env
+    ) -> None:
+        w, _, launcher, _ = parts
+        env.state.enqueue("a", delay=0)
+        w.tick()
+        env.state.done([("a", env.state.claim(1)[0].seq)])
+        env.state.enqueue("b", delay=0)  # new work arrives right after
+        launcher.handles[0].code = 0
+        w.tick()
+        assert launcher.started == [False, False]
 
     def test_a_clean_exit_does_not_ask_for_an_unload(
         self, parts: tuple[Watcher, FakeGate, FakeLauncher, list[int]], env: Env

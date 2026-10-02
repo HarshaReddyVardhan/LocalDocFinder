@@ -29,7 +29,7 @@ from vector_embed.core.process import self_command, single_instance, stop_reques
 from vector_embed.core.projects import Projects
 from vector_embed.core.scope import ScopePolicy
 from vector_embed.core.settings import Settings, load_settings
-from vector_embed.core.store.sqlite import CHAT_LOCK, StateDb
+from vector_embed.core.store.sqlite import CHAT_LOCK, PROGRESS_KEY, StateDb
 
 logger = logging.getLogger("watcher")
 
@@ -39,6 +39,7 @@ _NO_WINDOW = 0x08000000
 _FAILURE_BACKOFF_SECONDS = 600
 _WORKER_STOP_GRACE_SECONDS = 15.0
 _RECONCILE_BACKOFF_SECONDS = 300
+_NO_PROGRESS_BACKOFF_SECONDS = 120  # a worker that finishes without shrinking the queue
 _UNPLUG_GRACE_SECONDS = 20
 
 
@@ -187,6 +188,7 @@ class Watcher:
         self.next_spawn = 0.0
         self.last_reason = ""
         self.unplugged_at: float | None = None
+        self._progress_at_start: str | None = None
         self._stop = threading.Event()
 
     # ------------------------------------------------------------------ lifecycle
@@ -241,6 +243,10 @@ class Watcher:
             if code != 0:
                 self.next_spawn = self._clock() + _FAILURE_BACKOFF_SECONDS  # e.g. Ollama is down
                 self._unload()  # a crashed worker never reached its own unload
+            elif self.state.get_meta(PROGRESS_KEY) == self._progress_at_start:
+                # It ran and exited cleanly without finishing a single queue item (every file kept
+                # failing, or the gates stopped it at once): do not start another straight away.
+                self.next_spawn = self._clock() + _NO_PROGRESS_BACKOFF_SECONDS
             self.unplugged_at = None
             return False
         # The worker checks power itself before each batch; this is the backstop if it is stuck
@@ -271,6 +277,7 @@ class Watcher:
             return
         reconcile = self.reconcile_due()
         if reconcile or self.state.queue_size(due_only=True) > 0:
+            self._progress_at_start = self.state.get_meta(PROGRESS_KEY)
             self.handle = self.launcher.start(reconcile)
             if reconcile:  # the worker records success; do not re-trigger while it runs
                 self.next_spawn = self._clock() + _RECONCILE_BACKOFF_SECONDS

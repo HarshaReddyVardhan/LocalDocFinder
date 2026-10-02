@@ -5,6 +5,7 @@ Light enough for the always-on watcher (no ML imports). The schema version lives
 """
 
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -15,7 +16,11 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, NamedTuple, Self
 
+logger = logging.getLogger(__name__)
+
 _MAX_ATTEMPTS = 3
+PROGRESS_KEY = "last_queue_progress"  # meta key stamped whenever queue items are finished
+FAILED_HASH = "failed"  # manifest hash of a file given up on (never equals a real digest)
 _FAR_FUTURE = 1e18
 STATE_FILENAME = "state.sqlite"
 CHAT_LOCK = "chat"  # held while a chat session is active; the indexing worker never runs then
@@ -239,8 +244,11 @@ class StateDb:
         return count
 
     def queue_size(self, due_only: bool = False) -> int:
-        if due_only:
-            row = self._one("SELECT COUNT(*) FROM queue WHERE not_before<=?", (self._clock(),))
+        if due_only:  # the same rows ``claim`` would hand out: dead rows are not work
+            row = self._one(
+                "SELECT COUNT(*) FROM queue WHERE not_before<=? AND attempts<?",
+                (self._clock(), _MAX_ATTEMPTS),
+            )
         else:
             row = self._one("SELECT COUNT(*) FROM queue")
         return int(row[0]) if row else 0
@@ -257,17 +265,39 @@ class StateDb:
 
     def done(self, items: Iterable[tuple[str, int]]) -> None:
         """Remove processed rows, unless a path was re-queued (its ``seq`` changed) meanwhile."""
+        finished = list(items)
         with self._lock:
             self._sql.execute("BEGIN")
-            for path, seq in items:
+            for path, seq in finished:
                 self._sql.execute("DELETE FROM queue WHERE path=? AND seq=?", (path, seq))
             self._sql.execute("COMMIT")
+        if finished:  # lets the watcher tell a worker that worked from one that only exited
+            self.set_meta(PROGRESS_KEY, str(time.time_ns()))
 
     def fail(self, path: str, delay: float = 300.0) -> None:
+        """Count a failed attempt and back off; the third strike gives up on this version."""
         self._run(
             "UPDATE queue SET attempts=attempts+1, not_before=? WHERE path=?",
             (self._clock() + delay, path),
         )
+        row = self._one("SELECT attempts FROM queue WHERE path=?", (path,))
+        if row and row[0] >= _MAX_ATTEMPTS:
+            self._give_up(path)
+
+    def _give_up(self, path: str) -> None:
+        """Stop retrying a file that keeps failing: record it as seen, until it changes.
+
+        The queue row is removed and the manifest remembers this exact version, so neither the
+        watcher nor a reconcile re-queues it. Editing the file makes it eligible again.
+        """
+        try:
+            info = Path(path).stat()
+        except OSError:
+            self.manifest_delete(path)
+        else:
+            self.manifest_set(path, info.st_mtime_ns, info.st_size, FAILED_HASH)
+        self._run("DELETE FROM queue WHERE path=?", (path,))
+        logger.warning("giving up on %s after %d failed attempts", path, _MAX_ATTEMPTS)
 
     # ------------------------------------------------------------------ locks
     def acquire_lock(self, name: str, owner: str, ttl_seconds: float) -> bool:
