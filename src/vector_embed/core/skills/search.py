@@ -183,7 +183,7 @@ class SearchSkill(Skill):
     def warm(self) -> None:
         """Load the embedding model ahead of the first query (hides the model-load delay)."""
         try:
-            self.ctx.embedder.embed(["warmup"], kind="query", cpu=self.ctx.power.search_on_cpu())
+            self.ctx.embedder.embed(["warmup"], kind="query", cpu=self.ctx.query_on_cpu())
         except ProviderError:
             logger.debug("search: warm-up failed", exc_info=True)
 
@@ -214,6 +214,7 @@ class SearchSkill(Skill):
             text=parsed.text,
             columns=_COLUMNS,
             where=parsed.where,
+            force_cpu=self.ctx.query_on_cpu(),
         )
         pairs = [(c.row, c.score) for c in candidates]
         return self._group(pairs, limit, current_project, parsed.text)

@@ -147,6 +147,24 @@ class TestSearch:
     def test_empty_index_returns_nothing(self, skill: SearchSkill) -> None:
         assert skill.search("anything") == []
 
+    def test_search_stays_off_the_gpu_while_another_process_chats(
+        self, skill: SearchSkill, indexed: dict[str, str]
+    ) -> None:
+        calls: list[bool] = []
+        original = skill.ctx.embedder.embed
+
+        def spy(texts: list[str], kind: str = "doc", cpu: bool = False):  # type: ignore[no-untyped-def]
+            calls.append(cpu)
+            return original(texts, kind, cpu)  # type: ignore[arg-type]
+
+        skill.ctx.embedder.embed = spy  # type: ignore[method-assign]
+        skill.search("retry payments")
+        assert calls == [False]  # nobody chatting: the GPU is fine
+        skill.ctx.state.acquire_lock("chat", "the-app-in-another-process", 60)
+        calls.clear()
+        assert skill.search("retry payments")
+        assert calls == [True]
+
     def test_battery_policy(
         self, skill: SearchSkill, indexed: dict[str, str], power_state: Power
     ) -> None:

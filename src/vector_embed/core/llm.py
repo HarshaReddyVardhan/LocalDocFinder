@@ -12,6 +12,7 @@ Rules from the design:
 import logging
 import time
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -37,6 +38,8 @@ REASON_UNPLUGGED = "unplugged"
 REASON_FULLSCREEN = "fullscreen app"
 REASON_IDLE = "idle"
 _LOCK_GRACE_SECONDS = 60
+_ONE_SHOT_LEASE_SECONDS = 180  # a one-shot call renews this while it streams
+_LEASE_REFRESH_SECONDS = 30  # renew the lock at most this often, not on every token
 
 
 class ChatBlockedError(RuntimeError):
@@ -86,6 +89,8 @@ class LlmGateway:
         self._refresh_seconds = refresh_seconds
         self._loaded: set[str] = set()
         self._last_activity = clock()
+        self._lease_ttl = 0.0  # > 0 while this gateway holds the chat lock
+        self._lease_renewed = 0.0
         self.session_active = False
         self.router: TargetRouter | None = None
 
@@ -148,8 +153,26 @@ class LlmGateway:
 
     @property
     def query_on_cpu(self) -> bool:
-        """While a session owns the GPU, embed queries on the CPU."""
-        return self.session_active
+        """While any session owns the GPU, embed queries on the CPU."""
+        return self.session_active or self._state.lock_held(CHAT_LOCK)
+
+    @contextmanager
+    def _local_lease(self, target: "ChatTarget") -> Iterator[None]:
+        """Hold the chat lock for one local call, so the indexer and the search stay off the GPU.
+
+        A session already holds it; a cloud call does not need it.
+        """
+        if not target.local or self.session_active:
+            yield
+            return
+        if not self._state.acquire_lock(CHAT_LOCK, self._owner, _ONE_SHOT_LEASE_SECONDS):
+            raise ChatBlockedError("another chat session is active")
+        self._lease_ttl, self._lease_renewed = _ONE_SHOT_LEASE_SECONDS, self._clock()
+        try:
+            yield
+        finally:
+            self._lease_ttl = 0.0
+            self._state.release_lock(CHAT_LOCK, self._owner)
 
     # ------------------------------------------------------------------ session lifecycle
     def begin_chat(self) -> None:
@@ -158,15 +181,17 @@ class LlmGateway:
         if not self._state.acquire_lock(CHAT_LOCK, self._owner, ttl):
             raise ChatBlockedError("another chat session is active")
         self.session_active = True
+        self._lease_ttl, self._lease_renewed = ttl, self._clock()
         self._last_activity = self._clock()
         self._free_embedder()
 
     def touch(self) -> None:
-        """Record activity: refreshes the idle timer and the lock lease."""
-        self._last_activity = self._clock()
-        if self.session_active:
-            ttl = self._cfg.idle_unload_seconds + _LOCK_GRACE_SECONDS
-            self._state.acquire_lock(CHAT_LOCK, self._owner, ttl)
+        """Record activity: refreshes the idle timer and, at most every 30 s, the lock lease."""
+        now = self._clock()
+        self._last_activity = now
+        if self._lease_ttl and now - self._lease_renewed >= _LEASE_REFRESH_SECONDS:
+            self._state.acquire_lock(CHAT_LOCK, self._owner, self._lease_ttl)
+            self._lease_renewed = now
 
     def end_chat(self, reason: str = "closed") -> None:
         """Unload every chat model this gateway loaded and release the lock."""
@@ -175,6 +200,7 @@ class LlmGateway:
             self._local.unload(model)
         self._loaded.clear()
         self._state.release_lock(CHAT_LOCK, self._owner)
+        self._lease_ttl = 0.0
         self.session_active = False
 
     def check(self) -> str | None:
@@ -221,9 +247,10 @@ class LlmGateway:
             self._loaded.add(target.model)
         options = self.options(session=session)
         try:
-            for chunk in target.provider.stream_chat(messages, target.model, options):
-                self.touch()
-                yield chunk
+            with self._local_lease(target):
+                for chunk in target.provider.stream_chat(messages, target.model, options):
+                    self.touch()
+                    yield chunk
         finally:
             if not session and target.local:
                 self._loaded.discard(target.model)  # keep_alive=0 already unloaded it
@@ -241,9 +268,10 @@ class LlmGateway:
         if target.local:
             self._free_embedder()
             self._loaded.add(target.model)
-        result = target.provider.chat_json(
-            messages, target.model, schema, self.options(session=session)
-        )
+        with self._local_lease(target):
+            result = target.provider.chat_json(
+                messages, target.model, schema, self.options(session=session)
+            )
         self.touch()
         if not session and target.local:
             self._loaded.discard(target.model)

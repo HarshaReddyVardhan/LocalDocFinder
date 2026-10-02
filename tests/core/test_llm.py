@@ -123,6 +123,60 @@ class TestOneShot:
         assert world.calls("chat")[0]["keep_alive"] == 0
 
 
+class TestLease:
+    def test_a_one_shot_call_holds_the_chat_lock_while_it_runs(self, world: World) -> None:
+        stream = world.gateway.stream(MESSAGES)
+        next(stream)
+        assert world.state.lock_held(CHAT_LOCK)  # the indexer and the search stay off the GPU
+        list(stream)
+        assert not world.state.lock_held(CHAT_LOCK)
+
+    def test_json_calls_hold_the_lock_too(self, world: World) -> None:
+        seen: list[bool] = []
+        world.client.chat_json_fn = lambda _kw: (
+            seen.append(world.state.lock_held(CHAT_LOCK)) or "{}"
+        )
+        world.gateway.chat_json(MESSAGES, {"type": "object"})
+        assert seen == [True]
+        assert not world.state.lock_held(CHAT_LOCK)
+
+    def test_another_process_chatting_blocks_a_one_shot_call(self, world: World) -> None:
+        world.state.acquire_lock(CHAT_LOCK, "other-process", 60)
+        with pytest.raises(ChatBlockedError):
+            list(world.gateway.stream(MESSAGES))
+
+    def test_the_lock_is_released_when_the_caller_abandons_the_stream(self, world: World) -> None:
+        stream = world.gateway.stream(MESSAGES)
+        next(stream)
+        stream.close()
+        assert not world.state.lock_held(CHAT_LOCK)
+
+    def test_other_processes_searches_move_to_the_cpu(self, world: World) -> None:
+        assert not world.gateway.query_on_cpu
+        world.state.acquire_lock(CHAT_LOCK, "other-process", 60)
+        assert world.gateway.query_on_cpu
+
+    def test_the_lease_is_renewed_at_most_every_thirty_seconds(
+        self, world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        gw = world.gateway
+        gw.begin_chat()
+        renewals: list[int] = []
+        original = world.state.acquire_lock
+        monkeypatch.setattr(
+            world.state,
+            "acquire_lock",
+            lambda *a, **k: renewals.append(1) or original(*a, **k),
+        )
+        for _ in range(50):  # one touch per streamed token
+            gw.touch()
+        assert renewals == []
+        world.clock.now += 31
+        gw.touch()
+        gw.touch()
+        assert renewals == [1]
+
+
 class TestSession:
     def test_begin_takes_the_lock_and_moves_queries_to_the_cpu(self, world: World) -> None:
         gw = world.gateway

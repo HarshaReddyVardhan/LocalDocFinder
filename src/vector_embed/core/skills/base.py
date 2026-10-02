@@ -18,7 +18,7 @@ from vector_embed.core.providers.base import EmbedKind
 from vector_embed.core.registry import Registry, discover_modules
 from vector_embed.core.settings import Settings
 from vector_embed.core.store.lance import LanceStore
-from vector_embed.core.store.sqlite import StateDb
+from vector_embed.core.store.sqlite import CHAT_LOCK, StateDb
 
 UI_LIST = "list"  # a ranked result list
 UI_PANEL = "panel"  # a streaming text panel (answers, chat)
@@ -39,6 +39,10 @@ class SkillContext:
     embedder: QueryEmbedder
     power: PowerGate
     extras: dict[str, Any] = field(default_factory=dict)
+
+    def query_on_cpu(self) -> bool:
+        """Embed queries on the CPU when unplugged or any process holds the chat lock."""
+        return self.power.search_on_cpu() or self.state.lock_held(CHAT_LOCK)
 
 
 class SkillInput(BaseModel):

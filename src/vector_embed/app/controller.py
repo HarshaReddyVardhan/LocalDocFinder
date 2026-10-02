@@ -147,7 +147,7 @@ class SearchService:
         self.skill.warm()
 
     def on_battery(self) -> bool:
-        return self.skill.ctx.power.search_on_cpu()
+        return self.skill.ctx.query_on_cpu()
 
     def search(self, query: str, project: str | None) -> SearchOutcome:
         started = time.perf_counter()
