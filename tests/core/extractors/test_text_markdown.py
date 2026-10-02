@@ -14,6 +14,14 @@ Builder = Callable[[ChunkingSettings], ExtractorSet]
 
 
 class TestChunkingHelpers:
+    def test_an_overlap_larger_than_the_window_cannot_explode_the_chunk_count(self) -> None:
+        lines = [f"line {i:04d}" for i in range(1000)]  # 9 chars + newline each
+        parts = chunking.split_by_lines(lines, 1, max_chars=50, overlap=20)
+        window = 50 // 10  # lines per window
+        assert len(parts) <= len(lines) // (window // 2) + 1  # at least half a window per step
+        covered = {n for _, start, end in parts for n in range(start, end + 1)}
+        assert covered == set(range(1, 1001))  # still every line
+
     def test_split_respects_max_chars_and_overlap(self) -> None:
         lines = [f"line{i:02d}" for i in range(10)]  # 7 chars with newline each
         parts = chunking.split_by_lines(lines, 1, max_chars=22, overlap=1)

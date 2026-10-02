@@ -44,7 +44,9 @@ def split_by_lines(
             out.append((text, first_line + i, first_line + j - 1))
         if j >= total:
             break
-        i = max(j - overlap, i + 1)
+        # An overlap larger than the window would step one line at a time and emit a chunk per
+        # line (quadratic text); never share more than half of a window.
+        i = max(j - min(overlap, (j - i) // 2), i + 1)
     return out
 
 
