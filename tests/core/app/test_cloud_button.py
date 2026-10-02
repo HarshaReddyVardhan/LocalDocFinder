@@ -44,6 +44,12 @@ class CloudAssistant(FakeAssistant):
         self.escalations += 1
         yield from events
 
+    def ask_escalated(self, question: str) -> Iterator[Event]:
+        yield from self.escalated(self.ask(question))
+
+    def chat_escalated(self, message: str, state: ChatState) -> Iterator[Event]:
+        yield from self.escalated(self.chat(message, state))
+
 
 def wait_for(qapp: QApplication, condition: Callable[[], bool], timeout: float = 5.0) -> None:
     deadline = time.time() + timeout

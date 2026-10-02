@@ -89,6 +89,7 @@ class AskRun:
         self._target = target
         self._gateway = gateway
         self._question = question
+        self.messages = build_messages(question, sources)  # built once: preview == what is sent
         self._session = session
         self.result = AskResult(sources=sources, role=role, withheld=withheld)
 
@@ -99,9 +100,8 @@ class AskRun:
             yield NOT_FOUND
             return
         parts: list[str] = []
-        messages = build_messages(self._question, result.sources)
         for chunk in self._gateway.stream(
-            messages, result.role, session=self._session, target=self._target
+            self.messages, result.role, session=self._session, target=self._target
         ):
             if chunk.text:
                 parts.append(chunk.text)

@@ -210,6 +210,47 @@ class TestAnswerBetter:
         drain(service.ask("how do we retry failed payments"))
         assert chat.chat_calls()  # now handled by the local model
 
+    def test_the_preview_is_exactly_the_text_that_is_sent(
+        self, env: Env, skill_ctx: SkillContext, chat: Chat, local_by_default: CloudRig
+    ) -> None:
+        self.index(env)
+        service = AssistantService(lambda: skill_ctx)
+        question = "how do we retry failed payments ext:md"  # a filter the preview must honour
+        preview = service.cloud_preview_ask(question)
+        assert preview is not None
+        local_by_default.inner.reply = ["Cloud answer."]
+        drain(service.ask_escalated(question))
+        sent = local_by_default.provider.last_outbound
+        assert sent is not None
+        assert preview.text == local_by_default.privacy.preview(sent)
+        assert "123-45-6789" not in preview.text
+
+    def test_a_different_question_is_not_sent_with_an_old_preview(
+        self, env: Env, skill_ctx: SkillContext, chat: Chat, local_by_default: CloudRig
+    ) -> None:
+        self.index(env)
+        service = AssistantService(lambda: skill_ctx)
+        service.cloud_preview_ask("how do we retry failed payments")
+        local_by_default.inner.reply = ["ok"]
+        drain(service.ask_escalated("what is the refund policy"))
+        sent = local_by_default.provider.last_outbound
+        assert sent is not None
+        assert "refund policy" in local_by_default.privacy.preview(sent)
+
+    def test_the_chat_preview_is_what_the_chat_turn_sends(
+        self, env: Env, skill_ctx: SkillContext, chat: Chat, local_by_default: CloudRig
+    ) -> None:
+        self.index(env)
+        service = AssistantService(lambda: skill_ctx)
+        state = ChatState()
+        preview = service.cloud_preview_chat("how do we retry failed payments", state)
+        assert preview is not None
+        local_by_default.inner.reply = ["Cloud answer."]
+        drain(service.chat_escalated("how do we retry failed payments", state))
+        sent = local_by_default.provider.last_outbound
+        assert sent is not None
+        assert preview.text == local_by_default.privacy.preview(sent)
+
     def test_escalation_resets_even_if_the_stream_fails(
         self, env: Env, skill_ctx: SkillContext, local_by_default: CloudRig
     ) -> None:

@@ -8,11 +8,11 @@ from vector_embed.core.documents import DocumentError
 from vector_embed.core.llm import ChatBlockedError, LlmGateway, NoChatModelError
 from vector_embed.core.models.catalog import ROLE_CHAT
 from vector_embed.core.providers.base import Message, ProviderError
-from vector_embed.core.rag import Source, build_messages
+from vector_embed.core.rag import Source
 from vector_embed.core.runtime import CloudContext
-from vector_embed.core.skills.ask import AskSkill, gateway_of, privacy_of
+from vector_embed.core.skills.ask import AskRun, AskSkill, gateway_of, privacy_of
 from vector_embed.core.skills.base import SkillContext
-from vector_embed.core.skills.chat import ChatInput, ChatSkill
+from vector_embed.core.skills.chat import ChatInput, ChatSkill, PreparedTurn
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,15 @@ class CloudPreview:
 
 
 @dataclass
+class _Previewed:
+    """The request the user is looking at; sending it must use this object, not a rebuild."""
+
+    kind: str  # "ask" or "chat"
+    key: str  # the question or message it was prepared for
+    payload: object
+
+
+@dataclass
 class ChatState:
     """What the window knows about the conversation in progress."""
 
@@ -73,6 +82,7 @@ class AssistantService:
     def __init__(self, context_factory: Callable[[], SkillContext]) -> None:
         self._factory = context_factory
         self._ctx: SkillContext | None = None
+        self._previewed: _Previewed | None = None
 
     @property
     def ctx(self) -> SkillContext:
@@ -138,33 +148,93 @@ class AssistantService:
         )
 
     def cloud_preview_ask(self, question: str) -> CloudPreview | None:
-        """The request an escalated Ask would send; ``None`` if no cloud is configured."""
+        """The request an escalated Ask would send; ``None`` if no cloud is configured.
+
+        The prepared answer is kept, and ``ask_escalated`` sends that same object, so what the
+        user inspected is exactly what leaves.
+        """
         cloud = self._cloud()
         if cloud is None:
             return None
-        cloud.router.escalate = True  # so private files are filtered as for a cloud request
-        try:
-            run = AskSkill(self.ctx).prepare(question, session=self.session_active)
-        finally:
-            cloud.router.reset()
-        return self._preview(
-            cloud, build_messages(question, run.result.sources), len(run.result.sources)
-        )
+        run = self._prepare_cloud_ask(cloud, question)
+        self._previewed = _Previewed("ask", question, run)
+        return self._preview(cloud, run.messages, len(run.result.sources))
 
     def cloud_preview_chat(self, message: str, state: ChatState) -> CloudPreview | None:
         """The request an escalated chat turn would send (opens the session if needed)."""
         cloud = self._cloud()
         if cloud is None:
             return None
+        prepared = self._prepare_cloud_turn(cloud, message, state)
+        self._previewed = _Previewed("chat", message, prepared)
+        excerpts = len(state.pinned) + (1 if state.scratch else 0) or 1
+        return self._preview(cloud, prepared.messages, excerpts)
+
+    def _prepare_cloud_ask(self, cloud: CloudContext, question: str) -> AskRun:
+        cloud.router.escalate = True  # so private files are filtered as for a cloud request
+        try:
+            return AskSkill(self.ctx).prepare(question, session=self.session_active)
+        finally:
+            cloud.router.reset()  # the prepared run keeps its cloud route; nothing else does
+
+    def _prepare_cloud_turn(
+        self, cloud: CloudContext, message: str, state: ChatState
+    ) -> PreparedTurn:
         skill = ChatSkill(self.ctx)
-        if state.session_id is None:
-            state.session_id = skill.open_session(message, state.pinned, state.scratch or None)
+        params = ChatInput(
+            message=message,
+            session=state.session_id,
+            pin=[] if state.session_id else state.pinned,
+            scratch=None if state.session_id else state.scratch or None,
+        )
         cloud.router.escalate = True
         try:
-            messages, _ = skill.build_prompt(state.session_id, message)
+            prepared = skill.prepare_turn(params)
         finally:
             cloud.router.reset()
-        return self._preview(cloud, messages, len(state.pinned) + (1 if state.scratch else 0) or 1)
+        state.session_id = prepared.session_id
+        return prepared
+
+    def _take_previewed(self, kind: str, key: str) -> object | None:
+        previewed, self._previewed = self._previewed, None
+        if previewed is not None and (previewed.kind, previewed.key) == (kind, key):
+            return previewed.payload
+        return None
+
+    def ask_escalated(self, question: str) -> Iterator[Event]:
+        """Answer in the cloud with exactly the request the user previewed (or prepare it now)."""
+        cloud = self._cloud()
+        if cloud is None:
+            yield Failed("no cloud provider is configured")
+            return
+        previewed = self._take_previewed("ask", question)
+        try:
+            run = (
+                previewed
+                if isinstance(previewed, AskRun)
+                else self._prepare_cloud_ask(cloud, question)
+            )
+        except _KNOWN_ERRORS as exc:
+            yield Failed(str(exc))
+            return
+        yield from self.escalated(self._ask_events(run))
+
+    def chat_escalated(self, message: str, state: ChatState) -> Iterator[Event]:
+        cloud = self._cloud()
+        if cloud is None:
+            yield Failed("no cloud provider is configured")
+            return
+        previewed = self._take_previewed("chat", message)
+        try:
+            prepared = (
+                previewed
+                if isinstance(previewed, PreparedTurn)
+                else self._prepare_cloud_turn(cloud, message, state)
+            )
+        except _KNOWN_ERRORS as exc:
+            yield Failed(str(exc))
+            return
+        yield from self.escalated(self._turn_events(prepared, state))
 
     def escalated(self, events: Iterator[Event]) -> Iterator[Event]:
         """Run ``events`` with the cloud for this one request, after the user's consent."""
@@ -184,6 +254,13 @@ class AssistantService:
     def ask(self, question: str) -> Iterator[Event]:
         try:
             run = AskSkill(self.ctx).prepare(question, session=self.session_active)
+        except _KNOWN_ERRORS as exc:
+            yield Failed(str(exc))
+            return
+        yield from self._ask_events(run)
+
+    def _ask_events(self, run: AskRun) -> Iterator[Event]:
+        try:
             for text in run.deltas():
                 yield Delta(text)
             result = run.result
@@ -201,7 +278,15 @@ class AssistantService:
                 pin=[] if state.session_id else state.pinned,
                 scratch=None if state.session_id else state.scratch or None,
             )
-            turn, deltas = skill.turn(params)
+            prepared = skill.prepare_turn(params)
+        except _KNOWN_ERRORS as exc:
+            yield Failed(str(exc))
+            return
+        yield from self._turn_events(prepared, state)
+
+    def _turn_events(self, prepared: PreparedTurn, state: ChatState) -> Iterator[Event]:
+        try:
+            turn, deltas = ChatSkill(self.ctx).start_turn(prepared)
             state.session_id = turn.session_id
             for text in deltas:
                 yield Delta(text)

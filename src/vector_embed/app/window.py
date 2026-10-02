@@ -489,9 +489,9 @@ class SearchWindow(QWidget):
         self.answer.clear()
         self.status.setText(f"asking {preview.destination}…")
         if self._mode is Mode.ASK:
-            events = assistant.escalated(assistant.ask(question))
+            events = assistant.ask_escalated(question)  # the very request that was previewed
         else:
-            events = assistant.escalated(assistant.chat(question, self._chat))
+            events = assistant.chat_escalated(question, self._chat)
         self._start_stream(events)
 
     def _on_event(self, generation: int, event: Event) -> None:

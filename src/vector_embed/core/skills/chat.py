@@ -60,6 +60,17 @@ class ChatTurn:
     truncated: list[str] = field(default_factory=list)
 
 
+@dataclass
+class PreparedTurn:
+    """A chat turn ready to send: the exact messages and the route they were prepared for."""
+
+    session_id: int
+    user_text: str
+    messages: list[Message]
+    cut: list[str]
+    target: ChatTarget | None
+
+
 def _pinned_block(
     docs: list[LoadedDocument], scratch: str, budget_tokens: int
 ) -> tuple[str, list[str]]:
@@ -183,13 +194,25 @@ class ChatSkill(Skill):
         return format_sources(build_sources(candidates, cfg.context_token_budget))
 
     # ------------------------------------------------------------------ turns
-    def turn(self, params: ChatInput) -> tuple[ChatTurn, Iterator[str]]:
+    def prepare_turn(self, params: ChatInput) -> "PreparedTurn":
+        """Everything one turn will send, built once: the preview and the send share it."""
         session_id = params.session or self.open_session(params.message, params.pin, params.scratch)
         target = self._target()
         messages, cut = self.build_prompt(session_id, params.message, target)
-        turn = ChatTurn(session_id, truncated=cut)
-        keep = params.keep_loaded or self._gateway.session_active
-        return turn, self._generate(turn, messages, params.message, keep, target)
+        return PreparedTurn(session_id, params.message, messages, cut, target)
+
+    def turn(self, params: ChatInput) -> tuple[ChatTurn, Iterator[str]]:
+        return self.start_turn(self.prepare_turn(params), params.keep_loaded)
+
+    def start_turn(
+        self, prepared: "PreparedTurn", keep_loaded: bool = False
+    ) -> tuple[ChatTurn, Iterator[str]]:
+        turn = ChatTurn(prepared.session_id, truncated=prepared.cut)
+        keep = keep_loaded or self._gateway.session_active
+        generate = self._generate(
+            turn, prepared.messages, prepared.user_text, keep, prepared.target
+        )
+        return turn, generate
 
     def _target(self) -> ChatTarget | None:
         """The route decided once per turn; ``None`` lets the stream raise the usual error."""

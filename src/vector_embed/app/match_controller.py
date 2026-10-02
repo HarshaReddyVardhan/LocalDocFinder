@@ -15,6 +15,12 @@ from vector_embed.core.skills.match import pipeline_of
 from vector_embed.core.tokens import estimate_tokens
 
 LOCAL = "🖥 local"
+# The cloud provider adds one line, after masking, when a model rejects JSON-schema mode.
+JSON_FALLBACK_NOTE = (
+    "\n\n--- note ---\nIf the model does not support JSON schemas, one extra line is added to "
+    "each request: 'Reply with JSON matching: <the response schema>'. It contains no "
+    "document text."
+)
 _TOKENS_PER_REQUIREMENT = 15
 _OUTPUT_TOKENS_PER_DOCUMENT = 400
 
@@ -71,7 +77,7 @@ class MatchController:
             destination,
             privacy.badge(outbound, destination, remote),
             privacy.shield_note(outbound),
-            privacy.preview(outbound),
+            privacy.preview(outbound) + JSON_FALLBACK_NOTE,
         )
 
     def grant_cloud_consent(self) -> None:
