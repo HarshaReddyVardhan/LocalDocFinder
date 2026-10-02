@@ -3,6 +3,8 @@
 import base64
 import io
 import logging
+import os
+from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
@@ -28,6 +30,8 @@ _CAPTION_PROMPT = (
     "Describe this image in one or two sentences, mentioning any visible text, "
     "diagrams, UI, objects and scene."
 )
+_WORKING_SIZE = 4000  # JPEG draft target: the OCR limit, above the thumbnail and caption sizes
+_LOOK_CACHE_SIZE = 256  # images remembered by appearance within one extractor
 _JPEG_QUALITY = 85
 _CAPTION_KEEP_ALIVE = "5m"  # between images of one pass; released explicitly after it
 _THUMB_QUALITY = 80
@@ -113,9 +117,25 @@ def make_thumbnail(ctx: ExtractContext, image: Image.Image, file_hash: str) -> P
     return target
 
 
+def thumbnail_key(path: str | Path, mtime_ns: int, size: int) -> str:
+    """Name of an image's thumbnail: its path and version, no file read needed.
+
+    Built from what the manifest already records (mtime and size), so the indexer, the results
+    list and the cleanup after a delete all compute the same key without opening the image.
+    """
+    return xxhash.xxh3_64_hexdigest(f"{os.path.normcase(path)}|{mtime_ns}|{size}".encode())
+
+
 def thumbnail_path(thumbs_dir: Path, image_path: Path) -> Path:
-    """Where ``make_thumbnail`` stores the thumbnail of ``image_path`` (keyed by file content)."""
-    return thumbs_dir / f"{xxhash.xxh3_64_hexdigest(image_path.read_bytes())}.jpg"
+    """Where ``make_thumbnail`` stores the thumbnail of ``image_path`` (in its current state)."""
+    info = image_path.stat()  # raises OSError for a missing file: the caller has no thumbnail
+    return thumbs_dir / f"{thumbnail_key(image_path, info.st_mtime_ns, info.st_size)}.jpg"
+
+
+def remove_thumbnail(thumbs_dir: Path | None, path: str, mtime_ns: int, size: int) -> None:
+    """Delete the thumbnail of one version of an image (it was deleted or replaced)."""
+    if thumbs_dir is not None:
+        (thumbs_dir / f"{thumbnail_key(path, mtime_ns, size)}.jpg").unlink(missing_ok=True)
 
 
 def describe(ctx: ExtractContext, image: Image.Image, with_caption: bool = True) -> str:
@@ -164,19 +184,44 @@ class ImageExtractor(Extractor):
     def supports(self, path: Path) -> bool:
         return path.suffix.lower() in self.ctx.scope_settings.image_exts
 
+    def __init__(self, ctx: ExtractContext) -> None:
+        super().__init__(ctx)
+        # perceptual hash -> text, for the images of this run: a copy is not OCR'd again
+        self._by_look: OrderedDict[str, str] = OrderedDict()
+
     def extract(self, path: Path) -> Iterable[Chunk]:
-        Image.MAX_IMAGE_PIXELS = self.ctx.images.max_decode_pixels
+        info = path.stat()
         try:
-            image = Image.open(path)
+            image = Image.open(path)  # reads the header only: the size is known before decoding
+            width, height = image.size
+            if width * height > self.ctx.images.max_decode_pixels:
+                raise ExtractError(f"image too large to decode safely ({width}x{height})")
+            # JPEGs can be decoded at a reduced size, much faster; nothing below needs more.
+            scale = _WORKING_SIZE / max(width, height)
+            if scale < 1:  # keeps the aspect ratio, so the decoder can halve both sides
+                image.draft("RGB", (max(1, round(width * scale)), max(1, round(height * scale))))
             image.load()
         except (OSError, ValueError, Image.DecompressionBombError) as exc:
             raise ExtractError(f"unreadable image: {exc}") from exc
-        width, height = image.size
         min_pixels = self.ctx.images.min_pixels
         if width < min_pixels and height < min_pixels:
             raise ExtractError("image too small")
-        make_thumbnail(self.ctx, image, xxhash.xxh3_64_hexdigest(path.read_bytes()))
-        body = describe(self.ctx, image)
+        key = thumbnail_key(path, info.st_mtime_ns, info.st_size)
+        make_thumbnail(self.ctx, image, key)
+        body = self._described(image)
         # Even with no text, the file name makes the image findable by name.
         text = f"Image file: {path.name} ({width}x{height})\n{body}".strip()
         return [Chunk(text, KIND_IMAGE, path.name)]
+
+    def _described(self, image: Image.Image) -> str:
+        """OCR and caption, reusing the result for an image that looks identical to one seen."""
+        look = phash(image)
+        cached = self._by_look.get(look)
+        if cached is not None:
+            self._by_look.move_to_end(look)
+            return cached
+        body = describe(self.ctx, image)
+        self._by_look[look] = body
+        if len(self._by_look) > _LOOK_CACHE_SIZE:
+            self._by_look.popitem(last=False)
+        return body

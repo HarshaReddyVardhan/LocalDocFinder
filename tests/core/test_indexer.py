@@ -440,3 +440,63 @@ class TestVersionGroupingCost:
         )
         env.indexer.assign_version_groups()
         assert len(updates) == 1  # six near-identical resumes: one group, one write
+
+
+class TestThumbnailCleanup:
+    @staticmethod
+    def with_thumbnails(env: "Env", tmp_path: Path) -> Path:
+        from vector_embed.core.extractors.base import ExtractContext, ExtractorSet
+
+        thumbs = tmp_path / "thumbs"
+        env.indexer.extractors = ExtractorSet(
+            ExtractContext(
+                env.scope, env.settings.scope, chunking=env.settings.chunking, thumbs_dir=thumbs
+            )
+        )
+        return thumbs
+
+    @staticmethod
+    def picture(env: "Env", name: str, color: str) -> str:
+        from PIL import Image
+
+        path = env.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (400, 300), color).save(path)
+        return str(path)
+
+    def test_deleting_an_image_removes_its_thumbnail(self, env: "Env", tmp_path: Path) -> None:
+        thumbs = self.with_thumbnails(env, tmp_path)
+        path = self.picture(env, "shots/a.png", "red")
+        env.indexer.index_paths([path])
+        assert len(list(thumbs.glob("*.jpg"))) == 1
+        Path(path).unlink()
+        env.state.enqueue(path, "delete", delay=0)
+        env.indexer.process(env.state.claim(10, ignore_debounce=True))
+        assert list(thumbs.glob("*.jpg")) == []
+
+    def test_replacing_an_image_does_not_leave_the_old_thumbnail_behind(
+        self, env: "Env", tmp_path: Path
+    ) -> None:
+        thumbs = self.with_thumbnails(env, tmp_path)
+        path = self.picture(env, "shots/b.png", "red")
+        env.indexer.index_paths([path])
+        (old,) = thumbs.glob("*.jpg")
+        os.utime(path, ns=(1_000_000_000, 2_000_000_000_000))  # a visibly newer version
+        from PIL import Image
+
+        Image.new("RGB", (420, 300), "blue").save(path)
+        env.indexer.index_paths([path])
+        remaining = list(thumbs.glob("*.jpg"))
+        assert len(remaining) == 1
+        assert remaining[0] != old
+
+    def test_other_files_never_touch_the_thumbnails(self, env: "Env", tmp_path: Path) -> None:
+        thumbs = self.with_thumbnails(env, tmp_path)
+        keep = self.picture(env, "keep.png", "green")
+        env.indexer.index_paths([keep])
+        note = write(env, "n.txt", "plain text " * 10)
+        env.indexer.index_paths([note])
+        Path(note).unlink()
+        env.state.enqueue(note, "delete", delay=0)
+        env.indexer.process(env.state.claim(10, ignore_debounce=True))
+        assert len(list(thumbs.glob("*.jpg"))) == 1

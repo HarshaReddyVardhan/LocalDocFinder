@@ -188,3 +188,70 @@ class TestOcrModule:
         image = Image.new("RGB", (900, 160), "white")
         ImageDraw.Draw(image).text((20, 50), "INVOICE 2026 PAYMENT", fill="black", font_size=48)
         assert "INVOICE" in engine.ocr_image(image).upper()
+
+
+class TestImageCost:
+    def test_the_decode_limit_is_checked_without_touching_a_global(
+        self, build_with_ocr: Build, write: Writer
+    ) -> None:
+        before = Image.MAX_IMAGE_PIXELS
+        small_limit = ImageSettings(max_decode_pixels=10_000)
+        with pytest.raises(ExtractError, match="too large"):
+            build_with_ocr(small_limit).extract(write("big.png", png_bytes((300, 300))))
+        assert before == Image.MAX_IMAGE_PIXELS  # PIL's own setting is left alone
+
+    def test_jpegs_are_decoded_at_a_reduced_size_and_the_real_size_is_reported(
+        self, build_with_ocr: Build, write: Writer
+    ) -> None:
+        buffer = io.BytesIO()
+        Image.new("RGB", (8000, 6000), "white").save(buffer, format="JPEG", quality=50)
+        seen: list[tuple[int, int]] = []
+        engine = FakeOcr()
+        original = engine.ocr_image
+
+        def spy(image: Image.Image) -> str:
+            seen.append(image.size)
+            return original(image)
+
+        engine.ocr_image = spy  # type: ignore[method-assign]
+        chunks = build_with_ocr(engine=engine).extract(write("huge.jpg", buffer.getvalue()))
+        assert "(8000x6000)" in chunks[0].text  # what the user sees is the real size
+        assert max(seen[0]) <= 4000  # but the OCR was given a much smaller decode
+
+    def test_the_thumbnail_is_named_from_the_path_and_version_not_the_file_bytes(
+        self, build_with_ocr: Build, write: Writer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        extractors = build_with_ocr(thumbs=True)
+        path = write("t.png", png_bytes((900, 600)))
+        reads: list[str] = []
+        original = Path.read_bytes
+        monkeypatch.setattr(
+            Path, "read_bytes", lambda self: reads.append(self.name) or original(self)
+        )
+        extractors.extract(path)
+        assert reads == []  # the image is not read a second time just to name its thumbnail
+        info = path.stat()
+        expected = image_mod.thumbnail_key(path, info.st_mtime_ns, info.st_size)
+        assert (tmp_path / "thumbs" / f"{expected}.jpg").is_file()
+        assert image_mod.thumbnail_path(tmp_path / "thumbs", path).is_file()
+
+    def test_thumbnail_removal_is_safe_when_nothing_exists(self, tmp_path: Path) -> None:
+        image_mod.remove_thumbnail(tmp_path / "thumbs", "x.png", 1, 1)
+        image_mod.remove_thumbnail(None, "x.png", 1, 1)
+
+    def test_an_identical_looking_image_is_not_ocrd_again(
+        self, build_with_ocr: Build, write: Writer, ocr: FakeOcr
+    ) -> None:
+        extractors = build_with_ocr()
+        first = extractors.extract(write("one.png", png_bytes((300, 300), "white")))
+        copy = extractors.extract(write("copy.png", png_bytes((300, 300), "white")))
+        assert ocr.calls == 1
+        assert first[0].text.split("\n", 1)[1] == copy[0].text.split("\n", 1)[1]
+        other = Image.new("RGB", (300, 300), "white")
+        for x in range(0, 300, 20):  # a visibly different picture
+            for y in range(300):
+                other.putpixel((x, y), (0, 0, 0))
+        buffer = io.BytesIO()
+        other.save(buffer, format="PNG")
+        extractors.extract(write("different.png", buffer.getvalue()))
+        assert ocr.calls == 2

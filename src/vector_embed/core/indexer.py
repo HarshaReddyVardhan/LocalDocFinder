@@ -18,6 +18,7 @@ import xxhash
 from vector_embed.core.doctypes.base import DocInfo, DocTypeClassifierSet
 from vector_embed.core.doctypes.versions import VersionCandidate, group_versions
 from vector_embed.core.extractors.base import Chunk, ExtractError, ExtractorSet
+from vector_embed.core.extractors.image import remove_thumbnail
 from vector_embed.core.privacy.mask import strip_secret_tokens
 from vector_embed.core.projects import Projects
 from vector_embed.core.providers.base import EmbedKind
@@ -202,14 +203,25 @@ class Indexer:
         self.store.replace_rows(touched, rows)
         self.store.replace_documents(touched, doc_rows)
         for item in prepared:
+            self._drop_thumbnail(item.path)  # the old version's thumbnail is now orphaned
             self.state.manifest_set(item.path, item.mtime_ns, item.size, item.content_hash)
             finished.append((item.path, item.seq))
             self.stats.files += 1
         for path, seq in deletes:
+            self._drop_thumbnail(path)
             self.state.manifest_delete(path)
             finished.append((path, seq))
             self.stats.deleted += 1
         return finished
+
+    def _drop_thumbnail(self, path: str) -> None:
+        """Remove the stored thumbnail of ``path``'s last indexed version, if it was an image."""
+        ctx = self.extractors.ctx
+        if Path(path).suffix.lower() not in ctx.scope_settings.image_exts:
+            return
+        entry = self.state.manifest_get(path)
+        if entry is not None:
+            remove_thumbnail(ctx.thumbs_dir, path, entry.mtime_ns, entry.size)
 
     def _prepare_all(
         self, items: Sequence[QueueItem], force: bool
