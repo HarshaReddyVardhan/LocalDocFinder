@@ -12,21 +12,21 @@ dependencies = [
     "ollama>=0.4",
     "openai>=1.40",
     "keyring>=25",
-    "lancedb",
-    "pyarrow",
-    "numpy",
+    "lancedb>=0.30,<1",
+    "pyarrow>=20,<27",
+    "numpy>=2,<3",
     "xxhash",
     "watchdog",
     "pyyaml",
     "tomli-w>=1.0",
-    "pymupdf",
+    "pymupdf>=1.26,<2",
     "python-docx",
     "python-pptx",
     "tree-sitter-language-pack",
     "nvidia-ml-py",
     "pillow",
     "imagehash",
-    "PySide6",
+    "PySide6>=6.9,<7",
     "winrt-runtime; sys_platform == 'win32'",
     "winrt-Windows.Foundation; sys_platform == 'win32'",
     "winrt-Windows.Foundation.Collections; sys_platform == 'win32'",
@@ -108,7 +108,7 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "src"]   # "." lets tests import shared helpers as tests.core.*
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers --cov=vector_embed --cov-report=term:skip-covered --cov-fail-under=80"
 markers = ["ollama: needs a running Ollama server with the model pulled"]
 
 # ---------------------------------------------------------------- coverage

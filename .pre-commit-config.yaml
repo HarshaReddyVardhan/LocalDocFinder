@@ -30,3 +30,10 @@ repos:
         types: [python]
         pass_filenames: false
         files: ^src/
+      - id: pytest
+        name: pytest
+        entry: .venv\Scripts\python.exe -m pytest -q
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-push]  # the suite takes a minute or two; commits stay fast
