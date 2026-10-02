@@ -1,0 +1,425 @@
+"""SQLite state: manifest, persistent queue, meta, chat sessions, locks, model catalog, usage.
+
+Light enough for the always-on watcher (no ML imports). The schema version lives in
+``PRAGMA user_version`` and ``MIGRATIONS`` upgrades older databases at open time.
+"""
+
+import json
+import os
+import sqlite3
+import threading
+import time
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from pathlib import Path
+from types import TracebackType
+from typing import Any, NamedTuple, Self
+
+_MAX_ATTEMPTS = 3
+_FAR_FUTURE = 1e18
+STATE_FILENAME = "state.sqlite"
+
+_SCHEMA_V1 = """
+CREATE TABLE manifest(
+    path TEXT PRIMARY KEY, mtime_ns INTEGER NOT NULL, size INTEGER NOT NULL,
+    content_hash TEXT NOT NULL, indexed_at REAL NOT NULL);
+CREATE TABLE queue(
+    path TEXT PRIMARY KEY, op TEXT NOT NULL, priority REAL NOT NULL DEFAULT 0,
+    not_before REAL NOT NULL DEFAULT 0, seq INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE chat_sessions(
+    id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, created_at REAL NOT NULL,
+    updated_at REAL NOT NULL, context_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE chat_messages(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    role TEXT NOT NULL, content TEXT NOT NULL, created_at REAL NOT NULL);
+CREATE INDEX chat_messages_session ON chat_messages(session_id, id);
+CREATE TABLE locks(
+    name TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at REAL NOT NULL);
+CREATE TABLE models(
+    name TEXT NOT NULL, provider TEXT NOT NULL, size_bytes INTEGER, parameter_size TEXT,
+    quantization TEXT, context_length INTEGER, discovered_at REAL NOT NULL,
+    PRIMARY KEY(provider, name));
+CREATE TABLE model_capabilities(
+    provider TEXT NOT NULL, name TEXT NOT NULL, capability TEXT NOT NULL,
+    PRIMARY KEY(provider, name, capability));
+CREATE TABLE usage(
+    id INTEGER PRIMARY KEY AUTOINCREMENT, at REAL NOT NULL, provider TEXT NOT NULL,
+    model TEXT NOT NULL, prompt_tokens INTEGER NOT NULL, completion_tokens INTEGER NOT NULL,
+    cost_usd REAL NOT NULL);
+"""
+
+Migration = Callable[[sqlite3.Connection], None]
+# Index i upgrades schema version i+1 -> i+2; version 1 is created by _SCHEMA_V1.
+MIGRATIONS: tuple[Migration, ...] = ()
+SCHEMA_VERSION = 1 + len(MIGRATIONS)
+
+
+class QueueItem(NamedTuple):
+    path: str
+    op: str
+    seq: int
+
+
+class ManifestEntry(NamedTuple):
+    mtime_ns: int
+    size: int
+    content_hash: str
+
+
+@dataclass(frozen=True)
+class ChatMessage:
+    role: str
+    content: str
+    created_at: float
+
+
+@dataclass(frozen=True)
+class ChatSession:
+    id: int
+    title: str
+    updated_at: float
+
+
+@dataclass(frozen=True)
+class UsageTotal:
+    provider: str
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
+    cost_usd: float
+
+
+class StateError(RuntimeError):
+    """The state database is unusable (for example, written by a newer version)."""
+
+
+class StateDb:
+    """Thread-safe wrapper around the state database."""
+
+    def __init__(self, data_dir: Path, *, clock: Callable[[], float] = time.time) -> None:
+        self.data_dir = Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._clock = clock
+        self._lock = threading.RLock()
+        self._sql = sqlite3.connect(
+            self.data_dir / STATE_FILENAME,
+            timeout=30,
+            check_same_thread=False,
+            isolation_level=None,
+        )
+        self._sql.execute("PRAGMA journal_mode=WAL")
+        self._sql.execute("PRAGMA synchronous=NORMAL")
+        self._sql.execute("PRAGMA foreign_keys=ON")
+        try:
+            self._upgrade()
+        except BaseException:
+            self._sql.close()
+            raise
+
+    def _upgrade(self) -> None:
+        with self._lock:
+            version = int(self._sql.execute("PRAGMA user_version").fetchone()[0])
+            if version > SCHEMA_VERSION:
+                raise StateError(f"state schema {version} is newer than supported {SCHEMA_VERSION}")
+            if version == 0:
+                self._sql.executescript("BEGIN;" + _SCHEMA_V1 + "COMMIT;")
+                version = 1
+            for target in range(version + 1, SCHEMA_VERSION + 1):
+                self._sql.execute("BEGIN")
+                MIGRATIONS[target - 2](self._sql)
+                self._sql.execute(f"PRAGMA user_version={target}")
+                self._sql.execute("COMMIT")
+            self._sql.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+
+    # ------------------------------------------------------------------ lifecycle
+    def close(self) -> None:
+        with self._lock:
+            self._sql.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def _one(self, sql: str, params: tuple[Any, ...] = ()) -> tuple[Any, ...] | None:
+        with self._lock:
+            row: tuple[Any, ...] | None = self._sql.execute(sql, params).fetchone()
+        return row
+
+    def _all(self, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+        with self._lock:
+            return self._sql.execute(sql, params).fetchall()
+
+    def _run(self, sql: str, params: tuple[Any, ...] = ()) -> None:
+        with self._lock:
+            self._sql.execute(sql, params)
+
+    # ------------------------------------------------------------------ meta
+    def get_meta(self, key: str, default: str | None = None) -> str | None:
+        row = self._one("SELECT value FROM meta WHERE key=?", (key,))
+        return str(row[0]) if row else default
+
+    def set_meta(self, key: str, value: str) -> None:
+        self._run(
+            "INSERT INTO meta(key,value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+
+    # ------------------------------------------------------------------ manifest
+    def manifest_get(self, path: str) -> ManifestEntry | None:
+        row = self._one("SELECT mtime_ns,size,content_hash FROM manifest WHERE path=?", (path,))
+        return ManifestEntry(*row) if row else None
+
+    def manifest_all(self) -> dict[str, tuple[int, int]]:
+        return {p: (m, s) for p, m, s in self._all("SELECT path,mtime_ns,size FROM manifest")}
+
+    def manifest_set(self, path: str, mtime_ns: int, size: int, content_hash: str) -> None:
+        self._run(
+            "INSERT INTO manifest(path,mtime_ns,size,content_hash,indexed_at) VALUES(?,?,?,?,?) "
+            "ON CONFLICT(path) DO UPDATE SET mtime_ns=excluded.mtime_ns,size=excluded.size,"
+            "content_hash=excluded.content_hash,indexed_at=excluded.indexed_at",
+            (path, mtime_ns, size, content_hash, self._clock()),
+        )
+
+    def manifest_delete(self, path: str) -> None:
+        self._run("DELETE FROM manifest WHERE path=?", (path,))
+
+    def manifest_clear(self) -> None:
+        self._run("DELETE FROM manifest")
+
+    def manifest_under(self, prefix: str) -> list[str]:
+        """Manifest paths inside a directory (case-insensitive, as Windows paths are)."""
+        prefix = prefix.rstrip("\\/") + os.sep
+        rows = self._all(
+            "SELECT path FROM manifest WHERE substr(path,1,?) = ? COLLATE NOCASE",
+            (len(prefix), prefix),
+        )
+        return [r[0] for r in rows]
+
+    def manifest_count(self) -> int:
+        return int(self._one("SELECT COUNT(*) FROM manifest")[0])  # type: ignore[index]
+
+    # ------------------------------------------------------------------ queue
+    _UPSERT_QUEUE = (
+        "INSERT INTO queue(path,op,priority,not_before,seq,attempts) VALUES(?,?,?,?,?,0) "
+        "ON CONFLICT(path) DO UPDATE SET op=excluded.op,priority=excluded.priority,"
+        "not_before=excluded.not_before,seq=excluded.seq,attempts=0"
+    )
+
+    def enqueue(
+        self, path: str, op: str = "upsert", priority: float = 0.0, delay: float = 0.0
+    ) -> None:
+        """Queue ``path``; re-queueing resets the debounce and attempt count."""
+        self._run(self._UPSERT_QUEUE, (path, op, priority, self._clock() + delay, time.time_ns()))
+
+    def enqueue_many(self, items: Iterable[tuple[str, str, float]]) -> int:
+        """Queue ``(path, op, priority)`` triples in one transaction; returns how many."""
+        count = 0
+        now = self._clock()
+        with self._lock:
+            self._sql.execute("BEGIN")
+            try:
+                for path, op, priority in items:
+                    self._sql.execute(self._UPSERT_QUEUE, (path, op, priority, now, time.time_ns()))
+                    count += 1
+                self._sql.execute("COMMIT")
+            except BaseException:
+                self._sql.execute("ROLLBACK")
+                raise
+        return count
+
+    def queue_size(self, due_only: bool = False) -> int:
+        if due_only:
+            row = self._one("SELECT COUNT(*) FROM queue WHERE not_before<=?", (self._clock(),))
+        else:
+            row = self._one("SELECT COUNT(*) FROM queue")
+        return int(row[0]) if row else 0
+
+    def claim(self, limit: int, ignore_debounce: bool = False) -> list[QueueItem]:
+        """Highest priority first. Rows stay queued until ``done`` so a crash loses nothing."""
+        cutoff = _FAR_FUTURE if ignore_debounce else self._clock()
+        rows = self._all(
+            "SELECT path,op,seq FROM queue WHERE not_before<=? AND attempts<? "
+            "ORDER BY priority DESC, seq LIMIT ?",
+            (cutoff, _MAX_ATTEMPTS, limit),
+        )
+        return [QueueItem(*r) for r in rows]
+
+    def done(self, items: Iterable[tuple[str, int]]) -> None:
+        """Remove processed rows, unless a path was re-queued (its ``seq`` changed) meanwhile."""
+        with self._lock:
+            self._sql.execute("BEGIN")
+            for path, seq in items:
+                self._sql.execute("DELETE FROM queue WHERE path=? AND seq=?", (path, seq))
+            self._sql.execute("COMMIT")
+
+    def fail(self, path: str, delay: float = 300.0) -> None:
+        self._run(
+            "UPDATE queue SET attempts=attempts+1, not_before=? WHERE path=?",
+            (self._clock() + delay, path),
+        )
+
+    # ------------------------------------------------------------------ locks
+    def acquire_lock(self, name: str, owner: str, ttl_seconds: float) -> bool:
+        """Take (or refresh, when ``owner`` already holds it) a named lease lock."""
+        now = self._clock()
+        with self._lock:
+            row = self._sql.execute(
+                "SELECT owner,expires_at FROM locks WHERE name=?", (name,)
+            ).fetchone()
+            if row and row[1] > now and row[0] != owner:
+                return False
+            self._sql.execute(
+                "INSERT INTO locks(name,owner,expires_at) VALUES(?,?,?) "
+                "ON CONFLICT(name) DO UPDATE SET owner=excluded.owner,"
+                "expires_at=excluded.expires_at",
+                (name, owner, now + ttl_seconds),
+            )
+        return True
+
+    def release_lock(self, name: str, owner: str) -> None:
+        self._run("DELETE FROM locks WHERE name=? AND owner=?", (name, owner))
+
+    def lock_held(self, name: str) -> bool:
+        row = self._one("SELECT expires_at FROM locks WHERE name=?", (name,))
+        return bool(row and row[0] > self._clock())
+
+    # ------------------------------------------------------------------ chat sessions
+    def create_session(self, title: str, context: dict[str, Any] | None = None) -> int:
+        now = self._clock()
+        with self._lock:
+            cursor = self._sql.execute(
+                "INSERT INTO chat_sessions(title,created_at,updated_at,context_json) "
+                "VALUES(?,?,?,?)",
+                (title, now, now, json.dumps(context or {})),
+            )
+        return int(cursor.lastrowid or 0)
+
+    def add_message(self, session_id: int, role: str, content: str) -> None:
+        now = self._clock()
+        with self._lock:
+            self._sql.execute(
+                "INSERT INTO chat_messages(session_id,role,content,created_at) VALUES(?,?,?,?)",
+                (session_id, role, content, now),
+            )
+            self._sql.execute("UPDATE chat_sessions SET updated_at=? WHERE id=?", (now, session_id))
+
+    def messages(self, session_id: int) -> list[ChatMessage]:
+        rows = self._all(
+            "SELECT role,content,created_at FROM chat_messages WHERE session_id=? ORDER BY id",
+            (session_id,),
+        )
+        return [ChatMessage(*r) for r in rows]
+
+    def session_context(self, session_id: int) -> dict[str, Any]:
+        row = self._one("SELECT context_json FROM chat_sessions WHERE id=?", (session_id,))
+        return dict(json.loads(row[0])) if row else {}
+
+    def sessions(self, limit: int = 50) -> list[ChatSession]:
+        rows = self._all(
+            "SELECT id,title,updated_at FROM chat_sessions ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
+        )
+        return [ChatSession(*r) for r in rows]
+
+    # ------------------------------------------------------------------ model catalog
+    def replace_models(self, provider: str, models: Iterable[dict[str, Any]]) -> None:
+        """Replace the discovered model list of ``provider``.
+
+        Each item: ``name`` plus optional ``size_bytes``, ``parameter_size``, ``quantization``,
+        ``context_length`` and ``capabilities`` (list of strings).
+        """
+        now = self._clock()
+        with self._lock:
+            self._sql.execute("BEGIN")
+            self._sql.execute("DELETE FROM models WHERE provider=?", (provider,))
+            self._sql.execute("DELETE FROM model_capabilities WHERE provider=?", (provider,))
+            for item in models:
+                self._sql.execute(
+                    "INSERT INTO models VALUES(?,?,?,?,?,?,?)",
+                    (
+                        item["name"],
+                        provider,
+                        item.get("size_bytes"),
+                        item.get("parameter_size"),
+                        item.get("quantization"),
+                        item.get("context_length"),
+                        now,
+                    ),
+                )
+                for capability in item.get("capabilities", ()):
+                    self._sql.execute(
+                        "INSERT OR IGNORE INTO model_capabilities VALUES(?,?,?)",
+                        (provider, item["name"], capability),
+                    )
+            self._sql.execute("COMMIT")
+
+    def list_models(self, provider: str | None = None) -> list[dict[str, Any]]:
+        columns = (
+            "SELECT name,provider,size_bytes,parameter_size,quantization,context_length FROM models"
+        )
+        if provider:
+            rows = self._all(columns + " WHERE provider=? ORDER BY provider,name", (provider,))
+        else:
+            rows = self._all(columns + " ORDER BY provider,name")
+        out: list[dict[str, Any]] = []
+        for name, prov, size, params_, quant, ctx in rows:
+            caps = self._all(
+                "SELECT capability FROM model_capabilities WHERE provider=? AND name=? "
+                "ORDER BY capability",
+                (prov, name),
+            )
+            out.append(
+                {
+                    "name": name,
+                    "provider": prov,
+                    "size_bytes": size,
+                    "parameter_size": params_,
+                    "quantization": quant,
+                    "context_length": ctx,
+                    "capabilities": [c[0] for c in caps],
+                }
+            )
+        return out
+
+    # ------------------------------------------------------------------ usage
+    def record_usage(
+        self,
+        provider: str,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cost_usd: float = 0.0,
+    ) -> None:
+        self._run(
+            "INSERT INTO usage(at,provider,model,prompt_tokens,completion_tokens,cost_usd) "
+            "VALUES(?,?,?,?,?,?)",
+            (self._clock(), provider, model, prompt_tokens, completion_tokens, cost_usd),
+        )
+
+    def usage_totals(self, since: float = 0.0) -> list[UsageTotal]:
+        rows = self._all(
+            "SELECT provider,model,SUM(prompt_tokens),SUM(completion_tokens),SUM(cost_usd) "
+            "FROM usage WHERE at>=? GROUP BY provider,model ORDER BY provider,model",
+            (since,),
+        )
+        return [UsageTotal(p, m, int(a), int(b), float(c)) for p, m, a, b, c in rows]
+
+    def spend_since(self, since: float, provider: str | None = None) -> float:
+        if provider:
+            row = self._one(
+                "SELECT COALESCE(SUM(cost_usd),0) FROM usage WHERE at>=? AND provider=?",
+                (since, provider),
+            )
+        else:
+            row = self._one("SELECT COALESCE(SUM(cost_usd),0) FROM usage WHERE at>=?", (since,))
+        return float(row[0]) if row else 0.0
