@@ -98,6 +98,7 @@ class TestCandidates:
     ) -> None:
         recall(qapp, panel)
         panel.buttons["add"].click()
+        wait_for(qapp, lambda: panel.candidates.rowCount() == 4)  # read in the background
         assert panel.candidates.rowCount() == 4
         assert any(panel.candidates.item(r, 1).text() == "Resume_extra.txt" for r in range(4))
 
@@ -111,7 +112,26 @@ class TestCandidates:
         failing.begin(JD)
         wait_for(qapp, lambda: failing.candidates.rowCount() > 0)
         failing.add_file()
+        wait_for(qapp, lambda: "secret" in failing.footer.text())
         assert "secret" in failing.footer.text()
+
+    def test_adding_a_file_does_not_block_the_ui_thread(
+        self, qapp: QApplication, panel: MatchPanel, controller: MatchController
+    ) -> None:
+        import threading
+
+        recall(qapp, panel)
+        threads: list[str] = []
+        original = controller.add_file
+
+        def spy(path: str) -> object:
+            threads.append(threading.current_thread().name)
+            return original(path)
+
+        controller.add_file = spy  # type: ignore[method-assign]
+        panel.buttons["add"].click()
+        wait_for(qapp, lambda: threads)
+        assert threads[0] != threading.main_thread().name
 
     def test_no_candidates_says_so(self, qapp: QApplication, panel: MatchPanel) -> None:
         panel.doc_type.setCurrentText("invoice")

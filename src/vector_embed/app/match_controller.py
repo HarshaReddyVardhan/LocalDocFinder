@@ -1,5 +1,6 @@
 """Qt-free logic behind the Match panel: the run state, live token footer, and step helpers."""
 
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -21,6 +22,7 @@ JSON_FALLBACK_NOTE = (
     "each request: 'Reply with JSON matching: <the response schema>'. It contains no "
     "document text."
 )
+_ROUTE_TTL = 5.0  # seconds a worked-out route is reused
 _TOKENS_PER_REQUIREMENT = 15
 _OUTPUT_TOKENS_PER_DOCUMENT = 400
 
@@ -40,11 +42,13 @@ class MatchController:
         self._factory = context_factory
         self._destination = destination or self._default_destination
         self._pipeline: MatchPipeline | None = None
+        self._destination_cache: tuple[float, str] | None = None
         self.run: MatchRun | None = None
 
     def reset_context(self) -> None:
         """A setting changed: rebuild the pipeline on next use (a finished run stays visible)."""
         self._pipeline = None
+        self._destination_cache = None
 
     @property
     def pipeline(self) -> MatchPipeline:
@@ -100,6 +104,7 @@ class MatchController:
         self, jd_text: str, doc_type: str | None = None, all_versions: bool = False
     ) -> MatchRun:
         self.revoke_cloud_consent()  # consent belongs to one run, never the next
+        self._destination_cache = None
         self.run = self.pipeline.start(jd_text, doc_type, all_versions)
         return self.run
 
@@ -154,8 +159,21 @@ class MatchController:
         """Where this document would be judged: locked files always stay local."""
         if candidate.locked:
             return LOCAL
+        return self._open_destination()
+
+    def _open_destination(self) -> str:
+        """The route for an ordinary document, worked out once and reused for every table row.
+
+        Resolving it checks the model registry and the hardware; doing that per row, on each
+        redraw and footer update, made the table sluggish.
+        """
+        now = time.monotonic()
+        if self._destination_cache is not None and now - self._destination_cache[0] < _ROUTE_TTL:
+            return self._destination_cache[1]
         cloud = self.pipeline.gateway.cloud_destination(ROLE_MATCH_SCORER)
-        return f"☁ {cloud}" if cloud else LOCAL
+        label = f"☁ {cloud}" if cloud else LOCAL
+        self._destination_cache = (now, label)
+        return label
 
     def footer(self) -> str:
         """``JD + 3 documents ≈ 7.1k tokens → local`` for what Score would send."""

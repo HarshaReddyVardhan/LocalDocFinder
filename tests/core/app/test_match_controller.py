@@ -157,3 +157,23 @@ def test_match_runs_as_one_session_and_unloads_at_the_end(
     assert chat.client.calls[-1][0] == "generate"  # the explicit unload
     assert chat.client.calls[-1][1]["keep_alive"] == 0
     controller.finish()  # a second finish is harmless
+
+
+def test_the_route_is_worked_out_once_for_all_table_rows(
+    controller: MatchController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = controller.start(JD)
+    calls: list[int] = []
+    gateway = controller.pipeline.gateway
+    original = gateway.cloud_destination
+    monkeypatch.setattr(
+        gateway, "cloud_destination", lambda role: calls.append(1) or original(role)
+    )
+    for _ in range(5):  # a redraw: every row, plus the footer, ask where it would go
+        for candidate in run.candidates:
+            controller.candidate_row(candidate)
+        controller.footer()
+    assert len(calls) <= 1
+    controller.reset_context()  # a setting changed: look again
+    controller.candidate_row(run.candidates[0])
+    assert len(calls) == 2

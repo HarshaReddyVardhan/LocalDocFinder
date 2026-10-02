@@ -6,6 +6,7 @@ scored. The footer shows exactly what will be sent and where.
 
 import logging
 from collections.abc import Callable
+from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtWidgets import (
@@ -214,16 +215,15 @@ class MatchPanel(QWidget):
             self._fill_candidates(self._controller.run)
 
     def add_file(self) -> None:
-        """Include a document that recall missed (picked with a file dialog)."""
+        """Include a document that recall missed (picked with a file dialog).
+
+        Reading it (and OCR for a scan) can take seconds, so it runs in the background.
+        """
         path = self._pick_file()
         if not path or self._controller.run is None:
             return
-        try:
-            self._controller.add_file(path)
-        except _KNOWN_ERRORS as exc:
-            self._say(str(exc))
-            return
-        self._fill_candidates(self._controller.run)
+        self._say(f"reading {Path(path).name}…")
+        self._pool.start(_Task("add_file", lambda: self._controller.add_file(path), self._signals))
 
     # ------------------------------------------------------------------ step 2: checklist
     def request_checklist(self) -> None:
@@ -342,6 +342,8 @@ class MatchPanel(QWidget):
                 self._say("no matching documents found; index some first")
         elif name == "checklist":
             self._fill_checklist(result)  # type: ignore[arg-type]
+        elif name == "add_file" and run is not None:
+            self._fill_candidates(run)
         elif name == "preview":
             self._after_preview(result if isinstance(result, CloudPreview) else None)
         elif name == "score" and run is not None:
