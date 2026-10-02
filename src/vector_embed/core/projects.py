@@ -50,6 +50,10 @@ class Projects:
         # dir -> (checked_at, .gitignore mtime_ns, compiled spec or None)
         self._spec_cache: dict[str, tuple[float, int | None, pathspec.GitIgnoreSpec | None]] = {}
 
+    @property
+    def roots(self) -> tuple[Path, ...]:
+        return self._roots
+
     # ------------------------------------------------------------------ project roots
     def _has_marker(self, directory: Path) -> bool:
         if any((directory / marker).exists() for marker in self._settings.project_markers):

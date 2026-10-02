@@ -275,6 +275,14 @@ class LanceStore:
         if rows:
             table.add(rows)
 
+    def set_version_groups(self, groups: dict[str, str], candidates: Iterable[str]) -> None:
+        """Write ``version_group`` for ``groups``; other ``candidates`` are reset to ungrouped."""
+        table = self.documents
+        assert table is not None, "store opened read-only"
+        for path in candidates:
+            group = groups.get(path, "")
+            table.update(where=f"path = {sql_quote(path)}", values={"version_group": group})
+
     # ------------------------------------------------------------------ queries
     def scan(self, name: str, columns: list[str], where: str = "", limit: int = 1000) -> list[Row]:
         table = self.table(name)
