@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from vector_embed.core.doctypes.base import PROTOTYPE_TEXTS, build_prototypes
+from vector_embed.core.documents import DocumentLoader
 from vector_embed.core.extractors.base import ExtractContext, ExtractorSet
 from vector_embed.core.extractors.image import OllamaCaptioner
 from vector_embed.core.extractors.ocr import WindowsOcr
@@ -136,11 +137,26 @@ def build_skill_context(
         fullscreen=fullscreen,
         refresh_seconds=settings.models.refresh_seconds,
     )
+    store = open_read_only_store(settings, state)
+    scope = build_scope(settings)
+    cache: list[ExtractorSet] = []
+
+    def extractors() -> ExtractorSet:  # built on first use: OCR setup is not free
+        if not cache:
+            cache.append(build_extractors(settings, scope, provider))
+        return cache[0]
+
     return SkillContext(
         settings=settings,
         state=state,
-        store=open_read_only_store(settings, state),
+        store=store,
         embedder=provider,
         power=power,
-        extras={"provider": provider, "models": registry, "llm": gateway},
+        extras={
+            "provider": provider,
+            "models": registry,
+            "llm": gateway,
+            "scope": scope,
+            "documents": DocumentLoader(store, scope, extractors),
+        },
     )

@@ -7,6 +7,7 @@ from tests.core.fakes import DIM, FakeEmbedder
 from tests.core.providers.fakes import FakeOllamaClient
 
 from vector_embed.core.doctypes.base import DocTypeClassifierSet
+from vector_embed.core.documents import DocumentLoader
 from vector_embed.core.extractors.base import ExtractContext, ExtractorSet
 from vector_embed.core.indexer import Indexer
 from vector_embed.core.llm import LlmGateway
@@ -149,5 +150,8 @@ def chat(skill_ctx: SkillContext, env: Env) -> Chat:
     provider = OllamaProvider(EmbeddingSettings(), client=client, sleep=lambda _s: None)
     registry = ModelRegistry(load_catalog(), [provider], env.state, hardware_probe=lambda: GPU)
     gateway = LlmGateway(env.settings.chat, registry, provider, env.state, skill_ctx.power)
-    skill_ctx.extras.update(llm=gateway, provider=provider, models=registry)
+    documents = DocumentLoader(env.store, env.scope, lambda: env.extractors)
+    skill_ctx.extras.update(
+        llm=gateway, provider=provider, models=registry, documents=documents, scope=env.scope
+    )
     return Chat(gateway, client, provider)
