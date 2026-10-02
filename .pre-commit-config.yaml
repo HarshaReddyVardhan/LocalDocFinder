@@ -10,14 +10,18 @@ repos:
         args: ["--maxkb=500"]
         exclude: ^uv\.lock$
       - id: detect-private-key
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.9.10
-    hooks:
-      - id: ruff
-        args: ["--fix"]
-      - id: ruff-format
   - repo: local
     hooks:
+      - id: ruff
+        name: ruff
+        entry: .venv\\Scripts\\ruff.exe check --fix --force-exclude
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format
+        entry: .venv\\Scripts\\ruff.exe format --force-exclude
+        language: system
+        types: [python]
       - id: mypy
         name: mypy
         entry: .venv\\Scripts\\python.exe -m mypy
