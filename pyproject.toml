@@ -92,6 +92,10 @@ files = ["src"]
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
+module = ["vector_embed.core.extractors.pdf"]
+disallow_untyped_calls = false  # pymupdf is only partially typed
+
+[[tool.mypy.overrides]]
 module = ["pathspec.*", "pyarrow.*", "lancedb.*", "pynvml.*", "winrt.*", "imagehash.*", "fitz.*"]
 ignore_missing_imports = true
 

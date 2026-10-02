@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeAlias
 
 from vector_embed.core.registry import Registry, discover_modules
 from vector_embed.core.scope import ScopePolicy
@@ -12,6 +12,8 @@ from vector_embed.core.settings import ChunkingSettings, ImageSettings, ScopeSet
 
 if TYPE_CHECKING:
     from PIL import Image
+
+Untyped: TypeAlias = Any  # objects from libraries without type information
 
 KIND_CODE = "code"
 KIND_OUTLINE = "outline"

@@ -1,13 +1,36 @@
+import io
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
-from vector_embed.core.extractors.base import ExtractContext, ExtractorSet
+from vector_embed.core.extractors.base import Captioner, ExtractContext, ExtractorSet, OcrEngine
 from vector_embed.core.scope import ScopePolicy
-from vector_embed.core.settings import ChunkingSettings, ScopeSettings
+from vector_embed.core.settings import ChunkingSettings, ImageSettings, ScopeSettings
 
 Writer = Callable[[str, str | bytes], Path]
+
+
+class FakeOcr:
+    """Returns canned text and counts calls."""
+
+    def __init__(self, text: str = "diagram of the OAuth login flow") -> None:
+        self.text = text
+        self.calls = 0
+
+    def available(self) -> bool:
+        return True
+
+    def ocr_image(self, image: Image.Image) -> str:
+        self.calls += 1
+        return self.text
+
+
+def png_bytes(size: tuple[int, int] = (300, 300), color: str = "white") -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", size, color).save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 @pytest.fixture
@@ -33,6 +56,43 @@ def with_chunking(ctx: ExtractContext) -> Callable[[ChunkingSettings], Extractor
 
 
 @pytest.fixture
+def no_merge(with_chunking: Callable[[ChunkingSettings], ExtractorSet]) -> ExtractorSet:
+    """Extractors that never merge small neighbouring chunks, so each unit stays visible."""
+    return with_chunking(ChunkingSettings(min_chunk_chars=0))
+
+
+@pytest.fixture
+def ocr() -> FakeOcr:
+    return FakeOcr()
+
+
+@pytest.fixture
+def build_with_ocr(
+    ctx: ExtractContext, ocr: FakeOcr, tmp_path: Path
+) -> Callable[..., ExtractorSet]:
+    """ExtractorSet wired with the fake OCR (and optionally captions / image limits)."""
+
+    def build(
+        images: ImageSettings | None = None,
+        captioner: Captioner | None = None,
+        engine: OcrEngine | None = None,
+        thumbs: bool = False,
+    ) -> ExtractorSet:
+        return ExtractorSet(
+            ExtractContext(
+                ctx.scope,
+                ctx.scope_settings,
+                images=images or ImageSettings(),
+                ocr=engine or ocr,
+                captioner=captioner,
+                thumbs_dir=tmp_path / "thumbs" if thumbs else None,
+            )
+        )
+
+    return build
+
+
+@pytest.fixture
 def write(tmp_path: Path) -> Writer:
     def _write(name: str, content: str | bytes) -> Path:
         path = tmp_path / name
@@ -44,9 +104,3 @@ def write(tmp_path: Path) -> Writer:
         return path
 
     return _write
-
-
-@pytest.fixture
-def no_merge(with_chunking: Callable[[ChunkingSettings], ExtractorSet]) -> ExtractorSet:
-    """Extractors that never merge small neighbouring chunks, so each unit stays visible."""
-    return with_chunking(ChunkingSettings(min_chunk_chars=0))
