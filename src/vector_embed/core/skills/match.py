@@ -5,6 +5,7 @@ same ``MatchPipeline`` step by step so the user can edit the checklist and the c
 """
 
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from pydantic import Field
@@ -83,11 +84,25 @@ class MatchSkill(Skill):
             select_top(run.candidates, params.top)
         return run
 
+    @contextmanager
+    def _session(self) -> Iterator[None]:
+        """Load the model once for all the calls of a match, and unload it when finished."""
+        gateway = self.pipeline.gateway
+        began = not gateway.session_active
+        if began:
+            gateway.begin_chat()
+        try:
+            yield
+        finally:
+            if began:
+                gateway.end_chat("match finished")
+
     def run(self, params: SkillInput) -> MatchRun:
         assert isinstance(params, MatchInput)
         run = self.prepare(params)
         if any(c.selected for c in run.candidates):
-            self.pipeline.score(run)
+            with self._session():
+                self.pipeline.score(run, session=True)
         return run
 
     def stream(self, params: SkillInput) -> Iterator[str]:

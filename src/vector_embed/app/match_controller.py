@@ -48,18 +48,36 @@ class MatchController:
         self.run = self.pipeline.start(jd_text, doc_type, all_versions)
         return self.run
 
+    def _ensure_session(self) -> None:
+        """One chat session for the whole match, so the model loads once instead of per call.
+
+        The window ends it (and unloads the model) when the user leaves Match or closes it.
+        """
+        gateway = self.pipeline.gateway
+        if not gateway.session_active:
+            gateway.begin_chat()
+
+    def finish(self) -> None:
+        """Unload the model now that the match is over."""
+        gateway = self.pipeline.gateway
+        if gateway.session_active:
+            gateway.end_chat("match finished")
+
     def checklist(self) -> list[Requirement]:
-        return self.pipeline.build_checklist(self._require())
+        self._ensure_session()
+        return self.pipeline.build_checklist(self._require(), session=True)
 
     def set_checklist(self, requirements: list[Requirement]) -> None:
         """Store the user's edits (ticked, un-ticked, re-weighted requirements)."""
         self._require().requirements = requirements
 
     def score(self, progress: Callable[[str], None] | None = None) -> list[DocumentScore]:
-        return self.pipeline.score(self._require(), progress)
+        self._ensure_session()
+        return self.pipeline.score(self._require(), progress, session=True)
 
     def verdict(self) -> Iterator[str]:
-        return self.pipeline.stream_verdict(self._require())
+        self._ensure_session()
+        return self.pipeline.stream_verdict(self._require(), session=True)
 
     def add_file(self, path: str) -> MatchCandidate:
         run = self._require()

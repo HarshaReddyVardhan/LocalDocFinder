@@ -308,6 +308,7 @@ class SearchWindow(QWidget):
         if mode not in self.available_modes():
             return
         leaving_chat = self._mode is Mode.CHAT
+        leaving_match = self._mode is Mode.MATCH and mode is not Mode.CHAT  # chat reuses the model
         self._mode = mode
         self._generation += 1  # invalidates anything still streaming
         if not leaving_chat:  # ending a chat cancels the stream itself, and waits for it
@@ -316,6 +317,8 @@ class SearchWindow(QWidget):
         self._apply_mode()
         if leaving_chat:
             self._end_chat("left chat mode")
+        elif leaving_match:
+            self._end_chat("left match mode")
         if mode is Mode.CHAT:
             self._begin_chat()
 

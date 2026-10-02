@@ -97,3 +97,19 @@ def test_pipeline_needs_a_document_loader(skill_ctx: SkillContext, chat: Chat) -
     skill_ctx.extras.pop("documents")
     with pytest.raises(RuntimeError, match="document loader"):
         pipeline_of(skill_ctx)
+
+
+def test_one_session_covers_every_call_and_the_model_is_unloaded_after(
+    skill: MatchSkill, chat: Chat
+) -> None:
+    skill.run(MatchInput(jd=JD, top=2))
+    assert all(call["keep_alive"] == "10m" for call in chat.chat_calls())
+    assert not chat.gateway.session_active
+    assert chat.client.calls[-1][1]["keep_alive"] == 0  # unloaded once, at the end
+
+
+def test_stream_also_unloads_at_the_end(skill: MatchSkill, chat: Chat) -> None:
+    chat.client.chat_reply = ["Jane is the best fit."]
+    "".join(skill.stream(MatchInput(jd=JD, top=2)))
+    assert not chat.gateway.session_active
+    assert chat.client.calls[-1][1]["keep_alive"] == 0

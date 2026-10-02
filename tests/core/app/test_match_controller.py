@@ -137,3 +137,23 @@ def test_candidate_rows(controller: MatchController, tmp_path: Path) -> None:
 def test_token_formatting() -> None:
     assert format_tokens(999) == "999"
     assert format_tokens(1500) == "1.5k"
+
+
+def test_match_runs_as_one_session_and_unloads_at_the_end(
+    controller: MatchController, chat: Chat
+) -> None:
+    gateway = chat.gateway
+    controller.start(JD)
+    controller.checklist()
+    assert gateway.session_active  # held across the steps: the model loads once
+    controller.score()
+    "".join(controller.verdict())
+    assert gateway.session_active
+    chat_calls = chat.chat_calls()
+    assert chat_calls
+    assert all(call["keep_alive"] == "10m" for call in chat_calls)  # never unloaded between calls
+    controller.finish()
+    assert not gateway.session_active
+    assert chat.client.calls[-1][0] == "generate"  # the explicit unload
+    assert chat.client.calls[-1][1]["keep_alive"] == 0
+    controller.finish()  # a second finish is harmless
