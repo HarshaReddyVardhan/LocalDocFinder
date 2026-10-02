@@ -471,6 +471,14 @@ class TestLifecycle:
         assert unloads == [1]  # the still-running worker was terminated and the model unloaded
         assert launcher.handles[0].terminated
 
+    def test_the_watcher_asks_for_a_reconcile_when_it_starts(
+        self, parts: tuple[Watcher, FakeGate, FakeLauncher, list[int]]
+    ) -> None:
+        w, *_ = parts
+        assert not w.reconcile_due()
+        w.request_startup_reconcile()  # what run() does first: the downtime sent no events
+        assert w.reconcile_due()
+
     def test_a_failing_tick_does_not_stop_the_loop(
         self,
         parts: tuple[Watcher, FakeGate, FakeLauncher, list[int]],

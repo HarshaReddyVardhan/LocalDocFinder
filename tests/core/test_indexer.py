@@ -263,6 +263,20 @@ class TestReconcile:
         assert result.interrupted
         assert env.state.queue_size() == 0
 
+    def test_an_interrupted_scan_keeps_what_it_found(
+        self, env: "Env", monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vector_embed.core.reconcile as reconcile_module
+
+        monkeypatch.setattr(reconcile_module, "_FLUSH_EVERY", 2)
+        for i in range(5):
+            write(env, f"f{i}.txt", f"file {i} " * 10)
+        checks = iter([False, False, False, False, True])  # stop on the fifth file
+        result = reconcile(env.state, env.projects, env.scope, stop_check=lambda: next(checks))
+        assert result.interrupted
+        assert result.queued == 4 == env.state.queue_size()  # not thrown away
+        assert env.state.get_meta("last_reconcile") is None  # but the scan is not "complete"
+
     def test_files_outside_the_scanned_roots_are_left_alone(self, env: "Env") -> None:
         env.state.manifest_set(str(env.root.parent / "elsewhere" / "x.txt"), 1, 1, "h")
         assert reconcile(env.state, env.projects, env.scope).deleted == 0

@@ -16,6 +16,7 @@ from vector_embed.core.store.sqlite import StateDb
 logger = logging.getLogger(__name__)
 
 _DELETE_PRIORITY = 1e18  # deletes run before any upsert
+_FLUSH_EVERY = 500  # changed files queued per transaction; an interrupt then loses little
 
 
 @dataclass(frozen=True)
@@ -37,10 +38,12 @@ def reconcile(
     manifest = state.manifest_all()
     seen: set[str] = set()
     upserts: list[tuple[str, str, float]] = []
+    queued = 0
     for found in projects.iter_files(scan_roots):
         if stop_check is not None and stop_check():
-            logger.info("reconcile interrupted")
-            return ReconcileResult(interrupted=True)
+            queued += state.enqueue_many(upserts)  # what was found so far is kept
+            logger.info("reconcile interrupted after queueing %d files", queued)
+            return ReconcileResult(queued=queued, interrupted=True)
         path = str(found)
         key = os.path.normcase(path)
         seen.add(key)
@@ -50,7 +53,10 @@ def reconcile(
             continue
         if manifest.get(key) != (info.st_mtime_ns, info.st_size):
             upserts.append((path, "upsert", info.st_mtime))
-    queued = state.enqueue_many(upserts)
+            if len(upserts) >= _FLUSH_EVERY:  # keep progress: an interrupted scan loses nothing
+                queued += state.enqueue_many(upserts)
+                upserts = []
+    queued += state.enqueue_many(upserts)
 
     prefixes = tuple(
         os.path.normcase(os.path.normpath(r)).rstrip("\\/") + os.sep

@@ -238,7 +238,12 @@ class Watcher:
     def stop(self) -> None:
         self._stop.set()
 
+    def request_startup_reconcile(self) -> None:
+        """Changes made while the watcher was not running (a reboot, a crash) sent no events."""
+        self.state.set_meta("last_reconcile", "0")
+
     def run(self) -> None:
+        self.request_startup_reconcile()
         self.start_observers()
         try:
             while not self._stop.wait(TICK_SECONDS):
