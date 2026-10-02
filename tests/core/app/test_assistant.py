@@ -1,7 +1,8 @@
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from tests.core.conftest import Chat, Env, Power
+from tests.core.conftest import Chat, CloudRig, Env, Power
 
 from vector_embed.app.assistant import (
     AssistantService,
@@ -142,3 +143,95 @@ def test_chat_state_helpers(tmp_path: Path) -> None:
     state.reset()
     assert (state.session_id, state.pinned, state.scratch) == (None, [], "")
     assert state.describe() == ""
+
+
+class TestAnswerBetter:
+    @pytest.fixture
+    def local_by_default(self, cloud: CloudRig) -> CloudRig:
+        cloud.router._settings = cloud.router._settings.model_copy(update={"routing": {}})
+        cloud.consent.revoke()
+        return cloud
+
+    def index(self, env: Env) -> None:
+        env.indexer.index_paths(
+            [
+                write(env, "payments.md", NOTES + "Ticket SSN 123-45-6789 leaked.\n"),
+                write(
+                    env,
+                    ".claude/projects/demo/memory/private.md",
+                    "# Private\n\nretry failed payments secretly\n",
+                ),
+            ]
+        )
+        env.store.maintain()
+
+    def test_not_available_without_a_cloud_provider(
+        self, skill_ctx: SkillContext, chat: Chat
+    ) -> None:
+        service = AssistantService(lambda: skill_ctx)
+        assert not service.cloud_available()
+        assert service.cloud_preview_ask("q") is None
+        assert service.cloud_preview_chat("q", ChatState()) is None
+        _, (failed,) = drain(service.escalated(service.ask("q")))
+        assert isinstance(failed, Failed)
+        assert "no cloud provider" in failed.message
+
+    def test_the_preview_shows_destination_badge_masking_and_exact_text(
+        self, env: Env, skill_ctx: SkillContext, local_by_default: CloudRig
+    ) -> None:
+        self.index(env)
+        service = AssistantService(lambda: skill_ctx)
+        assert service.cloud_available()
+        preview = service.cloud_preview_ask("how do we retry failed payments")
+        assert preview is not None
+        assert preview.destination == "OpenRouter / vendor/chat"
+        assert preview.badge.startswith("☁ Sending 1 excerpt")
+        assert "OpenRouter / vendor/chat" in preview.badge
+        assert preview.shield.startswith("🛡 1 sensitive item will be masked")
+        assert "[SSN REMOVED]" in preview.text
+        assert "123-45-6789" not in preview.text
+        assert "secretly" not in preview.text  # private files are filtered like a cloud request
+        assert local_by_default.inner.sent == []  # previewing sends nothing
+        assert not local_by_default.consent.granted
+
+    def test_escalating_one_request_uses_the_cloud_then_returns_to_local(
+        self, env: Env, skill_ctx: SkillContext, chat: Chat, local_by_default: CloudRig
+    ) -> None:
+        self.index(env)
+        service = AssistantService(lambda: skill_ctx)
+        local_by_default.inner.reply = ["Cloud answer [1]."]
+        text, (finished,) = drain(service.escalated(service.ask("how do we retry failed payments")))
+        assert text == "Cloud answer [1]."
+        assert isinstance(finished, Finished)
+        assert local_by_default.consent.granted
+        assert local_by_default.inner.sent
+        assert chat.chat_calls() == []
+        assert not local_by_default.router.escalate  # back to local for the next request
+        drain(service.ask("how do we retry failed payments"))
+        assert chat.chat_calls()  # now handled by the local model
+
+    def test_escalation_resets_even_if_the_stream_fails(
+        self, env: Env, skill_ctx: SkillContext, local_by_default: CloudRig
+    ) -> None:
+        service = AssistantService(lambda: skill_ctx)
+
+        def boom() -> Iterator[object]:
+            yield Delta("x")
+            raise RuntimeError("stream died")
+
+        with pytest.raises(RuntimeError):
+            list(service.escalated(boom()))  # type: ignore[arg-type]
+        assert not local_by_default.router.escalate
+
+    def test_chat_preview_opens_the_session_and_includes_pinned_text(
+        self, env: Env, skill_ctx: SkillContext, local_by_default: CloudRig
+    ) -> None:
+        state = ChatState(pinned=[write(env, "r.txt", "Resume of Jane\nPassport No: K1234567")])
+        service = AssistantService(lambda: skill_ctx)
+        preview = service.cloud_preview_chat("what is missing?", state)
+        assert preview is not None
+        assert state.session_id is not None
+        assert "Resume of Jane" in preview.text
+        assert "[PASSPORT REMOVED]" in preview.text
+        assert "K1234567" not in preview.text
+        assert preview.badge.startswith("☁ Sending 1 excerpt")

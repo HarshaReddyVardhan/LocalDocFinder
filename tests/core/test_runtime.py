@@ -98,3 +98,82 @@ def test_log_dir_is_under_the_data_dir(tmp_path: Path) -> None:
 def test_provider_factory_uses_the_configured_host(tmp_path: Path) -> None:
     provider = runtime.build_provider(make_settings(tmp_path, ollama_host="http://example:9"))
     assert provider.embed_model == "qwen3-embedding:0.6b"
+
+
+class TestCloudWiring:
+    def cloud_settings(self, tmp_path: Path) -> Settings:
+        from vector_embed.core.settings import CloudProviderSettings, CloudSettings
+
+        cloud = CloudSettings(
+            providers={
+                "openrouter": CloudProviderSettings(
+                    base_url="https://openrouter.ai/api/v1", models={"chat": "vendor/m"}
+                )
+            },
+            active="openrouter",
+            routing={"chat": "auto"},
+        )
+        return make_settings(tmp_path, cloud=cloud)
+
+    def registry(self, settings: Settings, state: StateDb):  # type: ignore[no-untyped-def]
+        return runtime.build_model_registry(settings, state, make_provider(settings))
+
+    def test_nothing_can_leave_the_machine_by_default(self, tmp_path: Path) -> None:
+        settings = make_settings(tmp_path)
+        with StateDb(settings.storage.data_dir) as state:
+            ctx = runtime.build_cloud(
+                settings, state, runtime.build_scope(settings), self.registry(settings, state)
+            )
+            assert ctx.provider is None
+            assert not ctx.consent.granted
+            assert ctx.router.model_for("chat") is None
+
+    def test_a_stored_key_enables_the_cloud_provider_but_consent_is_still_needed(
+        self, tmp_path: Path
+    ) -> None:
+        from vector_embed.core.secrets import MemoryKeyStore
+
+        settings = self.cloud_settings(tmp_path)
+        with StateDb(settings.storage.data_dir) as state:
+            ctx = runtime.build_cloud(
+                settings,
+                state,
+                runtime.build_scope(settings),
+                self.registry(settings, state),
+                MemoryKeyStore({"openrouter": "sk-test-1234567890abcdef"}),
+            )
+            assert ctx.provider is not None
+            assert ctx.router.model_for("chat") == "vendor/m"
+            assert not ctx.consent.granted
+
+    def test_a_missing_or_unreadable_key_keeps_everything_local(self, tmp_path: Path) -> None:
+        from vector_embed.core.secrets import KeyStoreError, MemoryKeyStore
+
+        settings = self.cloud_settings(tmp_path)
+
+        class Broken:
+            def get(self, provider: str) -> str | None:
+                raise KeyStoreError("vault locked")
+
+        with StateDb(settings.storage.data_dir) as state:
+            scope = runtime.build_scope(settings)
+            registry = self.registry(settings, state)
+            no_key = runtime.build_cloud(settings, state, scope, registry, MemoryKeyStore())
+            broken = runtime.build_cloud(settings, state, scope, registry, Broken())  # type: ignore[arg-type]
+            assert no_key.provider is None
+            assert broken.provider is None
+
+    def test_the_skill_context_routes_through_the_cloud_router(self, tmp_path: Path) -> None:
+        from vector_embed.core.llm import LlmGateway
+        from vector_embed.core.privacy.policy import PrivacyFilter
+        from vector_embed.core.secrets import MemoryKeyStore
+
+        settings = self.cloud_settings(tmp_path)
+        with StateDb(settings.storage.data_dir) as state:
+            ctx = runtime.build_skill_context(
+                settings, state, keys=MemoryKeyStore({"openrouter": "sk-test-1234567890abcdef"})
+            )
+            gateway = ctx.extras["llm"]
+            assert isinstance(gateway, LlmGateway)
+            assert gateway.router is ctx.extras["cloud"].router
+            assert isinstance(ctx.extras["privacy"], PrivacyFilter)

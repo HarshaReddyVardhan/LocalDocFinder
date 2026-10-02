@@ -19,6 +19,7 @@ from vector_embed.core.power import PowerGate
 from vector_embed.core.privacy.policy import PrivacyFilter
 from vector_embed.core.projects import Projects
 from vector_embed.core.providers.ollama import OllamaProvider
+from vector_embed.core.runtime import CloudContext
 from vector_embed.core.scope import ScopePolicy
 from vector_embed.core.settings import (
     CloudProviderSettings,
@@ -197,5 +198,5 @@ def cloud(chat: Chat, env: Env, skill_ctx: SkillContext) -> CloudRig:
     provider = CloudChatProvider(inner, privacy, env.state, settings, consent)
     router = CloudRouter(settings, provider, chat.gateway._registry)
     chat.gateway.router = router
-    skill_ctx.extras.update(privacy=privacy)
+    skill_ctx.extras.update(privacy=privacy, cloud=CloudContext(privacy, consent, router, provider))
     return CloudRig(inner, provider, router, consent, privacy)
