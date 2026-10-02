@@ -509,10 +509,11 @@ def test_renaming_a_file_reuses_every_vector(env: "Env") -> None:
     new = str(env.root / "moved" / "new_name.py")
     (env.root / "moved").mkdir()
     Path(old).rename(new)
-    env.indexer.process([QueueItem(old, "delete", 1)])
-    env.indexer.process([QueueItem(new, "upsert", 2)])
+    # The watcher queues the delete and the upsert together, and a worker batch handles both
+    # before any rows are removed, so the old vectors are still there to reuse.
+    env.indexer.process([QueueItem(old, "delete", 1), QueueItem(new, "upsert", 2)])
     again = env.embedder.embedded_texts[before:]
-    # The outline names the file ("File: new_name.py"), so it legitimately changes; the code does not.
+    # The outline names the file, so it changes with it; the code chunks must not be re-embedded.
     assert all("<outline>" in text for text in again)
     assert len(again) <= 1
     paths = {r["path"] for r in env.store.scan(CHUNKS, ["path"], limit=100)}
