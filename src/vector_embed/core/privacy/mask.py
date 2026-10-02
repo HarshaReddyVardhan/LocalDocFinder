@@ -11,7 +11,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 
-from vector_embed.core.privacy.detectors import Finding, detect_sensitive
+from vector_embed.core.privacy.detectors import Finding, detect_secret_tokens, detect_sensitive
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,21 @@ def mask_sensitive(text: str) -> MaskResult:
         cursor = finding.end
     out.append(text[cursor:])
     return MaskResult("".join(out), findings)
+
+
+def strip_secret_tokens(text: str) -> str:
+    """Replace recognisable credentials with a marker (used before text is indexed)."""
+    findings = detect_secret_tokens(text)
+    if not findings:
+        return text
+    out: list[str] = []
+    cursor = 0
+    for finding in findings:
+        out.append(text[cursor : finding.start])
+        out.append("[SECRET REMOVED]")
+        cursor = finding.end
+    out.append(text[cursor:])
+    return "".join(out)
 
 
 _EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b")

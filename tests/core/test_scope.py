@@ -134,6 +134,38 @@ class TestSecrets:
     def test_secret_names(self, policy: ScopePolicy, name: str) -> None:
         assert policy.is_secret(Path("proj") / name)
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "client_secret_123.apps.googleusercontent.com.json",
+            "client_secret.json",
+            "my-service-account.json",
+            "project-firebase-adminsdk-abc12.json",
+            "token.json",
+            "putty.ppk",
+            "id_dsa",
+            "id_ecdsa",
+            "id_ecdsa.pub",
+            ".netrc",
+            "_netrc",
+            "release.jks",
+            "debug.keystore",
+            ".htpasswd",
+            "secrets.json",
+            "secrets.yaml",
+            "secrets.yml",
+            "secrets.toml",
+        ],
+    )
+    def test_more_credential_files(self, policy: ScopePolicy, name: str) -> None:
+        assert policy.is_secret(Path("proj") / name)
+
+    @pytest.mark.parametrize(
+        "name", ["secrets_handling.md", "tokens.py", "token_utils.json", "keystore_docs.md"]
+    )
+    def test_similar_names_that_are_not_credentials(self, policy: ScopePolicy, name: str) -> None:
+        assert not policy.is_secret(Path("proj") / name)
+
     @pytest.mark.parametrize("name", [".env.example", ".env.sample", ".env.template", "main.py"])
     def test_non_secrets(self, policy: ScopePolicy, name: str) -> None:
         assert not policy.is_secret(Path("proj") / name)

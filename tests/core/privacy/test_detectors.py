@@ -243,3 +243,19 @@ class TestDetectorGaps:
         masked = mask_sensitive(text).text
         assert "4111" not in masked
         assert "1111" not in masked
+
+
+class TestStripSecretTokens:
+    def test_only_recognisable_credentials_are_replaced(self) -> None:
+        from vector_embed.core.privacy.mask import strip_secret_tokens
+
+        key = "ghp_" + "a" * 36
+        text = f"token = get_token(request)  # and {key} here"
+        assert (
+            strip_secret_tokens(text) == "token = get_token(request)  # and [SECRET REMOVED] here"
+        )
+
+    def test_text_without_secrets_is_returned_unchanged(self) -> None:
+        from vector_embed.core.privacy.mask import strip_secret_tokens
+
+        assert strip_secret_tokens("plain words") == "plain words"

@@ -271,3 +271,26 @@ def test_extractor_models_are_released_before_embedding(
     env.indexer.index_paths([write(env, "doc.md", "# Title\n\nsome words to embed " * 5)])
     assert order[0] == "release"  # the vision model leaves the GPU before the embedder loads
     assert "embed" in order
+
+
+def test_credentials_pasted_into_a_note_never_reach_the_index(env: "Env") -> None:
+    key = "sk-" + "abcdefghijklmnopqrstuvwxyz123456"
+    path = write(
+        env, "notes.md", f"# Setup\n\nOur key is {key} keep it safe.\n\nOther text here.\n"
+    )
+    env.indexer.index_paths([path])
+    rows = env.store.scan(CHUNKS, ["text", "path"], limit=50)
+    assert rows
+    assert all(key not in row["text"] for row in rows)
+    assert any("[SECRET REMOVED]" in row["text"] for row in rows)
+    docs = env.store.scan(DOCUMENTS, ["full_text"], limit=5)
+    assert all(key not in row["full_text"] for row in docs)
+
+
+def test_ordinary_code_with_password_assignments_is_left_alone(env: "Env") -> None:
+    path = write(
+        env, "auth.py", "def login(request):\n    token = get_token(request)\n    return token\n"
+    )
+    env.indexer.index_paths([path])
+    text = " ".join(r["text"] for r in env.store.scan(CHUNKS, ["text"], limit=50))
+    assert "get_token(request)" in text

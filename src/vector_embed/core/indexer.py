@@ -18,6 +18,7 @@ import xxhash
 from vector_embed.core.doctypes.base import DocInfo, DocTypeClassifierSet
 from vector_embed.core.doctypes.versions import VersionCandidate, group_versions
 from vector_embed.core.extractors.base import Chunk, ExtractError, ExtractorSet
+from vector_embed.core.privacy.mask import strip_secret_tokens
 from vector_embed.core.projects import Projects
 from vector_embed.core.providers.base import EmbedKind
 from vector_embed.core.scope import ScopePolicy
@@ -179,6 +180,8 @@ class Indexer:
             self.state.manifest_set(path, info.st_mtime_ns, info.st_size, digest)
             self.stats.errors += 1
             return None
+        for chunk in chunks:  # a credential pasted into a note must not reach the index
+            chunk.text = strip_secret_tokens(chunk.text)
         prepared.metas = self._metas(prepared, chunks)
         prepared.doc_text = "\n".join(c.text for c in chunks if c.kind != "outline")
         return prepared

@@ -72,3 +72,27 @@ def test_missing_and_unreadable_files(env: Env, loader: DocumentLoader) -> None:
 def test_blank_title_falls_back_to_the_file_name(env: Env, loader: DocumentLoader) -> None:
     path = write(env, "blank.txt", "\n\n")
     assert loader.load(path).title == "blank.txt"
+
+
+def test_files_outside_the_scope_rules_are_refused_like_secrets(
+    env: Env, loader: DocumentLoader
+) -> None:
+    unsupported = write(env, "tool.exe", "MZ binary")
+    with pytest.raises(DocumentError, match="does not read"):
+        loader.load(unsupported)
+    noise = write(env, "bundle.min.js", "var a=1;" * 50)
+    with pytest.raises(DocumentError, match="does not read"):
+        loader.load(noise)
+
+
+def test_a_file_in_a_blocked_directory_is_refused(env: Env) -> None:
+    blocked_scope = type(env.scope)(env.scope._s, blocked_roots=[env.root / "off-limits"])
+    path = write(env, "off-limits/notes.txt", "private notes")
+    with pytest.raises(DocumentError, match="does not read"):
+        DocumentLoader(env.store, blocked_scope, lambda: env.extractors).load(path)
+
+
+def test_gitignored_files_can_still_be_chosen_explicitly(env: Env, loader: DocumentLoader) -> None:
+    write(env, ".gitignore", "ignored.txt\n")
+    path = write(env, "ignored.txt", "the user picked this file on purpose")
+    assert loader.load(path).text.startswith("the user picked")

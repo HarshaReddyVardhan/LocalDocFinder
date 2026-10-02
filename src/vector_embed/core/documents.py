@@ -44,6 +44,11 @@ class DocumentLoader:
             raise DocumentError(f"{target.name} looks like a secret and is never loaded")
         if not target.is_file():
             raise DocumentError(f"{target} does not exist")
+        if not self._scope.is_valid_file(target):  # the same rules as indexing, minus .gitignore
+            raise DocumentError(
+                f"{target.name} is in a folder or of a kind Vector Embed does not read "
+                "(system folders, blocked directories, unsupported types)"
+            )
         key = str(target)
         rows = self._store.scan(
             DOCUMENTS,

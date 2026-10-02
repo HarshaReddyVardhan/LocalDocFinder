@@ -109,6 +109,10 @@ class ScopeSettings(_Section):
     secret_name_patterns: tuple[str, ...] = (
         ".env", ".env.*", "*.pem", "*.key", "*.pfx", "*.p12", "id_rsa*", "id_ed25519*",
         "*credential*", ".npmrc", ".pypirc", "*.kdbx",
+        "client_secret*.json", "*service-account*.json", "*serviceaccount*.json",
+        "*adminsdk*.json", "token.json", "*.ppk", "id_dsa*", "id_ecdsa*", ".netrc", "_netrc",
+        "*.jks", "*.keystore", ".htpasswd", "secrets.json", "secrets.yaml", "secrets.yml",
+        "secrets.toml",
     )  # fmt: skip
     secret_name_exceptions: frozenset[str] = frozenset(
         {".env.example", ".env.sample", ".env.template"}

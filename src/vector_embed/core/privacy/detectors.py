@@ -137,15 +137,23 @@ _DL_VALUE = re.compile(r"\b[A-Z0-9][A-Z0-9 -]{4,18}[A-Z0-9]\b")
 _TAX_VALUE = re.compile(r"\b(?:\d{2}-\d{7}|\d{3}-\d{2}-\d{4}|\d{9})\b")
 _IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{4}){2,7}(?:[ ]?[A-Z0-9]{1,4})?\b")
 _ACCOUNT_VALUE = re.compile(r"\b\d{8,17}\b")
-_SECRET = re.compile(
+# Credentials with a recognisable format: safe to remove from anything, anywhere.
+_CREDENTIAL_FORMATS = (
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
     r"|\bsk-[A-Za-z0-9_-]{20,}\b|\bgh[pousr]_[A-Za-z0-9]{30,}\b|\bAKIA[0-9A-Z]{16}\b"
     r"|\bsk_(?:live|test)_[A-Za-z0-9]{16,}\b|\bAIza[0-9A-Za-z_-]{30,}\b"
     r"|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bglpat-[A-Za-z0-9_-]{20,}\b|\bhf_[A-Za-z0-9]{30,}\b"
     r"|\bAccountKey=[A-Za-z0-9+/=]{20,}"
-    r"|\bxox[baprs]-[A-Za-z0-9-]{10,}\b|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
-    r"|(?i:\b(?:api[_-]?key|secret|token|password|passwd)\b)\s*[:=]\s*['\"]?[^\s'\"]{8,}"
+    r"|\bxox[baprs]-[A-Za-z0-9-]{10,}\b"
+    r"|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
 )
+# ``password = ...`` style assignments: also masked in cloud requests, but too broad to remove
+# from the local index (they match ordinary code such as ``token = get_token(request)``).
+_ASSIGNMENT_FORMS = (
+    r"(?i:\b(?:api[_-]?key|secret|token|password|passwd)\b)\s*[:=]\s*['\"]?[^\s'\"]{8,}"
+)
+_SECRET_TOKEN = re.compile(_CREDENTIAL_FORMATS)
+_SECRET = re.compile(_CREDENTIAL_FORMATS + "|" + _ASSIGNMENT_FORMS)
 
 
 def _after_label(
@@ -238,6 +246,11 @@ _DETECTORS: tuple[Callable[[str], list[Finding]], ...] = (
     _routing,
     _regex("secret", _SECRET),
 )
+
+
+def detect_secret_tokens(text: str) -> list[Finding]:
+    """Only recognisable credentials (keys, tokens, PEM blocks): cheap, and safe to strip."""
+    return [Finding("secret", m.start(), m.end(), m.group()) for m in _SECRET_TOKEN.finditer(text)]
 
 
 def detect_sensitive(text: str) -> list[Finding]:
