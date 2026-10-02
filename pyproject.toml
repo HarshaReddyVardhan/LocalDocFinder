@@ -34,6 +34,9 @@ dependencies = [
     "winrt-Windows.Globalization; sys_platform == 'win32'",
 ]
 
+[project.scripts]
+ve = "vector_embed.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8",

@@ -157,6 +157,10 @@ class ModelRegistry:
         self.refresh()
         return True
 
+    def preferences(self, role: str) -> list[str]:
+        """The catalog's best-first model names for ``role``."""
+        return self._catalog.preferences(role)
+
     @property
     def installed(self) -> list[ModelInfo]:
         return list(self._installed)

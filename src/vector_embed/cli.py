@@ -1,0 +1,189 @@
+"""Command line front-end: ``ve <skill> ...``, ``ve index``, ``ve models``, ``ve doctor``.
+
+Skill commands are generated from the skill registry, so a new skill appears here without
+editing this file.
+"""
+
+import argparse
+import logging
+import sys
+import types
+import typing
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
+
+from pydantic.fields import FieldInfo
+
+from vector_embed import watcher, worker
+from vector_embed.core import runtime
+from vector_embed.core.doctor import format_checks, run_doctor
+from vector_embed.core.extractors.ocr import WindowsOcr
+from vector_embed.core.logging_setup import configure_logging
+from vector_embed.core.models.hardware import probe_hardware
+from vector_embed.core.models.report import format_report
+from vector_embed.core.providers.base import ProviderError
+from vector_embed.core.settings import Settings, SettingsError, load_settings
+from vector_embed.core.skills.base import Skill, load_skills
+from vector_embed.core.store.sqlite import StateDb
+
+logger = logging.getLogger("cli")
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_USAGE = 2
+
+
+def out(text: str = "") -> None:
+    """The CLI's only stdout writer (library code never prints)."""
+    sys.stdout.write(text + "\n")
+
+
+def err(text: str) -> None:
+    sys.stderr.write(text + "\n")
+
+
+def _unwrap(annotation: object) -> object:
+    """``int | None`` -> ``int``."""
+    if typing.get_origin(annotation) in (typing.Union, types.UnionType):
+        args = [a for a in typing.get_args(annotation) if a is not type(None)]
+        return args[0] if len(args) == 1 else annotation
+    return annotation
+
+
+def add_input_arguments(
+    parser: argparse.ArgumentParser, fields: dict[str, FieldInfo], positional: str | None
+) -> None:
+    """Turn a skill's pydantic input model into argparse arguments."""
+    for name, info in fields.items():
+        help_text = info.description or ""
+        if name == positional:
+            parser.add_argument(name, nargs="+", help=help_text)
+            continue
+        flag = "--" + name.replace("_", "-")
+        kind = _unwrap(info.annotation)
+        if kind is bool:
+            parser.add_argument(
+                flag, dest=name, action=argparse.BooleanOptionalAction, default=None, help=help_text
+            )
+        elif typing.get_origin(kind) is list:
+            parser.add_argument(flag, dest=name, nargs="*", default=None, help=help_text)
+        elif kind in (int, float, str):
+            parser.add_argument(
+                flag,
+                dest=name,
+                type=kind,
+                default=None,
+                required=info.is_required(),
+                help=help_text,
+            )
+        else:
+            raise ValueError(f"unsupported input field type for --{name}: {kind!r}")
+
+
+def collect_input(
+    args: argparse.Namespace, fields: dict[str, FieldInfo], positional: str | None
+) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for name in fields:
+        value = getattr(args, name, None)
+        if value is None:
+            continue
+        values[name] = " ".join(value) if name == positional else value
+    return values
+
+
+def run_skill(skill_cls: type[Skill], args: argparse.Namespace, settings: Settings) -> int:
+    fields = dict(skill_cls.Input.model_fields)
+    params = skill_cls.Input(**collect_input(args, fields, skill_cls.cli_positional))
+    with StateDb(settings.storage.data_dir) as state:
+        skill = skill_cls(runtime.build_skill_context(settings, state))
+        stream = skill.stream(params)
+        if stream is not None:
+            for delta in stream:
+                sys.stdout.write(delta)
+            sys.stdout.write("\n")
+            return EXIT_OK
+        out(skill.render(skill.run(params)))
+    return EXIT_OK
+
+
+def cmd_models(settings: Settings) -> int:
+    provider = runtime.build_provider(settings)
+    with StateDb(settings.storage.data_dir) as state:
+        registry = runtime.build_model_registry(settings, state, provider)
+        registry.refresh()
+        out(format_report(registry.report()))
+    return EXIT_OK
+
+
+def cmd_doctor(settings: Settings) -> int:
+    provider = runtime.build_provider(settings)
+    with StateDb(settings.storage.data_dir) as state:
+        registry = runtime.build_model_registry(settings, state, provider)
+        checks = run_doctor(
+            settings,
+            registry,
+            probe_hardware(),
+            WindowsOcr(settings.images.ocr_max_dimension),
+            state=state,
+        )
+    out(format_checks(checks))
+    return EXIT_OK if all(c.ok for c in checks) else EXIT_ERROR
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="ve", description="Local search + chat-with-documents.")
+    parser.add_argument("--data-dir", help="data directory (default %%LOCALAPPDATA%%\\VectorEmbed)")
+    sub = parser.add_subparsers(dest="command", required=True)
+    for skill_cls in load_skills():
+        command = sub.add_parser(skill_cls.name, help=skill_cls.description)
+        add_input_arguments(command, dict(skill_cls.Input.model_fields), skill_cls.cli_positional)
+        command.set_defaults(skill=skill_cls)
+    sub.add_parser("index", help="run the indexing worker now (ve index --help for options)")
+    sub.add_parser("models", help="installed models, role choices and recommendations")
+    sub.add_parser("doctor", help="check the environment and explain any problem")
+    sub.add_parser("status", help="index and queue state")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    if tokens and tokens[0] == "index":  # the worker has its own options; hand them over untouched
+        return worker.main(tokens[1:])
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        settings = load_settings()
+        if args.data_dir:
+            storage = settings.storage.model_copy(update={"data_dir": Path(args.data_dir)})
+            settings = settings.model_copy(update={"storage": storage})
+        configure_logging("cli", None, "WARNING")
+        return _dispatch(args, settings)
+    except SettingsError as exc:
+        err(f"settings error: {exc}")
+        return EXIT_USAGE
+    except ProviderError as exc:
+        err(f"model provider error: {exc}")
+        return EXIT_ERROR
+    except RuntimeError as exc:  # skill-level errors (e.g. search disabled on battery)
+        err(str(exc))
+        return EXIT_ERROR
+
+
+def _dispatch(args: argparse.Namespace, settings: Settings) -> int:
+    command: str = args.command
+    if command == "index":  # reached only through ``ve --data-dir X index``
+        return worker.main([])
+    if command == "models":
+        return cmd_models(settings)
+    if command == "doctor":
+        return cmd_doctor(settings)
+    if command == "status":
+        out(watcher.status(settings))
+        return EXIT_OK
+    return run_skill(args.skill, args, settings)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

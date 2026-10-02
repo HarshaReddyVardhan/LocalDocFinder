@@ -14,10 +14,14 @@ from vector_embed.core.doctypes.base import PROTOTYPE_TEXTS, build_prototypes
 from vector_embed.core.extractors.base import ExtractContext, ExtractorSet
 from vector_embed.core.extractors.image import OllamaCaptioner
 from vector_embed.core.extractors.ocr import WindowsOcr
+from vector_embed.core.models.catalog import load_catalog
+from vector_embed.core.models.registry import ModelRegistry
+from vector_embed.core.power import PowerGate
 from vector_embed.core.projects import Projects
 from vector_embed.core.providers.ollama import OllamaProvider
 from vector_embed.core.scope import ScopePolicy
 from vector_embed.core.settings import Settings
+from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.store.lance import LanceStore
 from vector_embed.core.store.sqlite import StateDb
 
@@ -97,3 +101,33 @@ def load_prototypes(state: StateDb, provider: OllamaProvider) -> dict[str, np.nd
 
 def log_dir(settings: Settings) -> Path:
     return settings.storage.data_dir / LOGS_DIRNAME
+
+
+def build_model_registry(
+    settings: Settings, state: StateDb, provider: OllamaProvider
+) -> ModelRegistry:
+    return ModelRegistry(
+        load_catalog(settings.storage.data_dir),
+        [provider],
+        state,
+        overrides=settings.models.overrides,
+        pinned_embed=settings.embedding.model,
+    )
+
+
+def build_skill_context(settings: Settings, state: StateDb) -> SkillContext:
+    """Context for read-side skills (search, ask, ...): read-only store, local provider."""
+    provider = build_provider(settings)
+    power = PowerGate(settings.power)
+    power.update()
+    return SkillContext(
+        settings=settings,
+        state=state,
+        store=open_read_only_store(settings, state),
+        embedder=provider,
+        power=power,
+        extras={
+            "provider": provider,
+            "models": build_model_registry(settings, state, provider),
+        },
+    )

@@ -322,6 +322,13 @@ class DocTypeSettings(_Section):
     full_text_max_chars: int = Field(default=20_000, gt=0)  # larger documents keep no full text
 
 
+class ModelSettings(_Section):
+    """Role-based model selection (see ``vector_embed.core.models``)."""
+
+    overrides: dict[str, str] = Field(default_factory=dict)  # role -> model name
+    refresh_seconds: int = Field(default=3600, gt=0)  # re-discover installed models this often
+
+
 class SearchSettings(_Section):
     rrf_k: int = Field(default=60, gt=0)
     candidates: int = Field(default=60, gt=0)
@@ -359,6 +366,7 @@ class Settings(BaseSettings):
     chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
     images: ImageSettings = Field(default_factory=ImageSettings)
     doctypes: DocTypeSettings = Field(default_factory=DocTypeSettings)
+    models: ModelSettings = Field(default_factory=ModelSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
 

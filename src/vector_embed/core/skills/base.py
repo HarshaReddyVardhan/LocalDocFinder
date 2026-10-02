@@ -6,6 +6,7 @@ is one file with ``@register_skill`` and no front-end edits.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Protocol
 
@@ -60,6 +61,10 @@ class Skill(ABC):
     def run(self, params: SkillInput) -> object:
         """Execute the skill; the return type is skill-specific (see ``render``)."""
         ...
+
+    def stream(self, params: SkillInput) -> Iterator[str] | None:
+        """Text deltas for skills that answer incrementally (Ask, Chat); ``None`` otherwise."""
+        return None
 
     def render(self, output: object) -> str:
         """Plain-text rendering of ``run`` output for the CLI."""
