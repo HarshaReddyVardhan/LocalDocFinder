@@ -84,7 +84,7 @@ class ParsedQuery:
 def _timestamp(value: str) -> int | None:
     for fmt in ("%Y-%m-%d", "%Y-%m", "%Y"):
         try:
-            return int(datetime.strptime(value, fmt).timestamp())  # noqa: DTZ007  # local time
+            return int(datetime.strptime(value, fmt).timestamp())  # local time
         except ValueError:
             continue
     return None

@@ -1,39 +1,42 @@
-# Vector_Embed — local semantic desktop search
+# Vector_Embed
 
-Ollama-only (no torch). Code, notes, PDFs, DOCX/PPTX and images (via OCR) are chunked, embedded with
-`qwen3-embedding:0.6b`, and stored in LanceDB. Search is vector + BM25 fused with RRF.
+Local semantic search and chat-with-documents engine for Windows, backed by Ollama.
+Design and build order: [.claude/PLAN.md](.claude/PLAN.md). Working rules: [.claude/CLAUDE.md](.claude/CLAUDE.md).
 
-## Quick start
+## Setup
 ```powershell
-pip install -r requirements.txt
-ollama pull qwen3-embedding:0.6b
-
-# index something now (bypasses the idle gate; add --allow-battery to run unplugged)
-python worker.py --now --path D:\Projects\myapp
-
-# search from the terminal
-python search.py "where do we retry failed payments" 
-python search.py "charge_card type:code proj:billing after:2026-01"
-
-# popup search window (Ctrl+Alt+Space) + background watcher
-python -m ui.app
-python watcher.py
-powershell -ExecutionPolicy Bypass -File install_task.ps1   # start both at logon
+uv sync                                   # creates .venv from uv.lock
+ollama pull qwen3-embedding:0.6b          # embeddings
+.venv\Scripts\pre-commit install
 ```
 
-## How it runs
-| piece | role |
-|---|---|
-| `watcher.py` | always on, light. watchdog events → SQLite queue (30 s debounce). Starts `worker.py` only when on AC for 120 s, CPU/GPU idle, no input, nothing fullscreen. On battery it only records. |
-| `worker.py` | drains the queue: hash diff → extract → embed only new chunks → LanceDB → `keep_alive=0`. Checks power before every file and between embedding batches; unplug → commit, unload, exit. `--reconcile` rescans disk for missed changes (also automatic every 6 h). |
-| `search.py` / `ui/app.py` | hybrid search + filters; the UI pre-warms the model on the hotkey; on battery the query embeds on CPU. |
-| `eval/run.py` | recall@10 / MRR per model on your own queries (`eval/queries.yaml`). |
+## Use
+```powershell
+.venv\Scripts\ve doctor                   # check the environment
+.venv\Scripts\ve index --now --path D:\Projects\myapp
+.venv\Scripts\ve search "where do we retry failed payments"
+.venv\Scripts\ve search "charge_card type:code proj:billing after:2026-01"
+.venv\Scripts\ve models                   # installed models, role choices, recommendations
+.venv\Scripts\python -m vector_embed.app  # hotkey window (Ctrl+Alt+Space) + tray icon
+powershell -ExecutionPolicy Bypass -File scripts\install_task.ps1   # watcher + UI at logon
+```
 
 Search filters: `type:img|code|doc|plan|memory|note|pdf` `ext:py` `proj:name` `in:D:\path` `after:2026-01` `before:2026-06`.
 UI keys: Enter open · Ctrl+Enter reveal in Explorer · Shift+Enter `code -g file:line` · Esc hide.
 
-Everything lives in `%LOCALAPPDATA%\VectorEmbed` (index, queue, logs). `python watcher.py --status` shows the state.
-All knobs are in `indexer_config.py` (model, power policy, idle thresholds, hotkey, AI-notes allowlist, ...).
+## How it runs
+| piece | role |
+|---|---|
+| `vector_embed.watcher` | always on, light. watchdog events -> SQLite queue (debounced). Starts the worker only on AC power, settled, idle. |
+| `vector_embed.worker` | drains the queue: hash diff -> extract -> embed only new chunks -> LanceDB -> unload the model. Checks power before every batch. |
+| `vector_embed.cli` | `ve` command; skill commands are generated from the skill registry. |
+| `vector_embed.app` | PySide6 hotkey window. |
 
-## Tests
-`python -m pytest tests` (the real-Ollama test is skipped if the model isn't pulled).
+Data lives in `%LOCALAPPDATA%\VectorEmbed` (index, queue, logs). Settings: `settings.toml` there, overridable with `VE_*` environment variables (see `.env.example`).
+
+## Development
+```powershell
+.venv\Scripts\python -m pytest            # tests + coverage (>=80%)
+.venv\Scripts\ruff format . ; .venv\Scripts\ruff check . --fix
+.venv\Scripts\mypy
+```

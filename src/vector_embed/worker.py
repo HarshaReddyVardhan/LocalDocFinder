@@ -186,7 +186,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--now", action="store_true", help="skip debounce and user-activity yield")
     parser.add_argument("--path", action="append", help="scan + index this directory (repeatable)")
-    parser.add_argument("--reconcile", action="store_true", help="scan all roots for missed changes")
+    parser.add_argument("--reconcile", action="store_true", help="scan roots for missed changes")
     parser.add_argument("--allow-battery", action="store_true", help="index even when unplugged")
     parser.add_argument("--limit", type=int, help="stop after N files (testing)")
     parser.add_argument("--model", help="embedding model override")

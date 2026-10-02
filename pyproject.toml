@@ -58,17 +58,10 @@ build-backend = "hatchling.build"
 packages = ["src/vector_embed"]
 
 # ---------------------------------------------------------------- ruff
-# The flat prototype modules (pre-rebuild) are excluded until they are replaced (plan step 5).
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
-extend-exclude = [
-    "embedder.py", "indexer_config.py", "power.py", "projects.py", "search.py", "store.py",
-    "watcher.py", "worker.py", "extract", "ui", "eval",
-    "tests/test_extract.py", "tests/test_indexer_config.py", "tests/test_pipeline.py",
-    "tests/test_ui.py", "tests/test_watcher.py", "tests/conftest.py",
-]
 
 [tool.ruff.lint]
 select = [
@@ -105,7 +98,7 @@ ignore_missing_imports = true
 # ---------------------------------------------------------------- pytest
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = [".", "src"]   # "." only for the legacy flat prototype tests; drop when they retire
+pythonpath = [".", "src"]   # "." lets tests import shared helpers as tests.core.*
 addopts = "-ra --strict-markers"
 markers = ["ollama: needs a running Ollama server with the model pulled"]
 

@@ -8,7 +8,6 @@ the worker when the machine is on AC power, settled and idle.
 import argparse
 import json
 import logging
-import os
 import signal
 import subprocess
 import sys
@@ -47,7 +46,7 @@ _UNLOAD_ATTEMPTS_NOTE = "unload is best effort"
 
 def quick_reject(path: str, blocked_dirs: frozenset[str]) -> bool:
     """Cheapest possible filter for the flood of events from node_modules, caches, ..."""
-    return any(part in blocked_dirs for part in path.lower().split(os.sep)[:-1])
+    return any(part in blocked_dirs for part in Path(path.lower()).parts[:-1])
 
 
 class ChangeHandler(FileSystemEventHandler):
@@ -185,6 +184,7 @@ class Watcher:
         gate: StartGate,
         launcher: WorkerLauncher,
         unload: Callable[[], None],
+        *,
         projects: Projects,
         scope: ScopePolicy,
         clock: Callable[[], float] = time.time,
@@ -307,8 +307,8 @@ def build_watcher(settings: Settings, state: StateDb) -> Watcher:
         gate,
         SubprocessLauncher(runtime.log_dir(settings)),
         lambda: unload_model(settings.ollama_host, settings.embedding.model),
-        runtime.build_projects(settings, scope),
-        scope,
+        projects=runtime.build_projects(settings, scope),
+        scope=scope,
     )
 
 

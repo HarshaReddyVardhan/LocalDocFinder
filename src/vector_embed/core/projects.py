@@ -166,7 +166,7 @@ class Projects:
         return [Path(os.path.normpath(root / name.rstrip("/"))) for name in names if name]
 
     def iter_files(self, roots: Iterable[str | Path] | None = None) -> Iterator[Path]:
-        """Yield indexable files under ``roots``: git's view inside repos, pruned scandir elsewhere."""
+        """Yield indexable files under ``roots``: git's view in repos, pruned scandir elsewhere."""
         start = self._roots if roots is None else tuple(Path(r) for r in roots)
         stack = [Path(os.path.normpath(r)) for r in reversed(start)]
         while stack:

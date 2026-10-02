@@ -23,11 +23,12 @@ The full design and build order live in @.claude/PLAN.md. Follow its build order
 .venv\Scripts\pre-commit run --all-files
 ```
 
-## Layout and migration status
-- New code lives in `src/vector_embed/` (src layout, per the standards). The plan's `core/`, `app/` and `cli.py` map to `src/vector_embed/core/`, `.../app/`, `.../cli.py`.
-- The flat prototype at the repo root (`indexer_config.py`, `store.py`, `worker.py`, `watcher.py`, `search.py`, `power.py`, `projects.py`, `embedder.py`, `extract/`, `ui/`, `eval/` and their tests) still runs and is excluded from ruff/mypy. Delete each piece when its rebuilt replacement lands (plan steps 3-5); do not edit it beyond what is needed to keep its tests green.
-- Done: step 1 (`core/settings.py`, `core/scope.py`, `core/projects.py`). Next: step 2 (`core/store/`, `core/providers/ollama.py`, `core/models/registry.py`).
-- Tests that walk real directories use `tmp_path`; the legacy root `conftest.py` relocates it outside `%TEMP%` because `appdata` is a blocked dir. New scope tests use the `policy` fixture in `tests/core/conftest.py` instead.
+## Layout and status
+- Code lives in `src/vector_embed/` (src layout): `core/` (no UI), `worker.py`, `watcher.py`, `cli.py`, `app/` (PySide6).
+- The prototype that predated the plan has been removed. Tests mirror the package under `tests/core/`; shared fixtures (`env`, `skill_ctx`, `FakeEmbedder`) are in `tests/core/conftest.py` and `tests/core/fakes.py`.
+- Done: plan steps 1-5 (settings, scope, stores, providers, model registry, extractors, doctypes, power/idle, indexer, worker, watcher, search skill, CLI, hotkey UI). Next: step 6 (ask + chat skills).
+- pytest's `tmp_path` lives under `AppData` (a blocked dir). Scope-sensitive tests use the `scope_settings` fixture, which unblocks it.
+- Avoid backslashes in Bash heredocs (the tool mangles them); use the Write/Edit tools for files containing regexes or Windows paths.
 
 ## Project invariants (never break; they come from the plan)
 - Indexing never runs on battery. VRAM returns to 0 after work. The embedder and chat LLM are never on the GPU together.

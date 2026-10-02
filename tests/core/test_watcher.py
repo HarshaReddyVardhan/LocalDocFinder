@@ -193,8 +193,8 @@ def parts(env: Env, clock: Clock) -> tuple[Watcher, FakeGate, FakeLauncher, list
         gate,
         launcher,
         lambda: unloads.append(1),
-        env.projects,
-        env.scope,
+        projects=env.projects,
+        scope=env.scope,
         clock=clock,
         roots=[str(env.root)],
     )
@@ -371,9 +371,16 @@ class TestLifecycle:
 
     def test_missing_roots_are_skipped(self, env: Env, clock: Clock) -> None:
         w = Watcher(
-            env.settings, env.state, FakeGate(), FakeLauncher(), lambda: None, env.projects,
-            env.scope, clock, roots=[str(env.root / "nope")],
-        )  # fmt: skip
+            env.settings,
+            env.state,
+            FakeGate(),
+            FakeLauncher(),
+            lambda: None,
+            projects=env.projects,
+            scope=env.scope,
+            clock=clock,
+            roots=[str(env.root / "nope")],
+        )
         assert w.roots == []
 
 
