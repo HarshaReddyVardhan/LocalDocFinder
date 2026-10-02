@@ -23,7 +23,7 @@ from vector_embed.core.projects import Projects
 from vector_embed.core.providers.base import EmbedKind
 from vector_embed.core.scope import ScopePolicy
 from vector_embed.core.settings import Settings
-from vector_embed.core.store.lance import DOCUMENTS, LanceStore, Row
+from vector_embed.core.store.lance import DOCUMENTS, LanceStore, Row, sql_quote
 from vector_embed.core.store.sqlite import QueueItem, StateDb
 
 logger = logging.getLogger(__name__)
@@ -101,6 +101,7 @@ class Indexer:
         self.classifier = classifier
         self.stop_check = stop_check
         self.stats = IndexStats()
+        self.versioned_changed = False  # a resume/JD/... was (re)indexed since the last grouping
 
     # ------------------------------------------------------------------ row building
     def _display(self, path: str) -> tuple[str, str]:
@@ -290,6 +291,8 @@ class Indexer:
         first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
         title = first_line[:_TITLE_CHARS] or path.name
         kind = self.classifier.classify(DocInfo(path, title, text, doc_vector))
+        if kind.doc_type in self.settings.doctypes.versioned_types:
+            self.versioned_changed = True  # version groups must be recomputed after this run
         keep = len(text) <= self.settings.doctypes.full_text_max_chars
         return {
             "doc_vector": doc_vector,
@@ -314,19 +317,27 @@ class Indexer:
 
     # ------------------------------------------------------------------ version groups
     def assign_version_groups(self) -> int:
-        """Group near-identical versions of resumes, JDs, ... and store the group ids."""
+        """Group near-identical versions of resumes, JDs, ... and store the group ids.
+
+        Only documents of the versioned types are read, and only when this run indexed one:
+        grouping everything after every run was the dominant cost of an otherwise tiny update.
+        """
+        if not self.versioned_changed:
+            return 0
         cfg = self.settings.doctypes
+        listed = ",".join(sql_quote(t) for t in sorted(cfg.versioned_types))
         rows = self.store.scan(
             DOCUMENTS,
             ["path", "doc_type", "full_text", "modified_at"],
+            f"doc_type IN ({listed}) AND full_text != ''",
             limit=_DOC_SCAN_LIMIT,
         )
         candidates = [
             VersionCandidate(r["path"], r["doc_type"], r["full_text"], r["modified_at"])
             for r in rows
-            if r["doc_type"] in cfg.versioned_types and r["full_text"]
         ]
         groups = group_versions(candidates, cfg.versioned_types, cfg.version_similarity)
         if self.store.documents is not None:
             self.store.set_version_groups(groups, [c.path for c in candidates])
+        self.versioned_changed = False
         return len(groups)

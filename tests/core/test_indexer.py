@@ -357,3 +357,63 @@ def test_a_vanished_file_is_still_deleted(env: "Env") -> None:
     env.state.enqueue(path, delay=0)
     env.indexer.process(env.state.claim(10, ignore_debounce=True))
     assert env.state.manifest_get(path) is None
+
+
+class TestVersionGroupingCost:
+    def test_no_work_when_no_versioned_document_was_indexed(
+        self, env: "Env", monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        env.indexer.index_paths([write(env, "notes.txt", ("groceries and holiday plans\n") * 20)])
+        scans: list[str] = []
+        original = env.store.scan
+        monkeypatch.setattr(
+            env.store, "scan", lambda *a, **k: scans.append("scan") or original(*a, **k)
+        )
+        assert env.indexer.assign_version_groups() == 0
+        assert scans == []  # nothing was read: no resume or JD changed in this run
+
+    def test_only_versioned_documents_are_read_with_their_text(
+        self, env: "Env", monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        env.indexer.index_paths(
+            [
+                write(env, "Resume_v1.txt", RESUME * 4),
+                write(env, "Resume_final.txt", RESUME * 4),
+                write(env, "notes.txt", ("groceries and holiday plans\n") * 20),
+            ]
+        )
+        wheres: list[str] = []
+        original = env.store.scan
+
+        def spy(name: str, columns: list[str], where: str = "", limit: int = 1000) -> object:
+            wheres.append(where)
+            return original(name, columns, where, limit)
+
+        monkeypatch.setattr(env.store, "scan", spy)
+        env.indexer.assign_version_groups()
+        assert len(wheres) == 1
+        assert "doc_type IN (" in wheres[0]
+        assert "'resume'" in wheres[0]
+        assert "'note'" not in wheres[0]
+
+    def test_a_second_call_without_new_documents_does_nothing(self, env: "Env") -> None:
+        env.indexer.index_paths(
+            [write(env, "Resume_v1.txt", RESUME * 4), write(env, "Resume_final.txt", RESUME * 4)]
+        )
+        assert env.indexer.assign_version_groups() == 2
+        assert env.indexer.assign_version_groups() == 0  # already grouped; nothing changed
+
+    def test_writes_are_one_update_per_group_not_per_file(
+        self, env: "Env", monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        names = [f"Resume_v{i}.txt" for i in range(6)]
+        env.indexer.index_paths([write(env, n, RESUME * 4) for n in names])
+        table = env.store.documents
+        assert table is not None
+        updates: list[str] = []
+        original = table.update
+        monkeypatch.setattr(
+            table, "update", lambda **kw: updates.append(kw["where"]) or original(**kw)
+        )
+        env.indexer.assign_version_groups()
+        assert len(updates) == 1  # six near-identical resumes: one group, one write

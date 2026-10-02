@@ -288,12 +288,19 @@ class LanceStore:
             table.add(rows)
 
     def set_version_groups(self, groups: dict[str, str], candidates: Iterable[str]) -> None:
-        """Write ``version_group`` for ``groups``; other ``candidates`` are reset to ungrouped."""
+        """Write ``version_group`` for ``groups``; other ``candidates`` are reset to ungrouped.
+
+        One update per group (not per file): a table update rewrites a fragment each time.
+        """
         table = self.documents
         assert table is not None, "store opened read-only"
+        by_group: dict[str, list[str]] = {}
         for path in candidates:
-            group = groups.get(path, "")
-            table.update(where=f"path = {sql_quote(path)}", values={"version_group": group})
+            by_group.setdefault(groups.get(path, ""), []).append(path)
+        for group, paths in by_group.items():
+            for part in _batches(paths):
+                listed = ",".join(sql_quote(p) for p in part)
+                table.update(where=f"path IN ({listed})", values={"version_group": group})
 
     # ------------------------------------------------------------------ queries
     def scan(self, name: str, columns: list[str], where: str = "", limit: int = 1000) -> list[Row]:
