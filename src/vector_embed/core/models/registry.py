@@ -18,6 +18,7 @@ from vector_embed.core.models.catalog import (
     ROLES,
     Catalog,
 )
+from vector_embed.core.models.fit import budget_mb, fits
 from vector_embed.core.models.hardware import Hardware, probe_hardware
 from vector_embed.core.providers.base import (
     CAP_COMPLETION,
@@ -32,7 +33,6 @@ logger = logging.getLogger(__name__)
 
 _MB = 1024 * 1024
 _SIZE_TO_VRAM = 1.15  # resident size is a little over the file size once the KV cache exists
-_CPU_RAM_FRACTION = 0.5  # share of free RAM a CPU-only machine may devote to a model
 _REFRESHED_KEY = "models_refreshed_at"
 _SECONDS_PER_FILE = 0.5  # rough embedding throughput used for the re-index estimate
 
@@ -179,11 +179,6 @@ class ModelRegistry:
         return {_canonical(m.name): m for m in self._installed}
 
     # ------------------------------------------------------------------ resolving
-    def _budget_mb(self, hardware: Hardware) -> int:
-        if hardware.has_gpu:
-            return hardware.vram_free_mb
-        return int(hardware.ram_free_mb * _CPU_RAM_FRACTION)
-
     def _needs_mb(self, info: ModelInfo) -> int | None:
         known = self._catalog.vram_mb(info.name) or self._catalog.vram_mb(_canonical(info.name))
         if known is not None:
@@ -193,13 +188,10 @@ class ModelRegistry:
         return None
 
     def _fits(self, name: str, info: ModelInfo | None, hardware: Hardware) -> bool:
-        entry = self._catalog.models.get(name)
-        if not hardware.has_gpu and entry is not None and not entry.cpu_ok:
-            return False
         needed = self._catalog.vram_mb(name)
         if needed is None and info is not None:
             needed = self._needs_mb(info)
-        return needed is None or needed <= self._budget_mb(hardware)
+        return fits(self._catalog.entry(name), needed, hardware, budget_mb(hardware))
 
     @staticmethod
     def _suits_role(role: str, info: ModelInfo) -> bool:

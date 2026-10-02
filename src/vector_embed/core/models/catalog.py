@@ -36,6 +36,8 @@ class CatalogModel(BaseModel):
     vram_mb: int = Field(gt=0)
     notes: str = ""
     cpu_ok: bool = False  # small enough to be a sensible choice on a machine without a GPU
+    download_mb: int = Field(default=0, ge=0)  # pull size; 0 when unknown
+    min_ram_mb: int | None = Field(default=None, gt=0)  # total RAM needed to run it on the CPU
 
 
 class Catalog(BaseModel):
@@ -51,6 +53,9 @@ class Catalog(BaseModel):
     def vram_mb(self, name: str) -> int | None:
         entry = self.models.get(name)
         return entry.vram_mb if entry else None
+
+    def entry(self, name: str) -> CatalogModel | None:
+        return self.models.get(name)
 
     def known_names(self) -> set[str]:
         return {name for names in self.roles.values() for name in names} | set(self.models)
