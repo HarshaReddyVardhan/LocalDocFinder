@@ -10,6 +10,7 @@ repos:
         args: ["--maxkb=500"]
         exclude: ^uv\.lock$
       - id: detect-private-key
+        exclude: ^tests/core/privacy/  # fixtures hold fake key markers on purpose
   - repo: local
     hooks:
       - id: ruff
