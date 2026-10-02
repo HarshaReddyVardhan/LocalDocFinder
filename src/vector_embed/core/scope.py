@@ -107,6 +107,8 @@ class ScopePolicy:
         self._secret_path_res = tuple(glob_to_regex(glob) for glob in settings.secret_path_globs)
         # Never index the app's own data folder (index, queue, logs, chat history).
         self._blocked_roots = tuple(_normalised(root) for root in blocked_roots)
+        # The folders the user chose to index: a blocked name only counts *below* one of them.
+        self._scan_roots = tuple(_lower_parts(_normalised(root)) for root in settings.roots)
 
     # ------------------------------------------------------------------ secrets / noise
     def is_secret(self, path: str | Path) -> bool:
@@ -198,9 +200,10 @@ class ScopePolicy:
 
         if not self._path_allowed(path, is_transcript_candidate) or self._in_blocked_root(path):
             return False
-        if is_ignored is not None and is_ignored(str(path)):
+        ignored = is_ignored is not None and is_ignored(str(path))
+        # A link can point anywhere, including at a file we must not read.
+        if ignored or path.is_symlink():
             return False
-
         info = path.stat()
         if info.st_size == 0 or is_cloud_placeholder(info):
             return False
@@ -213,14 +216,28 @@ class ScopePolicy:
         )
         return info.st_size / _BYTES_PER_MB <= limit_mb
 
+    def _below_scan_root(self, path: Path) -> tuple[str, ...]:
+        """The lower-case parts of ``path`` that lie inside the user's chosen root.
+
+        A project kept under a folder called ``build`` or ``env`` must not be excluded because a
+        folder *above* the root has a blocked name; only what is inside the root counts. A path
+        that is under no configured root keeps all its parts.
+        """
+        absolute = _lower_parts(_normalised(path))
+        for root in self._scan_roots:
+            if root and absolute[: len(root)] == root:
+                return absolute[len(root) :]
+        return _lower_parts(path)
+
     def _path_allowed(self, path: Path, is_transcript_candidate: bool) -> bool:
         """Blocked dirs, hidden dirs and the AI-note allowlist; string checks only."""
         parts = _lower_parts(path)
         dirs = parts[:-1]
-        ai_index: int | None = None
-        for index, part in enumerate(dirs):
+        for part in self._below_scan_root(path)[:-1]:
             if part in self._s.blocked_dirs:
                 return False
+        ai_index: int | None = None
+        for index, part in enumerate(dirs):
             if is_hidden_name(part):
                 if self._ai_key(part) is None:
                     return False

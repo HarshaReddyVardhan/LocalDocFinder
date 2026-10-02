@@ -214,3 +214,20 @@ def test_maintain_builds_vector_index_when_large(tmp_path: Path, state: StateDb)
     store.maintain()
     kinds = {i.index_type for i in store.chunks.list_indices()}
     assert any(k != "FTS" for k in kinds)
+
+
+class TestIndexMaintenance:
+    def test_a_missing_keyword_index_is_repaired_and_the_vector_index_is_built(
+        self, tmp_path: Path, state: StateDb
+    ) -> None:
+        store = LanceStore(tmp_path, state, "m1", dim=DIM, vector_index_min_rows=1)
+        rows = [chunk(f"f{i}.py", f"word{i} alpha", [1.0, float(i), 0.0, 0.0]) for i in range(300)]
+        store.replace_rows([r["path"] for r in rows], rows)
+        table = store.chunks
+        assert table is not None
+        table.drop_index("text_idx")  # as if its creation had failed at table creation time
+        assert not store._has_index_on(table, "text")
+        store.maintain()
+        assert store._has_index_on(table, "text")  # repaired
+        assert store._has_index_on(table, lc.CHUNK_VECTOR)  # FTS no longer hides the need for it
+        assert store.fts_search(lc.CHUNKS, "alpha", ["path"], "", 5)

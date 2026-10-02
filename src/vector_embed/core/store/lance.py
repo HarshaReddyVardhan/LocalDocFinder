@@ -333,12 +333,25 @@ class LanceStore:
         return rows
 
     # ------------------------------------------------------------------ maintenance
+    @staticmethod
+    def _has_index_on(table: LanceTable, column: str) -> bool:
+        """Whether any index covers ``column``. Matching on the column, not the index type: the
+        full-text index reports itself as ``INVERTED`` or ``FTS`` depending on the version."""
+        return any(column in (getattr(i, "columns", None) or ()) for i in table.list_indices())
+
     def maintain(self) -> None:
-        """Compact files; build an IVF_PQ index once the table is large enough."""
+        """Compact files, repair a missing keyword index, and build the vector index once the
+        table is large enough."""
         for name in (CHUNKS, DOCUMENTS):
             table = self.table(name)
             if table is None:
                 continue
+            text_column = "text" if name == CHUNKS else "full_text"
+            try:
+                if not self._has_index_on(table, text_column):  # its creation failed earlier
+                    self._create_fts(name, text_column)
+            except Exception:
+                logger.warning("lance: FTS check failed on %s", name, exc_info=True)
             try:
                 table.optimize()
             except Exception:
@@ -347,11 +360,9 @@ class LanceStore:
                 continue
             from lancedb.index import IvfPq
 
+            vector_column = CHUNK_VECTOR if name == CHUNKS else DOC_VECTOR
             try:
-                if not any(i.index_type != "FTS" for i in table.list_indices()):
-                    table.create_index(
-                        CHUNK_VECTOR if name == CHUNKS else DOC_VECTOR,
-                        config=IvfPq(distance_type="cosine"),
-                    )
+                if not self._has_index_on(table, vector_column):
+                    table.create_index(vector_column, config=IvfPq(distance_type="cosine"))
             except Exception:
                 logger.warning("lance: vector index failed on %s", name, exc_info=True)

@@ -285,3 +285,53 @@ def test_default_roots_use_single_backslash() -> None:
     roots = ScopeSettings().roots
     assert "D:\\" in roots
     assert "D:\\\\" not in roots
+
+
+class TestBlockedNamesAboveTheRoot:
+    def test_a_project_under_a_blocked_name_is_still_indexed(
+        self, scope_settings: ScopeSettings, make: Make, tmp_path: Path
+    ) -> None:
+        file = make("build/myapp/src/main.py")  # "build" is blocked, but it is *above* the root
+        root = tmp_path / "build" / "myapp"
+        chosen = ScopePolicy(scope_settings.model_copy(update={"roots": (str(root),)}))
+        assert chosen.is_valid_file(file)
+        assert not ScopePolicy(scope_settings).is_valid_file(file)  # no such root: old behaviour
+
+    def test_blocked_names_inside_the_root_still_exclude(
+        self, scope_settings: ScopeSettings, make: Make, tmp_path: Path
+    ) -> None:
+        make("build/myapp/node_modules/pkg/index.js")
+        root = tmp_path / "build" / "myapp"
+        chosen = ScopePolicy(scope_settings.model_copy(update={"roots": (str(root),)}))
+        assert not chosen.is_valid_file(root / "node_modules" / "pkg" / "index.js")
+
+    def test_a_root_with_a_blocked_name_of_its_own_is_honoured(
+        self, scope_settings: ScopeSettings, make: Make, tmp_path: Path
+    ) -> None:
+        file = make("env/notes/todo.md")  # the user pointed straight at .../env/notes
+        chosen = ScopePolicy(
+            scope_settings.model_copy(update={"roots": (str(tmp_path / "env" / "notes"),)})
+        )
+        assert chosen.is_valid_file(file)
+
+
+class TestFileSymlinks:
+    def test_a_symlinked_file_is_not_followed(
+        self, policy: ScopePolicy, make: Make, tmp_path: Path
+    ) -> None:
+        target = make("real/secret-ish.txt", "contents\n")
+        link = tmp_path / "linked.txt"
+        try:
+            link.symlink_to(target)
+        except OSError:
+            pytest.skip("symlinks need developer mode or admin on this machine")
+        assert policy.is_valid_file(target)
+        assert not policy.is_valid_file(link)
+
+    def test_the_symlink_rule_does_not_need_real_links(
+        self, policy: ScopePolicy, make: Make, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = make("docs/notes.txt", "contents\n")
+        assert policy.is_valid_file(path)
+        monkeypatch.setattr(Path, "is_symlink", lambda self: self.name == "notes.txt")
+        assert not policy.is_valid_file(path)

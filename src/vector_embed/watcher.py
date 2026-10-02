@@ -29,7 +29,7 @@ from vector_embed.core.power import PowerGate
 from vector_embed.core.process import self_command, single_instance, stop_requested
 from vector_embed.core.projects import Projects
 from vector_embed.core.scope import ScopePolicy
-from vector_embed.core.settings import Settings, load_settings
+from vector_embed.core.settings import Settings, SettingsError, load_settings
 from vector_embed.core.store.sqlite import CHAT_LOCK, PROGRESS_KEY, StateDb
 
 logger = logging.getLogger("watcher")
@@ -339,6 +339,14 @@ def status(settings: Settings) -> str:
     return "\n".join(lines)
 
 
+def _current_embed_model(startup: Settings) -> str:
+    """The embedder named in the settings file *now*: it may have been changed since startup."""
+    try:
+        return load_settings().embedding.model
+    except SettingsError:
+        return startup.embedding.model
+
+
 def build_watcher(settings: Settings, state: StateDb) -> Watcher:
     scope = runtime.build_scope(settings)
     gate = IdleGate(
@@ -351,7 +359,7 @@ def build_watcher(settings: Settings, state: StateDb) -> Watcher:
         state,
         gate,
         SubprocessLauncher(runtime.log_dir(settings)),
-        lambda: unload_model(settings.ollama_host, settings.embedding.model),
+        lambda: unload_model(settings.ollama_host, _current_embed_model(settings)),
         projects=runtime.build_projects(settings, scope),
         scope=scope,
     )

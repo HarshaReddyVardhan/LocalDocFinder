@@ -576,6 +576,21 @@ class TestHelpers:
         monkeypatch.setattr(ollama_http.urllib.request, "urlopen", refuse)
         ollama_http.unload_model("http://host:1", "m")
 
+    def test_the_unload_uses_the_embedder_named_in_the_settings_file_now(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        changed = env.settings.model_copy(
+            update={"embedding": env.settings.embedding.model_copy(update={"model": "switched"})}
+        )
+        monkeypatch.setattr(watcher, "load_settings", lambda: changed)
+        assert watcher._current_embed_model(env.settings) == "switched"
+
+        def broken() -> object:
+            raise watcher.SettingsError("unreadable")
+
+        monkeypatch.setattr(watcher, "load_settings", broken)
+        assert watcher._current_embed_model(env.settings) == env.settings.embedding.model
+
     def test_build_watcher_wires_real_collaborators(self, env: Env) -> None:
         w = watcher.build_watcher(env.settings, env.state)
         assert isinstance(w.launcher, watcher.SubprocessLauncher)
