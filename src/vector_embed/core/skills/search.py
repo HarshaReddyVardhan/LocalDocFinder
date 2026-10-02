@@ -16,6 +16,7 @@ from pathlib import Path
 from pydantic import Field
 
 from vector_embed.core.providers.base import ProviderError
+from vector_embed.core.retrieval import hybrid_candidates
 from vector_embed.core.skills.base import (
     UI_LIST,
     Skill,
@@ -128,10 +129,6 @@ def parse_query(raw: str) -> ParsedQuery:
     return ParsedQuery(" ".join(text.split()), " AND ".join(clauses))
 
 
-def _fts_terms(text: str) -> str:
-    return " ".join(re.findall(r"\w+", text))
-
-
 class SearchInput(SkillInput):
     query: str = Field(description="Free text plus optional filters, e.g. 'retry proj:billing'")
     limit: int | None = Field(default=None, ge=1, description="Maximum results")
@@ -208,26 +205,17 @@ class SearchSkill(Skill):
             rows.sort(key=lambda r: r["mtime"], reverse=True)
             return self._group([(r, 1.0) for r in rows], limit, current_project, parsed.text)
 
-        by_chunk: dict[tuple[str, str], Row] = {}
-        scores: dict[tuple[str, str], float] = {}
-
-        def add(rows: list[Row]) -> None:
-            for rank, row in enumerate(rows):
-                key = (row["path"], row["chunk_hash"])
-                by_chunk.setdefault(key, row)
-                scores[key] = scores.get(key, 0.0) + 1.0 / (cfg.rrf_k + rank + 1)
-
-        try:  # vector leg; falls back to keyword-only if the model server is unreachable
-            vector = self.ctx.embedder.embed(
-                [parsed.text], kind="query", cpu=self.ctx.power.search_on_cpu()
-            )[0]
-            add(store.vector_search(CHUNKS, vector, _COLUMNS, parsed.where, cfg.candidates))
-        except ProviderError:
-            logger.info("search: embedding unavailable, using keyword search only")
-        terms = _fts_terms(parsed.text)
-        if terms:  # keyword leg: exact identifiers and error strings
-            add(store.fts_search(CHUNKS, terms, _COLUMNS, parsed.where, cfg.candidates))
-        pairs = [(by_chunk[key], score) for key, score in scores.items()]
+        candidates = hybrid_candidates(
+            store,
+            self.ctx.embedder,
+            self.ctx.power,
+            cfg,
+            table=CHUNKS,
+            text=parsed.text,
+            columns=_COLUMNS,
+            where=parsed.where,
+        )
+        pairs = [(c.row, c.score) for c in candidates]
         return self._group(pairs, limit, current_project, parsed.text)
 
     def _group(

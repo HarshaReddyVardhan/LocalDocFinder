@@ -329,6 +329,19 @@ class ModelSettings(_Section):
     refresh_seconds: int = Field(default=3600, gt=0)  # re-discover installed models this often
 
 
+class ChatSettings(_Section):
+    """Chat / Ask / Match. The chat model is loaded on demand and unloaded afterwards."""
+
+    num_ctx: int = Field(default=8192, gt=0)  # what fits next to the embedder-free VRAM budget
+    keep_alive: str = "10m"  # how long the model stays loaded between follow-up questions
+    idle_unload_seconds: int = Field(default=600, gt=0)
+    temperature: float = Field(default=0.2, ge=0, le=2)
+    context_token_budget: int = Field(default=5000, gt=0)  # retrieved or pinned text per prompt
+    history_token_budget: int = Field(default=1500, gt=0)
+    retrieve_chunks: int = Field(default=20, gt=0)
+    code_routing: bool = True  # code-heavy context goes to the ``code_chat`` role
+
+
 class SearchSettings(_Section):
     rrf_k: int = Field(default=60, gt=0)
     candidates: int = Field(default=60, gt=0)
@@ -367,6 +380,7 @@ class Settings(BaseSettings):
     images: ImageSettings = Field(default_factory=ImageSettings)
     doctypes: DocTypeSettings = Field(default_factory=DocTypeSettings)
     models: ModelSettings = Field(default_factory=ModelSettings)
+    chat: ChatSettings = Field(default_factory=ChatSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
 
