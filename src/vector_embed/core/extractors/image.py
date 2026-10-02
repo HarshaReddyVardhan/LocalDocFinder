@@ -85,6 +85,11 @@ def make_thumbnail(ctx: ExtractContext, image: Image.Image, file_hash: str) -> P
     return target
 
 
+def thumbnail_path(thumbs_dir: Path, image_path: Path) -> Path:
+    """Where ``make_thumbnail`` stores the thumbnail of ``image_path`` (keyed by file content)."""
+    return thumbs_dir / f"{xxhash.xxh3_64_hexdigest(image_path.read_bytes())}.jpg"
+
+
 def describe(ctx: ExtractContext, image: Image.Image, with_caption: bool = True) -> str:
     """OCR text plus an optional caption; ``""`` when the image carries neither."""
     parts: list[str] = []
