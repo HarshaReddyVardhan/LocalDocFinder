@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QSystemTrayIcon
 
 from vector_embed.app.assistant import AssistantService
@@ -22,19 +22,23 @@ from vector_embed.app.settings_controller import SettingsController
 from vector_embed.app.settings_window import SettingsWindow
 from vector_embed.app.setup_controller import SetupController
 from vector_embed.app.setup_wizard import SetupWizard
+from vector_embed.app.update_scheduler import UpdateScheduler
 from vector_embed.app.window import SearchWindow
 from vector_embed.core import runtime
 from vector_embed.core.autostart import Autostart
 from vector_embed.core.idle import SystemActivity
+from vector_embed.core.lifecycle import start_watcher
 from vector_embed.core.logging_setup import configure_logging
 from vector_embed.core.models.catalog import load_catalog
 from vector_embed.core.models.hardware import probe_hardware
+from vector_embed.core.process import is_frozen
 from vector_embed.core.secrets import KeyringStore
-from vector_embed.core.settings import SETTINGS_FILENAME, Settings, load_settings
+from vector_embed.core.settings import SETTINGS_FILENAME, Settings, SettingsError, load_settings
 from vector_embed.core.setup.flow import SETUP_COMPLETED_KEY
 from vector_embed.core.setup.wiring import FlowBuilder, build_flow
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.store.sqlite import StateDb
+from vector_embed.core.updates import Updater, resolve_source
 
 logger = logging.getLogger("app")
 
@@ -91,8 +95,24 @@ def build_window(
     )
 
 
-def make_settings_controller(path: Path, state: StateDb) -> SettingsController:
-    return SettingsController(path, state, KeyringStore(), apply_autostart=Autostart().apply)
+def make_settings_controller(
+    path: Path, state: StateDb, updater: Updater | None = None
+) -> SettingsController:
+    return SettingsController(
+        path, state, KeyringStore(), apply_autostart=Autostart().apply, updater=updater
+    )
+
+
+def auto_check_enabled(path: Path) -> Callable[[], bool]:
+    """Re-reads the setting each time, so toggling it in Settings takes effect immediately."""
+
+    def enabled() -> bool:
+        try:
+            return load_settings(path).updates.auto_check
+        except SettingsError:
+            return True
+
+    return enabled
 
 
 def build_settings_window(
@@ -100,23 +120,41 @@ def build_settings_window(
     state: StateDb,
     context: Callable[[], SkillContext],
     on_hotkey: Callable[[str], None],
+    updater: Updater | None = None,
 ) -> SettingsWindow:
     path = settings.storage.data_dir / SETTINGS_FILENAME
-    window = SettingsWindow(make_settings_controller(path, state), ModelsController(context, path))
+    window = SettingsWindow(
+        make_settings_controller(path, state, updater), ModelsController(context, path)
+    )
     window.hotkey_changed.connect(on_hotkey)
     return window
+
+
+def announce_update(tray: QSystemTrayIcon, restart_action: QAction, version: str) -> None:
+    restart_action.setVisible(True)
+    tray.showMessage(
+        "Vector Embed",
+        f"Version {version} is ready. Choose Restart to update in the tray menu.",
+        QSystemTrayIcon.MessageIcon.Information,
+        8000,
+    )
 
 
 def setup_needed(state: StateDb) -> bool:
     return state.get_meta(SETUP_COMPLETED_KEY) is None
 
 
-def run_setup_wizard(settings: Settings, state: StateDb, build: FlowBuilder = build_flow) -> None:
+def run_setup_wizard(
+    settings: Settings,
+    state: StateDb,
+    build: FlowBuilder = build_flow,
+    updater: Updater | None = None,
+) -> None:
     """Show the first-run wizard (also reachable from the tray); returns when it closes."""
     path = settings.storage.data_dir / SETTINGS_FILENAME
     wizard = SetupWizard(
         SetupController(build, settings, state),
-        make_settings_controller(path, state),
+        make_settings_controller(path, state, updater),
         load_catalog(settings.storage.data_dir),
         probe_hardware(),
     )
@@ -149,6 +187,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     app.setQuitOnLastWindowClosed(False)
     with StateDb(settings.storage.data_dir) as state:
         context = make_context_factory(settings, state)
+        updater = Updater(resolve_source(settings.updates.repo_url), state=state)
         window = build_window(settings, state, context)
         hotkey = HotkeyFilter(window.summon)
         app.installNativeEventFilter(hotkey)
@@ -165,13 +204,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         def open_settings() -> None:
             if not settings_window:
                 settings_window.append(
-                    build_settings_window(settings, state, context, hotkey_applier(hotkey, tray))
+                    build_settings_window(
+                        settings, state, context, hotkey_applier(hotkey, tray), updater
+                    )
                 )
             settings_window[0].open()
 
         menu.addAction("Search", window.summon)
         menu.addAction("Settings…", open_settings)
-        menu.addAction("Run setup again…", lambda: run_setup_wizard(settings, state))
+        menu.addAction(
+            "Run setup again…", lambda: run_setup_wizard(settings, state, updater=updater)
+        )
+        restart_action = menu.addAction("Restart to update", updater.restart_to_update)
+        restart_action.setVisible(False)  # shown once an update has been downloaded
         menu.addAction("Quit", app.quit)
         tray.setContextMenu(menu)
         suffix = "" if registered else " - hotkey unavailable"
@@ -189,8 +234,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 QSystemTrayIcon.MessageIcon.Warning,
                 5000,
             )
+        scheduler = UpdateScheduler(
+            updater, auto_check_enabled(settings.storage.data_dir / SETTINGS_FILENAME)
+        )
+        scheduler.ready.connect(lambda version: announce_update(tray, restart_action, version))
+        scheduler.start()
+        if is_frozen():
+            start_watcher()  # a fresh install has had no logon yet; a no-op if one is running
         if args.setup or setup_needed(state):
-            run_setup_wizard(settings, state)
+            run_setup_wizard(settings, state, updater=updater)
         if args.show:
             window.summon()
         code = app.exec()

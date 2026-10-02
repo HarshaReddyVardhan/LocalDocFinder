@@ -6,11 +6,13 @@ from importlib import metadata
 from pathlib import Path
 
 from vector_embed.app.hotkey import parse_hotkey
+from vector_embed.core.lifecycle import schedule_data_deletion, stop_other_instances
 from vector_embed.core.models.benchmark import BenchResult, load_results
 from vector_embed.core.secrets import KeyStore
 from vector_embed.core.settings import Settings, SettingsError, load_settings
 from vector_embed.core.settings_io import set_setting
 from vector_embed.core.store.sqlite import StateDb
+from vector_embed.core.updates import UpdateKind, UpdateOutcome, Updater
 
 PACKAGE_NAME = "vector-embed"
 NO_UPDATES = "Updates are not available in this build."
@@ -38,13 +40,17 @@ class SettingsController:
         keys: KeyStore,
         *,
         apply_autostart: Callable[[bool], None] = lambda enabled: None,
-        check_for_updates: Callable[[], str] = lambda: NO_UPDATES,
+        updater: Updater | None = None,
+        stop_others: Callable[[], object] = stop_other_instances,
+        schedule_deletion: Callable[[Path], None] = schedule_data_deletion,
     ) -> None:
         self._path = settings_path
         self._state = state
         self._keys = keys
         self._apply_autostart = apply_autostart
-        self._check_for_updates = check_for_updates
+        self._updater = updater
+        self._stop_others = stop_others
+        self._schedule_deletion = schedule_deletion
 
     @property
     def settings_path(self) -> Path:
@@ -107,5 +113,20 @@ class SettingsController:
     def set_auto_check(self, enabled: bool) -> None:
         set_setting(self._path, ["updates", "auto_check"], enabled)
 
-    def check_now(self) -> str:
-        return self._check_for_updates()
+    def check_now(self) -> UpdateOutcome:
+        """Look for an update and download it; may take a while, so call it off the UI thread."""
+        if self._updater is None:
+            return UpdateOutcome(UpdateKind.NOT_CONFIGURED, NO_UPDATES)
+        return self._updater.check()
+
+    def restart_to_update(self) -> None:
+        if self._updater is None:
+            raise RuntimeError(NO_UPDATES)
+        self._updater.restart_to_update()
+
+    # ------------------------------------------------------------------ data
+    def delete_my_data(self) -> None:
+        """Stop everything, then remove the data folder once this process has exited."""
+        self._apply_autostart(False)  # so nothing restarts at the next logon
+        self._stop_others()
+        self._schedule_deletion(self._path.parent)

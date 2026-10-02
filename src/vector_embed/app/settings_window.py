@@ -29,6 +29,7 @@ class SettingsWindow(QWidget):
         *,
         general: GeneralTab | None = None,
         cloud: CloudTab | None = None,
+        about: AboutTab | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle(WINDOW_TITLE)
@@ -37,7 +38,7 @@ class SettingsWindow(QWidget):
         self.models = ModelsTab(controller, ModelsPanel(models))
         self.cloud = cloud or CloudTab(controller)
         self.updates = UpdatesTab(controller)
-        self.about = AboutTab(controller)
+        self.about = about or AboutTab(controller)
         self.tabs = QTabWidget()
         self._pages: list[SettingsTab] = []
         for title, page in (

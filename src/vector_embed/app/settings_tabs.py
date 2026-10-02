@@ -2,9 +2,10 @@
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QUrl, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -23,6 +25,7 @@ from vector_embed.app.models_panel import ModelsPanel
 from vector_embed.app.settings_controller import SettingsController, app_version
 from vector_embed.core.models.benchmark import BenchKind, Verdict, judge
 from vector_embed.core.settings import SettingsError
+from vector_embed.core.updates import UpdateKind, UpdateOutcome
 
 ADD_FOLDER_TITLE = "Add a folder to index"
 KEY_PROMPT_TITLE = "API key"
@@ -258,47 +261,102 @@ class CloudTab(SettingsTab):
         self._guard(lambda: self._controller.set_monthly_budget(value), "budget saved")
 
 
+class _CheckSignals(QObject):
+    done = Signal(object)  # UpdateOutcome
+
+
+class _CheckJob(QRunnable):
+    def __init__(self, controller: SettingsController, signals: _CheckSignals) -> None:
+        super().__init__()
+        self._controller = controller
+        self._signals = signals
+
+    def run(self) -> None:
+        self._signals.done.emit(self._controller.check_now())
+
+
 class UpdatesTab(SettingsTab):
-    def __init__(self, controller: SettingsController) -> None:
+    def __init__(self, controller: SettingsController, pool: QThreadPool | None = None) -> None:
         super().__init__(controller)
+        self._pool = pool or QThreadPool.globalInstance()
+        self._signals = _CheckSignals()
+        self._signals.done.connect(self._show_outcome)
         self.auto_check = QCheckBox("Check for updates automatically")
         self.check_now = QPushButton("Check now")
+        self.restart = QPushButton("Restart to update")
+        self.restart.setVisible(False)
         self.result = QLabel("")
         self.result.setWordWrap(True)
         layout = QVBoxLayout(self)
         layout.addWidget(self.auto_check)
         layout.addWidget(self.check_now)
         layout.addWidget(self.result)
+        layout.addWidget(self.restart)
         layout.addStretch(1)
         self.refresh()
         self.auto_check.clicked.connect(
             lambda on: self._guard(lambda: self._controller.set_auto_check(on), "saved")
         )
         self.check_now.clicked.connect(self._check)
+        self.restart.clicked.connect(lambda: self._guard(self._controller.restart_to_update))
 
     def refresh(self) -> None:
         self.auto_check.setChecked(self._controller.settings().updates.auto_check)
 
     def _check(self) -> None:
-        self.result.setText(self._controller.check_now())
+        """The check downloads a release, so it runs in the background."""
+        self.check_now.setEnabled(False)
+        self.result.setText("Checking…")
+        self._pool.start(_CheckJob(self._controller, self._signals))
+
+    def _show_outcome(self, outcome: UpdateOutcome) -> None:
+        self.check_now.setEnabled(True)
+        self.result.setText(outcome.message)
+        self.restart.setVisible(outcome.kind is UpdateKind.READY)
+
+
+def confirm_delete_dialog() -> bool:
+    answer = QMessageBox.warning(
+        None,
+        "Delete my data",
+        "This removes the search index, settings and logs, and closes Vector Embed.\n"
+        "Your files and Ollama models are not touched. Continue?",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        QMessageBox.StandardButton.Cancel,
+    )
+    return answer == QMessageBox.StandardButton.Yes
 
 
 class AboutTab(SettingsTab):
-    def __init__(self, controller: SettingsController) -> None:
+    def __init__(
+        self,
+        controller: SettingsController,
+        confirm_delete: Callable[[], bool] = confirm_delete_dialog,
+        quit_app: Callable[[], None] = lambda: QApplication.quit(),  # noqa: PLW0108
+    ) -> None:
         super().__init__(controller)
+        self._confirm_delete = confirm_delete
+        self._quit_app = quit_app
         self.version = QLabel(f"Vector Embed {app_version()}")
         self.data_folder = QLabel("")
         self.data_folder.setWordWrap(True)
         self.open_folder = QPushButton("Open data folder")
+        self.delete_data = QPushButton("Delete my data…")
         layout = QFormLayout(self)
         layout.addRow(self.version)
         layout.addRow("Data folder", self.data_folder)
         layout.addRow(self.open_folder)
+        layout.addRow(self.delete_data)
         self.refresh()
         self.open_folder.clicked.connect(self._open)
+        self.delete_data.clicked.connect(self._delete)
 
     def refresh(self) -> None:
         self.data_folder.setText(str(self._controller.settings_path.parent))
+
+    def _delete(self) -> None:
+        if self._confirm_delete() and self._guard(self._controller.delete_my_data):
+            self._quit_app()
 
     def _open(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._controller.settings_path.parent)))

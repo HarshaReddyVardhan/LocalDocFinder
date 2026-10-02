@@ -334,7 +334,8 @@ def test_main_runs_the_wizard_only_when_setup_is_incomplete(
     monkeypatch.setattr(qapp, "exec", lambda: 0)
     monkeypatch.setattr(app_main.HotkeyFilter, "register", lambda _self, _spec: True)
     monkeypatch.setattr(QSystemTrayIcon, "show", lambda _self: None)
-    monkeypatch.setattr(app_main, "run_setup_wizard", lambda *_a: calls.append(1))
+    monkeypatch.setattr(app_main.UpdateScheduler, "start", lambda _self: None)
+    monkeypatch.setattr(app_main, "run_setup_wizard", lambda *_a, **_k: calls.append(1))
     assert app_main.main([]) == 0
     assert calls == ([1] if needed else [])
 
@@ -350,7 +351,8 @@ def test_main_setup_flag_forces_the_wizard(
     monkeypatch.setattr(qapp, "exec", lambda: 0)
     monkeypatch.setattr(app_main.HotkeyFilter, "register", lambda _self, _spec: True)
     monkeypatch.setattr(QSystemTrayIcon, "show", lambda _self: None)
-    monkeypatch.setattr(app_main, "run_setup_wizard", lambda *_a: calls.append(1))
+    monkeypatch.setattr(app_main.UpdateScheduler, "start", lambda _self: None)
+    monkeypatch.setattr(app_main, "run_setup_wizard", lambda *_a, **_k: calls.append(1))
     assert app_main.main(["--setup"]) == 0
     assert calls == [1]
 
@@ -364,3 +366,21 @@ def test_settings_controller_applies_autostart_through_task_scheduler(
     controller = app_main.make_settings_controller(env.data_dir / "settings.toml", env.state)
     controller.set_start_with_windows(False)
     assert applied == [False]
+
+
+def test_a_frozen_app_starts_the_watcher_and_the_update_scheduler(
+    qapp: QApplication, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env.state.set_meta(SETUP_COMPLETED_KEY, "1.0")
+    started: list[str] = []
+    monkeypatch.setattr(app_main, "load_settings", lambda: env.settings)
+    monkeypatch.setattr(app_main, "configure_logging", lambda *_a, **_k: None)
+    monkeypatch.setattr(app_main, "QApplication", lambda _argv: qapp)
+    monkeypatch.setattr(qapp, "exec", lambda: 0)
+    monkeypatch.setattr(app_main.HotkeyFilter, "register", lambda _self, _spec: True)
+    monkeypatch.setattr(QSystemTrayIcon, "show", lambda _self: None)
+    monkeypatch.setattr(app_main, "is_frozen", lambda: True)
+    monkeypatch.setattr(app_main, "start_watcher", lambda: started.append("watcher"))
+    monkeypatch.setattr(app_main.UpdateScheduler, "start", lambda _self: started.append("updates"))
+    assert app_main.main([]) == 0
+    assert started == ["updates", "watcher"]

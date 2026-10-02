@@ -1,5 +1,6 @@
 import tomllib
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 from PySide6.QtWidgets import QApplication
@@ -9,12 +10,13 @@ from tests.core.conftest import Chat, Env
 from vector_embed.app import main as app_main
 from vector_embed.app.models_controller import ModelsController
 from vector_embed.app.settings_controller import NO_UPDATES, SettingsController, app_version
-from vector_embed.app.settings_tabs import CloudTab, GeneralTab
+from vector_embed.app.settings_tabs import AboutTab, CloudTab, GeneralTab
 from vector_embed.app.settings_window import SettingsWindow
 from vector_embed.core.models.benchmark import BenchKind, BenchResult, record_result
 from vector_embed.core.settings import CloudProviderSettings, Settings, SettingsError
 from vector_embed.core.settings_io import set_setting
 from vector_embed.core.skills.base import SkillContext
+from vector_embed.core.updates import UpdateKind, Updater
 
 
 class FakeKeys:
@@ -117,7 +119,8 @@ def test_speed_tests_and_update_check(env: Env, controller: SettingsController) 
     result = BenchResult("m", BenchKind.CHAT, 20.0, 1.0)
     record_result(env.state, result)
     assert controller.speed_tests() == [result]
-    assert controller.check_now() == NO_UPDATES
+    outcome = controller.check_now()
+    assert (outcome.kind, outcome.message) == (UpdateKind.NOT_CONFIGURED, NO_UPDATES)
     assert app_version()
 
 
@@ -242,16 +245,107 @@ def test_cloud_tab_stores_a_key_without_showing_it(
     assert "sk-typed" not in window.cloud.key_labels[0].text()
 
 
-def test_updates_tab(window: SettingsWindow, controller: SettingsController) -> None:
+def test_updates_tab_without_an_update_source(
+    qapp: QApplication, window: SettingsWindow, controller: SettingsController
+) -> None:
     window.updates.check_now.click()
+    assert not window.updates.check_now.isEnabled()  # busy while the check runs
+    wait_for(qapp, window.updates.check_now.isEnabled)
     assert window.updates.result.text() == NO_UPDATES
+    assert window.updates.restart.isHidden()
     window.updates.auto_check.click()
     assert not controller.settings().updates.auto_check
+
+
+class FakeUpdateManager:
+    def __init__(self) -> None:
+        self.applied: list[object] = []
+
+    def get_current_version(self) -> str:
+        return "1.0.0"
+
+    def check_for_updates(self) -> object:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(TargetFullRelease=SimpleNamespace(Version="1.1.0"))
+
+    def download_updates(self, info: object, progress: object = None) -> None:
+        return None
+
+    def apply_updates_and_restart(self, update: object) -> None:
+        self.applied.append(update)
+
+
+def test_updates_tab_offers_a_restart_when_an_update_is_ready(
+    qapp: QApplication, env: Env, keys: FakeKeys, models: ModelsController
+) -> None:
+    manager = FakeUpdateManager()
+    updater = Updater("https://github.com/x/y", state=env.state, factory=lambda _url: manager)
+    controller = SettingsController(
+        env.data_dir / "settings.toml", env.state, keys, updater=updater
+    )
+    window = SettingsWindow(controller, models)
+    window.updates.check_now.click()
+    wait_for(qapp, lambda: not window.updates.restart.isHidden())
+    assert window.updates.result.text() == "Version 1.1.0 is ready. Restart to update."
+    window.updates.restart.click()
+    assert len(manager.applied) == 1
+
+
+def test_restart_without_an_updater_is_refused(
+    controller: SettingsController, window: SettingsWindow
+) -> None:
+    with pytest.raises(RuntimeError, match="not available"):
+        controller.restart_to_update()
+    window.updates.restart.click()  # the tab reports it instead of raising
+    assert "not available" in window.status.text()
 
 
 def test_about_tab_shows_the_data_folder(window: SettingsWindow, env: Env) -> None:
     assert window.about.data_folder.text() == str(env.data_dir)
     assert window.about.version.text().startswith("Vector Embed ")
+
+
+def deleting_window(
+    env: Env,
+    keys: FakeKeys,
+    models: ModelsController,
+    autostart: list[bool],
+    confirm: bool,
+) -> tuple[SettingsWindow, list[str], list[Path], list[int]]:
+    steps: list[str] = []
+    deleted: list[Path] = []
+    quits: list[int] = []
+    controller = SettingsController(
+        env.data_dir / "settings.toml",
+        env.state,
+        keys,
+        apply_autostart=lambda enabled: steps.append(f"autostart {enabled}"),
+        stop_others=lambda: steps.append("stop"),
+        schedule_deletion=deleted.append,
+    )
+    window = SettingsWindow(
+        controller, models, about=AboutTab(controller, lambda: confirm, lambda: quits.append(1))
+    )
+    return window, steps, deleted, quits
+
+
+def test_delete_my_data_stops_everything_schedules_the_wipe_and_quits(
+    env: Env, keys: FakeKeys, models: ModelsController, autostart: list[bool]
+) -> None:
+    window, steps, deleted, quits = deleting_window(env, keys, models, autostart, confirm=True)
+    window.about.delete_data.click()
+    assert steps == ["autostart False", "stop"]
+    assert deleted == [env.data_dir]
+    assert quits == [1]
+
+
+def test_delete_my_data_needs_confirmation(
+    env: Env, keys: FakeKeys, models: ModelsController, autostart: list[bool]
+) -> None:
+    window, steps, deleted, quits = deleting_window(env, keys, models, autostart, confirm=False)
+    window.about.delete_data.click()
+    assert (steps, deleted, quits) == ([], [], [])
 
 
 def test_models_tab_lists_speed_tests(qapp: QApplication, window: SettingsWindow, env: Env) -> None:

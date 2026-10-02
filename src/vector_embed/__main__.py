@@ -8,6 +8,8 @@ import importlib
 import sys
 from collections.abc import Callable, Sequence
 
+from vector_embed.core.process import is_frozen
+
 DEFAULT_ENTRY = "app"
 # entry -> (module with a ``main(argv)`` function, arguments always passed to it)
 _ENTRIES: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -16,6 +18,19 @@ _ENTRIES: dict[str, tuple[str, tuple[str, ...]]] = {
     "worker": ("vector_embed.worker", ()),
     "setup": ("vector_embed.app.main", ("--setup",)),  # the windowed exe has no console
 }
+
+
+def _run_velopack_hooks() -> None:
+    from vector_embed.core.lifecycle import run_startup_hooks
+    from vector_embed.core.settings import SettingsError, load_settings
+
+    def autostart_enabled() -> bool:
+        try:
+            return load_settings().app.start_with_windows
+        except SettingsError:
+            return True
+
+    run_startup_hooks(enabled=autostart_enabled)
 
 
 def resolve(argv: Sequence[str]) -> tuple[Callable[[Sequence[str]], int], list[str]]:
@@ -29,6 +44,8 @@ def resolve(argv: Sequence[str]) -> tuple[Callable[[Sequence[str]], int], list[s
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    if is_frozen():
+        _run_velopack_hooks()  # first, before anything else: Velopack calls us with install flags
     handler, args = resolve(sys.argv[1:] if argv is None else argv)
     return handler(args)
 

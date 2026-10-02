@@ -36,6 +36,7 @@ dependencies = [
     "winrt-Windows.Storage.Streams; sys_platform == 'win32'",
     "winrt-Windows.Globalization; sys_platform == 'win32'",
     "mcp>=2,<3",
+    "velopack>=1.2",
 ]
 
 [project.scripts]
@@ -52,6 +53,10 @@ dev = [
     "pip-audit>=2.7",
     "types-psutil",
     "types-PyYAML",
+]
+
+build = [
+    "pyinstaller>=6.10",
 ]
 
 [build-system]

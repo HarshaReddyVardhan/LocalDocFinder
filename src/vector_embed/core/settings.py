@@ -410,6 +410,7 @@ class AppSettings(_Section):
 
 class UpdateSettings(_Section):
     auto_check: bool = True  # look for a new release in the background (at start, then daily)
+    repo_url: str = ""  # GitHub repository to update from; empty uses the one built in
 
 
 class StorageSettings(_Section):

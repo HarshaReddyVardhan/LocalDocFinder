@@ -30,3 +30,9 @@ htmlcov/
 # Local Claude Code state (rules in .claude/ are committed)
 .claude/settings.local.json
 .claude/worktrees/
+
+# Installer build output (scripts/build.ps1)
+Releases/
+packaging/*.ico
+src/vector_embed/update_source.txt
+.tools/

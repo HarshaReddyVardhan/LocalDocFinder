@@ -36,6 +36,11 @@ def single_instance(name: str, data_dir: Path) -> Iterator[bool]:
 ENTRY_POINTS = ("app", "watcher", "worker", "setup")  # what ``vector_embed.__main__`` dispatches
 
 
+def is_frozen() -> bool:
+    """True inside the PyInstaller build."""
+    return bool(getattr(sys, "frozen", False))
+
+
 def self_command(entry: str, *, windowless: bool = False) -> list[str]:
     """Command line that starts one of our entry points, from source or from the frozen build.
 
@@ -44,7 +49,7 @@ def self_command(entry: str, *, windowless: bool = False) -> list[str]:
     """
     if entry not in ENTRY_POINTS:
         raise ValueError(f"unknown entry point {entry!r}")
-    if getattr(sys, "frozen", False):
+    if is_frozen():
         return [sys.executable, entry]
     interpreter = Path(sys.executable)
     if windowless and (quiet := interpreter.with_name("pythonw.exe")).is_file():
