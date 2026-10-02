@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 import pytest
@@ -184,3 +185,59 @@ def test_size_hint_follows_the_views_current_row(qapp: QApplication, tmp_path: P
     qapp.processEvents()
     first, second = view.sizeHintForRow(0), view.sizeHintForRow(1)
     assert first > second  # the current row makes room for its snippet
+
+
+def test_a_thumbnail_is_read_from_disk_once_not_on_every_paint(
+    delegate: ResultDelegate, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    picture = tmp_path / "pic.png"
+    Image.new("RGB", (200, 100), "red").save(picture)
+    thumb = thumbnail_path(tmp_path / "thumbs", picture)
+    thumb.parent.mkdir(parents=True)
+    Image.new("RGB", (50, 25), "red").save(thumb, format="JPEG")
+    loads: list[str] = []
+    from vector_embed.app import result_delegate as module
+
+    original = module.QPixmap
+    monkeypatch.setattr(
+        module, "QPixmap", lambda path="": loads.append(str(path)) or original(path)
+    )
+    row = make_row(path=str(picture), is_image=True)
+    for _ in range(30):  # a repaint asks for the same rows again and again
+        assert not delegate.icon_for(row).pixmap(ICON_SIZE).isNull()
+    assert len(loads) == 1
+
+
+def test_a_missing_thumbnail_is_not_looked_up_on_every_paint_but_is_retried_later(
+    delegate: ResultDelegate, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vector_embed.app import result_delegate as module
+
+    picture = tmp_path / "later.png"
+    Image.new("RGB", (200, 100), "blue").save(picture)
+    lookups: list[int] = []
+    original = module.thumbnail_path
+    monkeypatch.setattr(module, "thumbnail_path", lambda *a: lookups.append(1) or original(*a))
+    row = make_row(path=str(picture), is_image=True)
+    for _ in range(10):
+        delegate.icon_for(row)
+    assert len(lookups) == 1  # remembered as missing
+    clock = [time.monotonic()]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0] + 60)  # much later
+    delegate.icon_for(row)
+    assert len(lookups) == 2  # tried again: the image may have been indexed meanwhile
+
+
+def test_the_icon_caches_are_bounded() -> None:
+    from vector_embed.app.result_delegate import _BoundedCache
+
+    cache: _BoundedCache[int] = _BoundedCache(3)
+    for i in range(10):
+        cache.put(f"k{i}", i)
+    assert len(cache) == 3
+    assert cache.get("k0") is None
+    assert cache.get("k9") == 9
+    cache.get("k7")  # touching an entry keeps it
+    cache.put("k10", 10)
+    assert cache.get("k7") == 7
+    assert cache.get("k8") is None

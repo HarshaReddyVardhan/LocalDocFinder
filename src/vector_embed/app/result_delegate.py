@@ -4,7 +4,10 @@ The selected row also shows its snippet. Rows without a ``ResultRow`` (the sourc
 Chat mode) fall back to the default painting.
 """
 
+import time
+from collections import OrderedDict
 from pathlib import Path
+from typing import Generic, TypeVar
 
 from PySide6.QtCore import QFileInfo, QModelIndex, QPersistentModelIndex, QRect, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPixmap
@@ -21,6 +24,10 @@ from PySide6.QtWidgets import (
 from vector_embed.app.controller import ResultRow
 from vector_embed.core.extractors.image import thumbnail_path
 
+_V = TypeVar("_V")
+_ICON_CACHE_SIZE = 512
+_THUMB_CACHE_SIZE = 256
+_RETRY_THUMBNAIL_SECONDS = 5.0  # a thumbnail may appear once the image has been indexed
 ROW_ROLE = Qt.ItemDataRole.UserRole
 ICON_SIZE = 32
 PADDING = 8
@@ -33,6 +40,29 @@ SNIPPET_COLOR = QColor("#b5bac6")
 PER_FILE_ICON_EXTS = frozenset({"", ".exe", ".lnk", ".ico", ".msi", ".url", ".appx"})
 
 
+class _BoundedCache(Generic[_V]):
+    """A small least-recently-used cache: a list that is scrolled for hours must not grow."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._items: OrderedDict[str, _V] = OrderedDict()
+
+    def get(self, key: str) -> _V | None:
+        value = self._items.get(key)
+        if value is not None:
+            self._items.move_to_end(key)
+        return value
+
+    def put(self, key: str, value: _V) -> None:
+        self._items[key] = value
+        self._items.move_to_end(key)
+        while len(self._items) > self._limit:
+            self._items.popitem(last=False)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+
 class ResultDelegate(QStyledItemDelegate):
     def __init__(
         self,
@@ -43,7 +73,9 @@ class ResultDelegate(QStyledItemDelegate):
         super().__init__(parent)
         self._thumbs_dir = thumbs_dir
         self._icons = icons or QFileIconProvider()
-        self._cache: dict[str, QIcon] = {}
+        self._cache: _BoundedCache[QIcon] = _BoundedCache(_ICON_CACHE_SIZE)
+        self._thumbs: _BoundedCache[QIcon] = _BoundedCache(_THUMB_CACHE_SIZE)
+        self._missing: _BoundedCache[float] = _BoundedCache(_THUMB_CACHE_SIZE)  # path -> when
 
     # ------------------------------------------------------------------ icons
     def icon_for(self, row: ResultRow) -> QIcon:
@@ -52,18 +84,32 @@ class ResultDelegate(QStyledItemDelegate):
             return thumb
         suffix = Path(row.path).suffix.lower()
         key = row.path.lower() if suffix in PER_FILE_ICON_EXTS else suffix
-        if key not in self._cache:
-            self._cache[key] = self._icons.icon(QFileInfo(row.path))
-        return self._cache[key]
+        icon = self._cache.get(key)
+        if icon is None:
+            icon = self._icons.icon(QFileInfo(row.path))
+            self._cache.put(key, icon)
+        return icon
 
     def _thumbnail(self, row: ResultRow) -> QIcon | None:
+        """The image's thumbnail, loaded once (painting asks again for every visible row)."""
         if not row.is_image:
             return None
+        cached = self._thumbs.get(row.path)
+        if cached is not None:
+            return cached
+        tried_at = self._missing.get(row.path)
+        if tried_at is not None and time.monotonic() - tried_at < _RETRY_THUMBNAIL_SECONDS:
+            return None  # no thumbnail a moment ago: do not hit the disk on every repaint
         try:
             pixmap = QPixmap(str(thumbnail_path(self._thumbs_dir, Path(row.path))))
         except OSError:
+            pixmap = QPixmap()
+        if pixmap.isNull():
+            self._missing.put(row.path, time.monotonic())
             return None
-        return None if pixmap.isNull() else QIcon(pixmap)
+        icon = QIcon(pixmap)
+        self._thumbs.put(row.path, icon)
+        return icon
 
     # ------------------------------------------------------------------ layout
     @staticmethod
