@@ -8,7 +8,6 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 
@@ -23,7 +22,6 @@ from vector_embed.core.models.catalog import load_catalog
 from vector_embed.core.models.registry import ModelRegistry
 from vector_embed.core.power import PowerGate
 from vector_embed.core.privacy.policy import DocTypeLookup, PrivacyFilter
-from vector_embed.core.projects import Projects
 from vector_embed.core.providers.ollama import OllamaProvider
 from vector_embed.core.providers.openai_compat import OpenAICompatibleProvider
 from vector_embed.core.scope import ScopePolicy
@@ -32,21 +30,15 @@ from vector_embed.core.settings import Settings
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.store.lance import LanceStore
 from vector_embed.core.store.sqlite import EMBEDDER_APPROVED_KEY, StateDb
+from vector_embed.core.wiring import LOGS_DIRNAME as LOGS_DIRNAME  # noqa: PLC0414
+from vector_embed.core.wiring import THUMBS_DIRNAME as THUMBS_DIRNAME  # noqa: PLC0414
+from vector_embed.core.wiring import build_projects as build_projects  # noqa: PLC0414
+from vector_embed.core.wiring import build_scope as build_scope  # noqa: PLC0414
+from vector_embed.core.wiring import log_dir as log_dir  # noqa: PLC0414
 
 logger = logging.getLogger(__name__)
 
-LOGS_DIRNAME = "logs"
-THUMBS_DIRNAME = "thumbs"
 _PROTOTYPES_KEY = "doctype_prototypes"
-
-
-def build_scope(settings: Settings) -> ScopePolicy:
-    """The scope policy; the app's own data folder is never indexed."""
-    return ScopePolicy(settings.scope, blocked_roots=[settings.storage.data_dir])
-
-
-def build_projects(settings: Settings, scope: ScopePolicy) -> Projects:
-    return Projects(scope, settings.scope)
 
 
 def build_provider(settings: Settings) -> OllamaProvider:
@@ -112,10 +104,6 @@ def load_prototypes(state: StateDb, provider: OllamaProvider) -> dict[str, np.nd
         json.dumps({"model": model, "vectors": {k: v.tolist() for k, v in prototypes.items()}}),
     )
     return prototypes
-
-
-def log_dir(settings: Settings) -> Path:
-    return settings.storage.data_dir / LOGS_DIRNAME
 
 
 def build_model_registry(

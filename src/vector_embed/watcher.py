@@ -20,7 +20,6 @@ from typing import Protocol
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
-from vector_embed.core import runtime
 from vector_embed.core.idle import IdleGate
 from vector_embed.core.logging_setup import configure_logging
 from vector_embed.core.models.hardware import on_ac_power
@@ -31,6 +30,7 @@ from vector_embed.core.projects import Projects
 from vector_embed.core.scope import ScopePolicy
 from vector_embed.core.settings import Settings, SettingsError, load_settings
 from vector_embed.core.store.sqlite import CHAT_LOCK, PROGRESS_KEY, StateDb
+from vector_embed.core.wiring import build_projects, build_scope, log_dir
 
 logger = logging.getLogger("watcher")
 
@@ -348,7 +348,7 @@ def _current_embed_model(startup: Settings) -> str:
 
 
 def build_watcher(settings: Settings, state: StateDb) -> Watcher:
-    scope = runtime.build_scope(settings)
+    scope = build_scope(settings)
     gate = IdleGate(
         PowerGate(settings.power),
         settings.idle,
@@ -358,9 +358,9 @@ def build_watcher(settings: Settings, state: StateDb) -> Watcher:
         settings,
         state,
         gate,
-        SubprocessLauncher(runtime.log_dir(settings)),
+        SubprocessLauncher(log_dir(settings)),
         lambda: unload_model(settings.ollama_host, _current_embed_model(settings)),
-        projects=runtime.build_projects(settings, scope),
+        projects=build_projects(settings, scope),
         scope=scope,
     )
 
@@ -373,7 +373,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.status:
         sys.stdout.write(status(settings) + "\n")
         return 0
-    configure_logging("watcher", runtime.log_dir(settings), settings.log_level)
+    configure_logging("watcher", log_dir(settings), settings.log_level)
     with single_instance("watcher", settings.storage.data_dir) as acquired:
         if not acquired:
             logger.info("watcher already running")
