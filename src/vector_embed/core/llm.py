@@ -246,8 +246,11 @@ class LlmGateway:
         *,
         session: bool = False,
         local_only: bool = False,
+        target: ChatTarget | None = None,
     ) -> Iterator[ChatChunk]:
-        target = self.target(role, local_only=local_only)
+        """Stream a reply. Pass ``target`` (from ``target()``) to send to exactly the model that a
+        privacy decision was made for, rather than resolving the route a second time."""
+        target = target or self.target(role, local_only=local_only)
         if target.local:
             self._free_embedder()
             self._loaded.add(target.model)
@@ -269,8 +272,9 @@ class LlmGateway:
         *,
         session: bool = False,
         local_only: bool = False,
+        target: ChatTarget | None = None,
     ) -> JsonResult:
-        target = self.target(role, local_only=local_only)
+        target = target or self.target(role, local_only=local_only)
         if target.local:
             self._free_embedder()
             self._loaded.add(target.model)

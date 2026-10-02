@@ -11,6 +11,7 @@ from vector_embed.core.documents import DocumentLoader
 from vector_embed.core.llm import ChatBlockedError
 from vector_embed.core.match.pipeline import MatchPipeline
 from vector_embed.core.match.recall import select_all
+from vector_embed.core.privacy.policy import PrivacyFilter
 from vector_embed.core.providers.base import Message
 from vector_embed.core.skills.ask import AskInput, AskSkill
 from vector_embed.core.skills.base import SkillContext
@@ -94,6 +95,61 @@ class TestAsk:
         with pytest.raises(ChatBlockedError, match="consent"):
             AskSkill(skill_ctx).run(AskInput(question="how do we retry failed payments"))
         assert cloud.inner.sent == []
+
+
+CODE_PUBLIC = """def retry_payment(charge):
+    return backoff(charge)  # retry failed payment
+"""
+CODE_PRIVATE = """def retry_payment_secretly(charge):
+    return vault(charge)  # retry failed payment
+"""
+
+
+class TestCodeRouting:
+    def test_code_chat_to_the_cloud_never_carries_private_files(
+        self, env: Env, chat: Chat, cloud: CloudRig, skill_ctx: SkillContext
+    ) -> None:
+        # chat stays local, code_chat goes to the cloud: the privacy rule must follow the role
+        # that really answers (code-heavy context), not the plain chat role.
+        cloud.router._settings = cloud.router._settings.model_copy(
+            update={"routing": {"chat": "local", "code_chat": "cloud"}}
+        )
+        skill_ctx.extras["privacy"] = PrivacyFilter(
+            env.settings.privacy.model_copy(update={"never_send_globs": ("**/confidential/**",)}),
+            env.scope,
+        )
+        env.indexer.index_paths(
+            [
+                write(env, "pay/retry.py", CODE_PUBLIC),
+                write(env, "confidential/vault.py", CODE_PRIVATE),
+            ]
+        )
+        env.store.maintain()
+        cloud.inner.reply = ["Use backoff [1]."]
+        run = AskSkill(skill_ctx).prepare("retry failed payment")
+        list(run.deltas())
+        assert run.result.role == "code_chat"
+        sent = sent_text(cloud.inner)
+        assert "backoff(charge)" in sent
+        assert "vault(charge)" not in sent
+        assert run.result.withheld == 1
+
+    def test_the_route_decided_for_privacy_is_the_route_used_for_sending(
+        self, env: Env, chat: Chat, cloud: CloudRig, skill_ctx: SkillContext
+    ) -> None:
+        env.indexer.index_paths([write(env, "payments.md", PUBLIC_NOTE)])
+        env.store.maintain()
+        cloud.router._settings = cloud.router._settings.model_copy(
+            update={"routing": {"chat": "local"}}
+        )
+        run = AskSkill(skill_ctx).prepare("how do we retry failed payments")
+        # the policy flips to cloud between the privacy decision and the send
+        cloud.router._settings = cloud.router._settings.model_copy(
+            update={"routing": {"chat": "cloud"}}
+        )
+        list(run.deltas())
+        assert cloud.inner.sent == []  # still went to the local model that was approved
+        assert chat.chat_calls()
 
 
 class TestChat:

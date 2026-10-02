@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from pydantic import Field
 
-from vector_embed.core.llm import LlmGateway
+from vector_embed.core.llm import ChatBlockedError, ChatTarget, LlmGateway, NoChatModelError
 from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_CODE_CHAT
 from vector_embed.core.privacy.policy import PrivacyFilter
 from vector_embed.core.rag import (
@@ -47,6 +47,14 @@ def gateway_of(ctx: SkillContext) -> LlmGateway:
     return gateway
 
 
+def _resolved_target(gateway: LlmGateway, role: str) -> ChatTarget | None:
+    """The model that will answer, or ``None`` so the stream raises the usual clear error."""
+    try:
+        return gateway.target(role)
+    except (ChatBlockedError, NoChatModelError):
+        return None
+
+
 class AskInput(SkillInput):
     question: str = Field(description="Question about your files; search filters also work")
     limit: int | None = Field(default=None, ge=1, description="Chunks to retrieve")
@@ -76,7 +84,9 @@ class AskRun:
         session: bool,
         *,
         withheld: int = 0,
+        target: ChatTarget | None = None,
     ) -> None:
+        self._target = target
         self._gateway = gateway
         self._question = question
         self._session = session
@@ -90,7 +100,9 @@ class AskRun:
             return
         parts: list[str] = []
         messages = build_messages(self._question, result.sources)
-        for chunk in self._gateway.stream(messages, result.role, session=self._session):
+        for chunk in self._gateway.stream(
+            messages, result.role, session=self._session, target=self._target
+        ):
             if chunk.text:
                 parts.append(chunk.text)
                 yield chunk.text
@@ -159,18 +171,34 @@ class AskSkill(Skill):
             limit=limit or chat_cfg.retrieve_chunks,
             force_cpu=True,  # the GPU belongs to the LLM
         )
-        candidates, withheld = self._without_private(candidates, gateway, outbound)
         sources = build_sources(candidates, chat_cfg.context_token_budget)
-        code = chat_cfg.code_routing and is_code_heavy(sources)
-        role = ROLE_CODE_CHAT if code else ROLE_CHAT
-        return AskRun(gateway, parsed.text or question, sources, role, session, withheld=withheld)
+        role = self._role(sources)
+        # The privacy rule follows the role that will really answer: code-heavy context goes to
+        # ``code_chat``, which can be routed to the cloud while ``chat`` stays local.
+        withheld = 0
+        if outbound or gateway.will_use_cloud(role):
+            candidates, withheld = self._without_private(candidates)
+            sources = build_sources(candidates, chat_cfg.context_token_budget)
+            role = self._role(sources)
+        target = _resolved_target(gateway, role)  # decided once; the send must not re-route
+        return AskRun(
+            gateway,
+            parsed.text or question,
+            sources,
+            role,
+            session,
+            withheld=withheld,
+            target=target,
+        )
 
-    def _without_private(
-        self, candidates: list[Candidate], gateway: LlmGateway, outbound: bool
-    ) -> tuple[list[Candidate], int]:
+    def _role(self, sources: list[Source]) -> str:
+        code = self.ctx.settings.chat.code_routing and is_code_heavy(sources)
+        return ROLE_CODE_CHAT if code else ROLE_CHAT
+
+    def _without_private(self, candidates: list[Candidate]) -> tuple[list[Candidate], int]:
         """Cloud requests never include files under the never-send rules."""
         privacy = privacy_of(self.ctx)
-        if privacy is None or not (outbound or gateway.will_use_cloud(ROLE_CHAT)):
+        if privacy is None:
             return candidates, 0
         kept = [c for c in candidates if not privacy.is_never_send(c.row["path"])]
         blocked = {c.row["path"] for c in candidates} - {c.row["path"] for c in kept}
