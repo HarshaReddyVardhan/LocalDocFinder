@@ -26,7 +26,7 @@ The full design and build order live in @.claude/PLAN.md. Follow its build order
 ## Layout and status
 - Code lives in `src/vector_embed/` (src layout): `core/` (no UI), `worker.py`, `watcher.py`, `cli.py`, `app/` (PySide6).
 - The prototype that predated the plan has been removed. Tests mirror the package under `tests/core/`; shared fixtures (`env`, `skill_ctx`, `FakeEmbedder`) are in `tests/core/conftest.py` and `tests/core/fakes.py`.
-- Done: plan steps 1-5 (settings, scope, stores, providers, model registry, extractors, doctypes, power/idle, indexer, worker, watcher, search skill, CLI, hotkey UI). Next: step 6 (ask + chat skills).
+- Done: plan steps 1-10 (core, search, ask/chat/match, models tab and health, cloud providers with privacy masking, `ve eval`). Next: choose the embedder from `ve eval` on your own queries, then the §11 feature ideas as new skills.
 - pytest's `tmp_path` lives under `AppData` (a blocked dir). Scope-sensitive tests use the `scope_settings` fixture, which unblocks it.
 - Avoid backslashes in Bash heredocs (the tool mangles them); use the Write/Edit tools for files containing regexes or Windows paths.
 
