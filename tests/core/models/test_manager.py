@@ -11,7 +11,7 @@ from vector_embed.core.models.registry import ModelRegistry
 from vector_embed.core.providers.base import PullProgress
 from vector_embed.core.providers.ollama import OllamaProvider
 from vector_embed.core.settings import EmbeddingSettings
-from vector_embed.core.store.sqlite import StateDb
+from vector_embed.core.store.sqlite import EMBEDDER_APPROVED_KEY, StateDb
 
 GPU = Hardware("RTX 2070", 8192, 7000, 32000, 16000, 8, True)
 
@@ -88,6 +88,15 @@ def test_confirmed_embedder_change_rewrites_settings_and_schedules_a_rescan(
     assert notice is not None
     assert world.settings()["embedding"] == {"model": "bge-m3"}
     assert world.state.get_meta("last_reconcile") == "0"
+    assert (
+        world.state.get_meta(EMBEDDER_APPROVED_KEY) == "bge-m3"
+    )  # the one thing that allows a wipe
+
+
+def test_an_unconfirmed_change_leaves_no_approval(world: World) -> None:
+    with pytest.raises(ModelChangeError):
+        world.manager.change_embedder("bge-m3")
+    assert world.state.get_meta(EMBEDDER_APPROVED_KEY) is None
 
 
 def test_selecting_the_current_embedder_is_not_a_change(world: World) -> None:

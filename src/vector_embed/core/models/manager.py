@@ -14,7 +14,7 @@ from vector_embed.core.models.registry import ModelRegistry, ReindexNotice
 from vector_embed.core.providers.base import PullProgress
 from vector_embed.core.providers.ollama import OllamaProvider
 from vector_embed.core.settings_io import set_setting
-from vector_embed.core.store.sqlite import StateDb
+from vector_embed.core.store.sqlite import EMBEDDER_APPROVED_KEY, StateDb
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +73,7 @@ class ModelManager:
             raise ModelChangeError(notice.message + " Confirm to continue.")
         set_setting(self._settings_path, ["embedding", "model"], new_model)
         self._registry.set_pinned_embed(new_model)
+        self._state.set_meta(EMBEDDER_APPROVED_KEY, new_model)  # the only way the index is wiped
         # The worker wipes the old vectors on its next run; a due reconcile re-queues every file.
         self._state.set_meta("last_reconcile", "0")
         logger.info("embedder changed", extra={"model": new_model})

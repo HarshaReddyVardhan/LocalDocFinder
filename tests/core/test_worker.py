@@ -271,7 +271,7 @@ class TestCli:
         monkeypatch.setattr(worker, "load_settings", lambda: env.settings)
         monkeypatch.setattr(worker, "configure_logging", lambda *_a, **_k: None)
         data_dir = tmp_path / "other-data"
-        code = worker.main(["--now", "--model", "bge-m3", "--data-dir", str(data_dir)])
+        code = worker.main(["--now", "--model", "bge-m3", "--reindex", "--data-dir", str(data_dir)])
         assert code == 0
         settings = seen["settings"]
         assert settings.embedding.model == "bge-m3"  # type: ignore[attr-defined]
@@ -349,3 +349,52 @@ def test_a_stop_request_ends_the_run_and_still_unloads(env: Env) -> None:
         clear_stop_request(env.settings.storage.data_dir)
     assert env.state.queue_size() == 1
     assert unload.count == 1
+
+
+class TestModelOverride:
+    def test_changing_the_model_from_the_command_line_needs_reindex(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(worker, "load_settings", lambda: env.settings)
+        monkeypatch.setattr(worker, "configure_logging", lambda *_a, **_k: None)
+        monkeypatch.setattr(worker, "build_parts", lambda *_a: pytest.fail("must not start"))
+        assert worker.main(["--model", "some-other-model"]) == worker.EXIT_USAGE
+
+    def test_reindex_records_the_approval_for_that_model(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vector_embed.core.store.sqlite import EMBEDDER_APPROVED_KEY
+
+        seen: list[str | None] = []
+
+        def fake_build(settings: object, state: object, _gate: object) -> WorkerParts:
+            seen.append(state.get_meta(EMBEDDER_APPROVED_KEY))  # type: ignore[attr-defined]
+            return make_parts(env)
+
+        monkeypatch.setattr(worker, "load_settings", lambda: env.settings)
+        monkeypatch.setattr(worker, "configure_logging", lambda *_a, **_k: None)
+        monkeypatch.setattr(worker, "build_gate", lambda _s, _st: FakeGate())
+        monkeypatch.setattr(worker, "build_parts", fake_build)
+        assert worker.main(["--model", "bge-m3", "--reindex"]) == 0
+        assert seen == ["bge-m3"]
+
+    def test_the_same_model_needs_no_flag(self, env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(worker, "load_settings", lambda: env.settings)
+        monkeypatch.setattr(worker, "configure_logging", lambda *_a, **_k: None)
+        monkeypatch.setattr(worker, "build_gate", lambda _s, _st: FakeGate())
+        monkeypatch.setattr(worker, "build_parts", lambda *_a: make_parts(env))
+        assert worker.main(["--model", env.settings.embedding.model]) == 0
+
+    def test_a_mismatched_index_ends_the_run_without_touching_it(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vector_embed.core.store.lance import ModelMismatchError
+
+        def mismatch(*_args: object) -> WorkerParts:
+            raise ModelMismatchError("the index was built with another model")
+
+        monkeypatch.setattr(worker, "load_settings", lambda: env.settings)
+        monkeypatch.setattr(worker, "configure_logging", lambda *_a, **_k: None)
+        monkeypatch.setattr(worker, "build_gate", lambda _s, _st: FakeGate())
+        monkeypatch.setattr(worker, "build_parts", mismatch)
+        assert worker.main([]) == worker.EXIT_MISMATCH

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 from tests.core.providers.fakes import FakeOllamaClient
 
 from vector_embed.core import runtime
@@ -189,3 +190,36 @@ def test_mask_ids_locally_installs_the_local_filter(tmp_path: Path) -> None:
             ctx = runtime.build_skill_context(settings, state, keys=MemoryKeyStore())
             gateway = ctx.extras["llm"]
             assert (gateway.local_filter is not None) is enabled
+
+
+class TestOpenStoreApproval:
+    def provider(self, settings: Settings) -> OllamaProvider:
+        return OllamaProvider(settings.embedding, client=FakeOllamaClient(), sleep=lambda _s: None)
+
+    def test_an_unapproved_model_change_is_refused(self, tmp_path: Path) -> None:
+        from vector_embed.core.store.lance import ModelMismatchError
+
+        first = make_settings(tmp_path)
+        with StateDb(first.storage.data_dir) as state:
+            runtime.open_store(first, state, self.provider(first))
+            second = make_settings(
+                tmp_path, embedding=first.embedding.model_copy(update={"model": "other-model"})
+            )
+            with pytest.raises(ModelMismatchError):
+                runtime.open_store(second, state, self.provider(second))
+
+    def test_an_approved_change_rebuilds_once_and_the_approval_is_spent(
+        self, tmp_path: Path
+    ) -> None:
+        from vector_embed.core.store.sqlite import EMBEDDER_APPROVED_KEY
+
+        first = make_settings(tmp_path)
+        with StateDb(first.storage.data_dir) as state:
+            runtime.open_store(first, state, self.provider(first))
+            second = make_settings(
+                tmp_path, embedding=first.embedding.model_copy(update={"model": "other-model"})
+            )
+            state.set_meta(EMBEDDER_APPROVED_KEY, "other-model")
+            runtime.open_store(second, state, self.provider(second))
+            assert state.get_meta("model_id") == "other-model"
+            assert state.get_meta(EMBEDDER_APPROVED_KEY) is None

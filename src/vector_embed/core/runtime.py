@@ -31,7 +31,7 @@ from vector_embed.core.secrets import KeyringStore, KeyStore, KeyStoreError
 from vector_embed.core.settings import Settings
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.store.lance import LanceStore
-from vector_embed.core.store.sqlite import StateDb
+from vector_embed.core.store.sqlite import EMBEDDER_APPROVED_KEY, StateDb
 
 logger = logging.getLogger(__name__)
 
@@ -79,13 +79,18 @@ def open_store(settings: Settings, state: StateDb, provider: OllamaProvider) -> 
     model = settings.embedding.model
     stored_model, stored_dim = state.get_meta("model_id"), state.get_meta("dim")
     dim = int(stored_dim) if stored_model == model and stored_dim else provider.dim
-    return LanceStore(
+    approved = state.get_meta(EMBEDDER_APPROVED_KEY) == model  # a confirmed embedder change
+    store = LanceStore(
         settings.storage.data_dir,
         state,
         model,
         dim,
         vector_index_min_rows=settings.search.vector_index_min_rows,
+        allow_wipe=approved,
     )
+    if approved:
+        state.delete_meta(EMBEDDER_APPROVED_KEY)  # one rebuild per confirmation
+    return store
 
 
 def open_read_only_store(settings: Settings, state: StateDb) -> LanceStore:

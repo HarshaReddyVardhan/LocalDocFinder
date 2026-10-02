@@ -136,14 +136,48 @@ def test_documents_roundtrip_and_delete_paths(store: LanceStore) -> None:
     assert store.count(lc.DOCUMENTS) == 0
 
 
-def test_model_change_wipes_everything(tmp_path: Path, state: StateDb) -> None:
+def test_a_model_change_without_approval_refuses_and_keeps_the_index(
+    tmp_path: Path, state: StateDb
+) -> None:
     first = LanceStore(tmp_path, state, "m1", dim=DIM)
     first.replace_rows(["a.py"], [chunk("a.py", "x", [1, 0, 0, 0])])
     state.manifest_set("a.py", 1, 1, "h")
-    second = LanceStore(tmp_path, state, "m2", dim=DIM)
+    with pytest.raises(lc.ModelMismatchError, match="m2"):
+        LanceStore(tmp_path, state, "m2", dim=DIM)
+    assert LanceStore(tmp_path, state, "m1", dim=DIM).count() == 1  # nothing was destroyed
+    assert state.manifest_count() == 1
+    assert state.get_meta("model_id") == "m1"
+
+
+def test_a_dimension_change_is_refused_too(tmp_path: Path, state: StateDb) -> None:
+    LanceStore(tmp_path, state, "m1", dim=DIM).replace_rows(
+        ["a.py"], [chunk("a.py", "x", [1, 0, 0, 0])]
+    )
+    with pytest.raises(lc.ModelMismatchError, match="dim"):
+        LanceStore(tmp_path, state, "m1", dim=DIM + 4)
+
+
+def test_an_approved_model_change_wipes_and_requeues_everything(
+    tmp_path: Path, state: StateDb
+) -> None:
+    first = LanceStore(tmp_path, state, "m1", dim=DIM)
+    first.replace_rows(["a.py"], [chunk("a.py", "x", [1, 0, 0, 0])])
+    state.manifest_set("a.py", 1, 1, "h")
+    state.set_meta("last_reconcile", "12345")
+    second = LanceStore(tmp_path, state, "m2", dim=DIM, allow_wipe=True)
     assert second.count() == 0
     assert state.manifest_count() == 0
     assert state.get_meta("model_id") == "m2"
+    assert state.get_meta("last_reconcile") == "0"  # a reconcile is due: every file comes back
+
+
+def test_tables_without_any_record_of_their_model_are_adopted_not_blocked(
+    tmp_path: Path, state: StateDb
+) -> None:
+    LanceStore(tmp_path, state, "m1", dim=DIM)
+    state.delete_meta("model_id")
+    state.delete_meta("dim")
+    assert LanceStore(tmp_path, state, "m9", dim=DIM).count() == 0  # no trustworthy vectors to keep
 
 
 def test_reopen_same_model_keeps_data(tmp_path: Path, state: StateDb) -> None:

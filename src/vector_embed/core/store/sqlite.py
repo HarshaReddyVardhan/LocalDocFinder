@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 _MAX_ATTEMPTS = 3
 _OPEN_ATTEMPTS = 8  # opening a database that another process is creating or upgrading
 _OPEN_RETRY_SECONDS = 0.05
+EMBEDDER_APPROVED_KEY = "embedder_change_approved"  # the model whose index rebuild the user OK'd
 PROGRESS_KEY = "last_queue_progress"  # meta key stamped whenever queue items are finished
 FAILED_HASH = "failed"  # manifest hash of a file given up on (never equals a real digest)
 _FAR_FUTURE = 1e18
@@ -252,6 +253,9 @@ class StateDb:
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, value),
         )
+
+    def delete_meta(self, key: str) -> None:
+        self._run("DELETE FROM meta WHERE key=?", (key,))
 
     # ------------------------------------------------------------------ manifest
     def manifest_get(self, path: str) -> ManifestEntry | None:

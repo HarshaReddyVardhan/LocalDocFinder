@@ -29,13 +29,15 @@ from vector_embed.core.providers.ollama import Interrupted
 from vector_embed.core.reconcile import reconcile
 from vector_embed.core.scope import ScopePolicy
 from vector_embed.core.settings import Settings, load_settings
-from vector_embed.core.store.lance import LanceStore
-from vector_embed.core.store.sqlite import CHAT_LOCK, StateDb
+from vector_embed.core.store.lance import LanceStore, ModelMismatchError
+from vector_embed.core.store.sqlite import CHAT_LOCK, EMBEDDER_APPROVED_KEY, StateDb
 
 logger = logging.getLogger("worker")
 
 EXIT_OK = 0
 EXIT_PROVIDER = 2
+EXIT_USAGE = 3
+EXIT_MISMATCH = 4
 LAST_RECONCILE_KEY = "last_reconcile"
 _PROVIDER_RETRY_SECONDS = 600
 
@@ -212,7 +214,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--reconcile", action="store_true", help="scan roots for missed changes")
     parser.add_argument("--allow-battery", action="store_true", help="index even when unplugged")
     parser.add_argument("--limit", type=int, help="stop after N files (testing)")
-    parser.add_argument("--model", help="embedding model override")
+    parser.add_argument("--model", help="embedding model override (needs --reindex to change it)")
+    parser.add_argument(
+        "--reindex",
+        action="store_true",
+        help="with --model: approve rebuilding the whole index for a different model",
+    )
     parser.add_argument(
         "--data-dir", help="store location (default %%LOCALAPPDATA%%\\VectorEmbedData)"
     )
@@ -223,6 +230,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     settings = load_settings()
     overrides: dict[str, object] = {}
+    if args.model and args.model != settings.embedding.model and not args.reindex:
+        logger.error(
+            "--model %s differs from the configured embedder (%s); every vector would be "
+            "replaced. Add --reindex to rebuild the index, or change it in Settings.",
+            args.model,
+            settings.embedding.model,
+        )
+        return EXIT_USAGE
     if args.model:
         overrides["embedding"] = settings.embedding.model_copy(update={"model": args.model})
     if args.data_dir:
@@ -235,6 +250,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return EXIT_OK
         state = StateDb(settings.storage.data_dir)
         try:
+            if args.model and args.reindex:
+                state.set_meta(EMBEDDER_APPROVED_KEY, args.model)  # the user asked for the rebuild
             return _run(settings, state, args)
         finally:
             state.close()
@@ -251,6 +268,9 @@ def _run(settings: Settings, state: StateDb, args: argparse.Namespace) -> int:
     except ProviderError:
         logger.exception("could not reach the model server; is Ollama running?")
         return EXIT_PROVIDER
+    except ModelMismatchError as exc:
+        logger.error("%s", exc)  # the index is untouched; the message says how to switch
+        return EXIT_MISMATCH
     return run_worker(
         parts,
         WorkerOptions(

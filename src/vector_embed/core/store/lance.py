@@ -103,6 +103,10 @@ def document_schema(dim: int) -> pa.Schema:
     )
 
 
+class ModelMismatchError(RuntimeError):
+    """The index was built with another embedding model or dimension than the one configured."""
+
+
 class LanceStore:
     """Chunk and document tables bound to one embedding model.
 
@@ -116,11 +120,14 @@ class LanceStore:
         model_id: str,
         dim: int | None = None,
         vector_index_min_rows: int = _VECTOR_INDEX_MIN_ROWS,
+        *,
+        allow_wipe: bool = False,
     ) -> None:
         import lancedb
 
         self.model_id = model_id
         self.dim = dim
+        self._allow_wipe = allow_wipe
         self._state = state
         self._min_rows = vector_index_min_rows
         self.db: Any = lancedb.connect(str(Path(data_dir) / LANCE_DIRNAME))
@@ -144,16 +151,29 @@ class LanceStore:
                 self._tables[name] = self.db.open_table(name)
 
     def check_model(self) -> bool:
-        """Create tables, or wipe everything if the model or dimension changed (True if wiped)."""
+        """Create tables; rebuild the index if the model or dimension changed (True if wiped).
+
+        A different model or dimension makes every stored vector meaningless, but wiping is
+        destructive and slow to undo, so it only happens when the user approved it (the
+        ``allow_wipe`` flag). Otherwise this raises and leaves the index as it is.
+        """
         assert self.dim is not None
         stored = (self._state.get_meta("model_id"), self._state.get_meta("dim"))
         wanted = (self.model_id, str(self.dim))
         names = self._table_names()
+        untracked = stored == (None, None)  # tables with no record of their model: nothing to keep
         wiped = bool(names) and stored != wanted
+        if wiped and not (self._allow_wipe or untracked):
+            raise ModelMismatchError(
+                f"the index was built with {stored[0]} (dim {stored[1]}) but {wanted[0]} "
+                f"(dim {wanted[1]}) is configured; switch with: ve models --embedder "
+                f"{wanted[0]} --yes (this re-indexes every file)"
+            )
         if wiped:
             for name in names:
                 self.db.drop_table(name)
             self._state.manifest_clear()
+            self._state.set_meta("last_reconcile", "0")  # every file must be indexed again
             names = []
         schemas = {CHUNKS: chunk_schema(self.dim), DOCUMENTS: document_schema(self.dim)}
         for name, schema in schemas.items():
