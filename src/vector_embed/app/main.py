@@ -16,11 +16,12 @@ from vector_embed.app.assistant import AssistantService
 from vector_embed.app.controller import Launcher, SearchService
 from vector_embed.app.hotkey import HotkeyFilter
 from vector_embed.app.match_controller import MatchController
+from vector_embed.app.models_controller import ModelsController
 from vector_embed.app.window import SearchWindow
 from vector_embed.core import runtime
 from vector_embed.core.idle import SystemActivity
 from vector_embed.core.logging_setup import configure_logging
-from vector_embed.core.settings import Settings, load_settings
+from vector_embed.core.settings import SETTINGS_FILENAME, Settings, load_settings
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.store.sqlite import StateDb
 
@@ -68,6 +69,7 @@ def build_window(settings: Settings, state: StateDb) -> SearchWindow:
         settings.storage.data_dir / runtime.THUMBS_DIRNAME,
         AssistantService(context),
         matcher=MatchController(context),
+        models=ModelsController(context, settings.storage.data_dir / SETTINGS_FILENAME),
         pick_file=pick_document,
     )
 

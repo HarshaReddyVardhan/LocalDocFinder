@@ -44,6 +44,8 @@ from vector_embed.app.controller import (
 )
 from vector_embed.app.match_controller import MatchController
 from vector_embed.app.match_panel import MatchPanel
+from vector_embed.app.models_controller import ModelsController
+from vector_embed.app.models_panel import ModelsPanel
 from vector_embed.core.extractors.image import thumbnail_path
 from vector_embed.core.rag import Source
 from vector_embed.core.skills.search import SearchResult
@@ -57,6 +59,7 @@ PLACEHOLDERS = {
     "ask": "Ask a question about your files…  (Enter to ask)",
     "chat": "Chat about the pinned documents…  (Enter to send, Ctrl+V pastes a document)",
     "match": "Paste a job description (Ctrl+V) and press Enter to rank your documents…",
+    "models": "Models and health (Tab for the next mode)",
 }
 STYLE = """
 QWidget { background:#1e1f24; color:#e6e6e6; font-size:13px; }
@@ -78,6 +81,7 @@ class Mode(enum.Enum):
     ASK = "ask"
     CHAT = "chat"
     MATCH = "match"
+    MODELS = "models"
 
 
 class _Signals(QObject):
@@ -156,6 +160,7 @@ class SearchWindow(QWidget):
         assistant: AssistantService | None = None,
         *,
         matcher: MatchController | None = None,
+        models: ModelsController | None = None,
         pick_file: Callable[[], str | None] = lambda: None,
     ) -> None:
         super().__init__(
@@ -167,6 +172,7 @@ class SearchWindow(QWidget):
         self._service = service
         self._assistant = assistant
         self._matcher = matcher
+        self._models = models
         self._pick_file = pick_file
         self._jd_text = ""
         self._launcher = launcher
@@ -236,6 +242,11 @@ class SearchWindow(QWidget):
             self.panel.chat_requested.connect(self._chat_from_match)
             self.panel.status_changed.connect(self._set_status)
             self.body.addWidget(self.panel)
+        self.models_panel: ModelsPanel | None = None
+        if self._models is not None:
+            self.models_panel = ModelsPanel(self._models)
+            self.models_panel.status_changed.connect(self._set_status)
+            self.body.addWidget(self.models_panel)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 6)
         layout.addLayout(top)
@@ -253,6 +264,8 @@ class SearchWindow(QWidget):
             modes += [Mode.ASK, Mode.CHAT]
         if self.panel is not None:
             modes.append(Mode.MATCH)
+        if self.models_panel is not None:
+            modes.append(Mode.MODELS)
         return modes
 
     def _next_mode(self) -> Mode:
@@ -277,7 +290,12 @@ class SearchWindow(QWidget):
     def _apply_mode(self) -> None:
         self.mode_label.setText(self._mode.value.upper())
         self.input.setPlaceholderText(PLACEHOLDERS[self._mode.value])
-        self.body.setCurrentIndex(1 if self._mode is Mode.MATCH else 0)
+        self.body.setCurrentIndex(self._body_index())
+        if self.models_panel is not None:
+            if self._mode is Mode.MODELS:
+                self.models_panel.activate()
+            else:
+                self.models_panel.deactivate()
         self.pane.setCurrentIndex(PANE_PREVIEW if self._mode is Mode.SEARCH else PANE_ANSWER)
         if self._mode is Mode.SEARCH:
             self.preview.clear()
@@ -285,6 +303,13 @@ class SearchWindow(QWidget):
             self.answer.clear()
             self._answer_text = ""
         self.input.setFocus()
+
+    def _body_index(self) -> int:
+        if self._mode is Mode.MATCH:
+            return self.body.indexOf(self.panel) if self.panel is not None else 0
+        if self._mode is Mode.MODELS:
+            return self.body.indexOf(self.models_panel) if self.models_panel is not None else 0
+        return 0
 
     def _begin_chat(self) -> None:
         assert self._assistant is not None

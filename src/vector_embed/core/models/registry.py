@@ -157,6 +157,16 @@ class ModelRegistry:
         self.refresh()
         return True
 
+    def set_override(self, role: str, model: str | None) -> None:
+        """Apply a user's role override immediately (the settings file is written separately)."""
+        if model:
+            self._overrides[role] = model
+        else:
+            self._overrides.pop(role, None)
+
+    def set_pinned_embed(self, model: str) -> None:
+        self._pinned_embed = model
+
     def preferences(self, role: str) -> list[str]:
         """The catalog's best-first model names for ``role``."""
         return self._catalog.preferences(role)

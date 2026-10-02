@@ -94,3 +94,18 @@ def test_selecting_the_current_embedder_is_not_a_change(world: World) -> None:
     assert world.manager.embed_change_notice("qwen3-embedding:0.6b") is None
     assert world.manager.change_embedder("qwen3-embedding:0.6b", confirmed=True) is None
     assert not world.path.exists()
+
+
+def test_overrides_and_the_pinned_embedder_take_effect_in_the_running_registry(
+    world: World,
+) -> None:
+    world.manager.set_override("chat", "llama3.2")
+    assert world.registry.resolve("chat").model == "llama3.2"
+    assert world.registry.resolve("chat").reason == "override"
+    world.manager.set_override("chat", None)
+    assert world.registry.resolve("chat").reason != "override"
+    world.client.models["bge-m3"] = {"caps": ["embedding"]}
+    world.registry.refresh()
+    world.manager.change_embedder("bge-m3", confirmed=True)
+    assert world.registry.resolve("embed").model == "bge-m3"
+    assert world.registry.resolve("embed").reason == "pinned"

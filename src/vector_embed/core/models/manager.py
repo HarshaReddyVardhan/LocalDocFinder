@@ -58,6 +58,7 @@ class ModelManager:
         if role == ROLE_EMBED:
             raise ModelChangeError("change the embedder with change_embedder (it needs a re-index)")
         set_setting(self._settings_path, ["models", "overrides", role], model)
+        self._registry.set_override(role, model)
 
     def embed_change_notice(self, new_model: str) -> ReindexNotice | None:
         """What switching the embedder costs; ``None`` if it is already the pinned model."""
@@ -71,6 +72,7 @@ class ModelManager:
         if not confirmed:
             raise ModelChangeError(notice.message + " Confirm to continue.")
         set_setting(self._settings_path, ["embedding", "model"], new_model)
+        self._registry.set_pinned_embed(new_model)
         # The worker wipes the old vectors on its next run; a due reconcile re-queues every file.
         self._state.set_meta("last_reconcile", "0")
         logger.info("embedder changed", extra={"model": new_model})

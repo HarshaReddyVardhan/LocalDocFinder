@@ -146,9 +146,15 @@ class Chat:
 
 @pytest.fixture
 def chat(skill_ctx: SkillContext, env: Env) -> Chat:
-    client = FakeOllamaClient(models=CHAT_MODELS)
+    client = FakeOllamaClient(models={k: dict(v) for k, v in CHAT_MODELS.items()})
     provider = OllamaProvider(EmbeddingSettings(), client=client, sleep=lambda _s: None)
-    registry = ModelRegistry(load_catalog(), [provider], env.state, hardware_probe=lambda: GPU)
+    registry = ModelRegistry(
+        load_catalog(),
+        [provider],
+        env.state,
+        hardware_probe=lambda: GPU,
+        pinned_embed=env.settings.embedding.model,
+    )
     gateway = LlmGateway(env.settings.chat, registry, provider, env.state, skill_ctx.power)
     documents = DocumentLoader(env.store, env.scope, lambda: env.extractors)
     skill_ctx.extras.update(
