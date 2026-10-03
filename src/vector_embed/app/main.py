@@ -12,8 +12,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Generic, TypeVar
 
-from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QSystemTrayIcon
 
 from vector_embed.app.assistant import AssistantService
@@ -62,19 +62,11 @@ EXIT_OK = 0
 EXIT_BAD_SETTINGS = 2
 
 
+TRAY_ICON_FILE = Path(__file__).with_name("assets") / "icon.png"  # drawn by packaging/make_icon.py
+
+
 def tray_icon() -> QIcon:
-    pixmap = QPixmap(64, 64)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setBrush(QColor("#4c7dff"))
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.drawEllipse(4, 4, 56, 56)
-    painter.setPen(QColor("white"))
-    painter.setFont(QFont("Segoe UI", 28, QFont.Weight.Bold))
-    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "S")
-    painter.end()
-    return QIcon(pixmap)
+    return QIcon(str(TRAY_ICON_FILE))
 
 
 def pick_document() -> str | None:
