@@ -19,6 +19,7 @@ from vector_embed.core.match.recall import MatchCandidate, Recall, selected
 from vector_embed.core.match.scoring import Requirement, ScoreBreakdown, compute_score
 from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_MATCH_SCORER
 from vector_embed.core.privacy.policy import PrivacyFilter
+from vector_embed.core.prompt_safety import fence_for
 from vector_embed.core.providers.base import Message, ProviderError, ProviderUnavailableError
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.tokens import fit_to_budget
@@ -241,7 +242,11 @@ class MatchPipeline:
             )
         job, _ = fit_to_budget(run.jd_text, _JD_SUMMARY_TOKENS)
         payload = json.dumps({"job": job, "ranking": ranking}, ensure_ascii=False)
-        return [Message("system", VERDICT_SYSTEM), Message("user", payload)]
+        fence = fence_for(payload)  # the job text and the model's notes are untrusted too
+        return [
+            Message("system", f"{VERDICT_SYSTEM}\n\n{fence.rule}"),
+            Message("user", fence.wrap(payload)),
+        ]
 
     def stream_verdict(self, run: MatchRun, session: bool = False) -> Iterator[str]:
         local_only = any(s.candidate.locked for s in run.scores)

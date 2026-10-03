@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from vector_embed.core.prompt_safety import Fence, fence_for
 from vector_embed.core.providers.base import Message
 from vector_embed.core.retrieval import Candidate
 from vector_embed.core.tokens import estimate_tokens, fit_to_budget
@@ -159,20 +160,22 @@ def is_code_heavy(sources: Sequence[Source]) -> bool:
     return bool(sources) and sum(s.kind in CODE_KINDS for s in sources) * 2 > len(sources)
 
 
-def format_sources(sources: Sequence[Source]) -> str:
+def format_sources(sources: Sequence[Source], fence: Fence) -> str:
+    """Numbered source blocks; each body is fenced so its text is never taken as instructions."""
     blocks = []
     for source in sources:
         where = f" ({source.location})" if source.location else ""
         symbol = f" · {source.symbol}" if source.symbol and source.symbol != "<module>" else ""
         head = f"[{source.n}] {Path(source.path).name}{symbol}{where}"
-        blocks.append(f"{head}\n{source.path}\n---\n{source.text}\n---")
+        blocks.append(f"{head}\n{source.path}\n{fence.wrap(source.text)}")
     return "\n\n".join(blocks)
 
 
 def build_messages(question: str, sources: Sequence[Source]) -> list[Message]:
+    fence = fence_for(*(source.text for source in sources))
     return [
-        Message("system", SYSTEM_PROMPT),
-        Message("user", f"Sources:\n\n{format_sources(sources)}\n\nQuestion: {question}"),
+        Message("system", f"{SYSTEM_PROMPT}\n\n{fence.rule}"),
+        Message("user", f"Sources:\n\n{format_sources(sources, fence)}\n\nQuestion: {question}"),
     ]
 
 

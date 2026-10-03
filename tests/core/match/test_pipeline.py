@@ -87,6 +87,13 @@ def pipeline(skill_ctx: SkillContext, chat: Chat, env: Env) -> MatchPipeline:
     return MatchPipeline(skill_ctx, chat.gateway, loader)
 
 
+def unfenced_json(content: str) -> Any:
+    """The JSON payload between the opening and closing fence lines."""
+    lines = content.splitlines()
+    assert lines[0].startswith("<<<DATA-") and lines[-1].endswith(">>>")
+    return json.loads("\n".join(lines[1:-1]))
+
+
 def requests(chat: Chat) -> list[str]:
     return [json.dumps(c["messages"]) for c in chat.chat_calls()]
 
@@ -326,7 +333,7 @@ class TestVerdictAndChat:
     ) -> None:
         run = self.scored(pipeline)
         messages = pipeline.verdict_messages(run)
-        payload = json.loads(messages[1].content)
+        payload = unfenced_json(messages[1].content)
         assert next(r["file"] for r in payload["ranking"]) in {"Resume_v1.txt", "Resume_v2.txt"}
         assert payload["ranking"][0]["score"] == 100
         assert "Kubernetes" in payload["ranking"][-1]["missing_or_unverified"]
@@ -341,7 +348,7 @@ class TestVerdictAndChat:
         run.scores[0].breakdown = None
         run.scores[0].judgement = None
         run.scores[0].error = "boom"
-        payload = json.loads(pipeline.verdict_messages(run)[1].content)
+        payload = unfenced_json(pipeline.verdict_messages(run)[1].content)
         assert {"file": run.scores[0].candidate.name, "error": "boom"} in payload["ranking"]
 
     def test_follow_up_chat_starts_with_the_jd_the_resumes_and_the_scores(

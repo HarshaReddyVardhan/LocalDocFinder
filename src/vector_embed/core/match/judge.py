@@ -17,6 +17,7 @@ from pydantic import BaseModel, ValidationError
 from vector_embed.core.llm import LlmGateway
 from vector_embed.core.match.scoring import Requirement, RowResult, verify_rows
 from vector_embed.core.models.catalog import ROLE_MATCH_SCORER
+from vector_embed.core.prompt_safety import fence_for
 from vector_embed.core.providers.base import (
     InvalidJsonError,
     Message,
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 _JD_SUMMARY_TOKENS = 400
 _MIN_JD_TOKENS = 200  # never cut a job description to less than this, however small the window
+_FENCE_TOKENS = 20  # the fence lines around the job description
 _JUDGE_ATTEMPTS = 2  # a malformed judgement is usually fine on a second try
 _WORD = re.compile(r"[a-z0-9+#.]{2,}")
 _SECTION_SPLIT = re.compile(r"\n\s*\n")
@@ -152,13 +154,14 @@ def requirements_messages(
     A job description longer than the context window is cut to fit: Ollama would otherwise
     silently drop its *start*, which is where the role and its must-haves usually are.
     """
-    system = EXTRACT_SYSTEM.format(limit=settings.max_requirements)
+    fence = fence_for(jd_text)
+    system = f"{EXTRACT_SYSTEM.format(limit=settings.max_requirements)}\n\n{fence.rule}"
     num_ctx = (chat or ChatSettings()).num_ctx
     room = num_ctx - settings.reserved_output_tokens - estimate_tokens(system)
-    body, cut = fit_to_budget(jd_text, max(_MIN_JD_TOKENS, room))
+    body, cut = fit_to_budget(jd_text, max(_MIN_JD_TOKENS, room - _FENCE_TOKENS))
     if cut:
         logger.warning("match: the job description was cut to fit the context window")
-    return [Message("system", system), Message("user", body)]
+    return [Message("system", system), Message("user", f"Job description:\n{fence.wrap(body)}")]
 
 
 def extract_requirements(
@@ -233,11 +236,12 @@ def build_judge_messages(
     requirements: list[Requirement], jd_text: str, name: str, document: str
 ) -> list[Message]:
     summary, _ = fit_to_budget(jd_text, _JD_SUMMARY_TOKENS)
+    fence = fence_for(summary, document)
     user = (
-        f"Job summary:\n{summary}\n\nChecklist:\n{_checklist_text(requirements)}\n\n"
-        f"Resume ({name}):\n{document}"
+        f"Job summary:\n{fence.wrap(summary)}\n\nChecklist:\n{_checklist_text(requirements)}\n\n"
+        f"Resume ({name}):\n{fence.wrap(document)}"
     )
-    return [Message("system", JUDGE_SYSTEM), Message("user", user)]
+    return [Message("system", f"{JUDGE_SYSTEM}\n\n{fence.rule}"), Message("user", user)]
 
 
 def prepare_judge_messages(

@@ -17,8 +17,9 @@ from vector_embed.core.documents import DocumentError, DocumentLoader, LoadedDoc
 from vector_embed.core.llm import ChatBlockedError, ChatTarget, LlmGateway, NoChatModelError
 from vector_embed.core.models.catalog import ROLE_CHAT
 from vector_embed.core.privacy.policy import PrivacyFilter
+from vector_embed.core.prompt_safety import Fence, fence_for
 from vector_embed.core.providers.base import Message
-from vector_embed.core.rag import SOURCE_COLUMNS, build_sources, format_sources
+from vector_embed.core.rag import SOURCE_COLUMNS, Source, build_sources, format_sources
 from vector_embed.core.retrieval import hybrid_candidates
 from vector_embed.core.skills.ask import gateway_of, privacy_of
 from vector_embed.core.skills.base import (
@@ -72,7 +73,7 @@ class PreparedTurn:
 
 
 def _pinned_block(
-    docs: list[LoadedDocument], scratch: str, budget_tokens: int
+    docs: list[LoadedDocument], scratch: str, budget_tokens: int, fence: Fence
 ) -> tuple[str, list[str]]:
     """Pinned documents and scratch text sharing ``budget_tokens``; returns text and cut titles."""
     items = [(d.path, d.text) for d in docs]
@@ -90,7 +91,7 @@ def _pinned_block(
         if was_cut:
             cut.append(name)
             body += _TRUNCATED
-        blocks.append(f"=== {name} ===\n{body}")
+        blocks.append(f"=== {name} ===\n{fence.wrap(body)}")
     return "\n\n".join(blocks), cut
 
 
@@ -168,14 +169,22 @@ class ChatSkill(Skill):
                     f"{names} is private and cannot be sent to a cloud model; "
                     "switch to the local model or unpin it"
                 )
-        block, cut = _pinned_block(docs, scratch, cfg.context_token_budget)
-        if not block:
-            block = self._retrieved_context(message, privacy if cloud else None)
-        system = SYSTEM_PROMPT + (f"\n\nDocuments:\n\n{block}" if block else "")
+        pinned = bool(docs) or bool(scratch.strip())
+        sources = [] if pinned else self._retrieved_sources(message, privacy if cloud else None)
+        fence = fence_for(*(d.text for d in docs), scratch, *(s.text for s in sources))
+        if pinned:
+            block, cut = _pinned_block(docs, scratch, cfg.context_token_budget, fence)
+        else:
+            block, cut = format_sources(sources, fence), []
+        system = SYSTEM_PROMPT
+        if block:
+            system += f"\n\n{fence.rule}\n\nDocuments:\n\n{block}"
         history = trim_history(self.ctx.state.messages(session_id), cfg.history_token_budget)
         return [Message("system", system), *history, Message("user", message)], cut
 
-    def _retrieved_context(self, message: str, cloud_filter: PrivacyFilter | None = None) -> str:
+    def _retrieved_sources(
+        self, message: str, cloud_filter: PrivacyFilter | None = None
+    ) -> list[Source]:
         ctx = self.ctx
         cfg = ctx.settings.chat
         candidates = hybrid_candidates(
@@ -191,7 +200,7 @@ class ChatSkill(Skill):
         )
         if cloud_filter is not None:  # a cloud request never contains private files
             candidates = [c for c in candidates if not cloud_filter.is_never_send(c.row["path"])]
-        return format_sources(build_sources(candidates, cfg.context_token_budget))
+        return build_sources(candidates, cfg.context_token_budget)
 
     # ------------------------------------------------------------------ turns
     def prepare_turn(self, params: ChatInput) -> "PreparedTurn":

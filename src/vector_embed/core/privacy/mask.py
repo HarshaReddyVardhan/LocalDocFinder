@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from functools import partial
 
 from vector_embed.core.privacy.detectors import Finding, detect_secret_tokens, detect_sensitive
+from vector_embed.core.prompt_safety import FENCE_OPEN
 
 
 @dataclass(frozen=True)
@@ -133,7 +134,7 @@ _TITLE_WORDS = frozenset(
         "coordinator",
     ]
 )
-_BLOCK_START = re.compile(r"^(?:Resume \(|=== )")
+_BLOCK_START = re.compile(r"^(?:Resume \(|=== |" + re.escape(FENCE_OPEN) + ")")
 
 
 def _looks_like_a_name(line: str) -> bool:
