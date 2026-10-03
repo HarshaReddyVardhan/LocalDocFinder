@@ -406,18 +406,19 @@ def test_build_settings_window_forwards_hotkey_changes(
     assert seen == ["ctrl+alt+f7"]
 
 
-@pytest.mark.parametrize(("registers", "suffix"), [(True, ""), (False, " - hotkey unavailable")])
-def test_hotkey_applier_reregisters_and_updates_the_tooltip(registers: bool, suffix: str) -> None:
+@pytest.mark.parametrize("registers", [True, False])
+def test_hotkey_applier_reregisters_and_updates_the_tooltip(registers: bool) -> None:
     calls: list[str] = []
 
     class FakeHotkey:
-        def unregister(self) -> None:
-            calls.append("unregister")
+        spec: str | None = "ctrl+alt+space"
 
         def register(self, spec: str) -> bool:
             calls.append(spec)
             if spec == "bad":
                 raise ValueError(spec)
+            if registers:
+                self.spec = spec
             return registers
 
     class FakeTray:
@@ -429,10 +430,15 @@ def test_hotkey_applier_reregisters_and_updates_the_tooltip(registers: bool, suf
     tray = FakeTray()
     apply: Callable[[str], None] = app_main.hotkey_applier(FakeHotkey(), tray)  # type: ignore[arg-type]
     apply("ctrl+alt+f6")
-    assert calls == ["unregister", "ctrl+alt+f6"]
-    assert tray.tip == f"Vector Embed (ctrl+alt+f6){suffix}"
+    assert calls == ["ctrl+alt+f6"]  # no separate unregister: register() swaps safely
+    expected = (
+        "Vector Embed (ctrl+alt+f6)"
+        if registers
+        else "Vector Embed (ctrl+alt+space) - ctrl+alt+f6 is unavailable"
+    )
+    assert tray.tip == expected
     apply("bad")
-    assert tray.tip.endswith(" - hotkey unavailable")
+    assert tray.tip.endswith("bad is unavailable")
 
 
 def test_settings_defaults_include_the_new_sections() -> None:

@@ -227,12 +227,15 @@ def hotkey_applier(hotkey: HotkeyFilter, tray: QSystemTrayIcon) -> Callable[[str
     """Re-register the global hotkey right away when the user changes it in Settings."""
 
     def apply(spec: str) -> None:
-        hotkey.unregister()
         try:
-            ok = hotkey.register(spec)
+            ok = hotkey.register(spec)  # the old key stays active unless the new one is secured
         except ValueError:
             ok = False
-        tray.setToolTip(f"Vector Embed ({spec})" + ("" if ok else " - hotkey unavailable"))
+        if ok:
+            tray.setToolTip(f"Vector Embed ({spec})")
+        else:
+            current = hotkey.spec or "no hotkey"
+            tray.setToolTip(f"Vector Embed ({current}) - {spec} is unavailable")
 
     return apply
 

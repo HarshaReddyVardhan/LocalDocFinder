@@ -48,6 +48,53 @@ def test_parse_hotkey() -> None:
         hotkey.parse_hotkey("ctrl+banana")
 
 
+@pytest.mark.parametrize(
+    ("spec", "key"),
+    [
+        ("ctrl+f1", 0x70),
+        ("ctrl+f12", 0x7B),
+        ("ctrl+f24", 0x87),
+        ("alt+0", ord("0")),
+        ("alt+z", 0x5A),
+    ],
+)
+def test_function_and_plain_keys_map_to_their_virtual_keys(spec: str, key: int) -> None:
+    assert hotkey.parse_hotkey(spec)[1] == key
+
+
+@pytest.mark.parametrize("spec", ["ctrl+f0", "ctrl+f25", "ctrl+f99"])
+def test_function_keys_outside_f1_to_f24_are_rejected(spec: str) -> None:
+    with pytest.raises(ValueError, match="unknown key"):
+        hotkey.parse_hotkey(spec)
+
+
+@pytest.mark.parametrize(
+    ("spec", "key"),
+    [
+        ("ctrl+;", 0xBA),
+        ("ctrl+=", 0xBB),
+        ("ctrl+,", 0xBC),
+        ("ctrl+-", 0xBD),
+        ("ctrl+.", 0xBE),
+        ("ctrl+/", 0xBF),
+        ("ctrl+`", 0xC0),
+        ("ctrl+[", 0xDB),
+        ("ctrl+]", 0xDD),
+        ("ctrl+'", 0xDE),
+        ("ctrl+plus", 0xBB),
+        ("ctrl+minus", 0xBD),
+    ],
+)
+def test_punctuation_uses_the_oem_virtual_keys_not_ascii(spec: str, key: int) -> None:
+    assert hotkey.parse_hotkey(spec)[1] == key  # ord(";") is 0x3B, which is the wrong key
+
+
+def test_a_bare_key_would_steal_it_from_every_program_so_it_is_refused() -> None:
+    with pytest.raises(ValueError, match="modifier"):
+        hotkey.parse_hotkey("k")
+    assert hotkey.parse_hotkey("f9") == (0, 0x78)  # function keys are fine on their own
+
+
 def test_hotkey_registers_and_releases(qapp: QApplication) -> None:
     flt = hotkey.HotkeyFilter(lambda: None)
     if flt.register("ctrl+alt+shift+f12"):  # unlikely to collide with another program
@@ -65,9 +112,10 @@ def test_native_filter_dispatches_only_our_hotkey(qapp: QApplication) -> None:
         msg.message, msg.wParam = message, wparam
         return flt.nativeEventFilter(b"windows_generic_MSG", ctypes.addressof(msg))
 
-    assert deliver(hotkey.WM_HOTKEY, flt.HOTKEY_ID) == (True, 0)
+    flt._active_id = flt.HOTKEY_IDS[0]
+    assert deliver(hotkey.WM_HOTKEY, flt.HOTKEY_IDS[0]) == (True, 0)
     assert deliver(hotkey.WM_HOTKEY, 1) == (False, 0)
-    assert deliver(0x0001, flt.HOTKEY_ID) == (False, 0)
+    assert deliver(0x0001, flt.HOTKEY_IDS[0]) == (False, 0)
     assert flt.nativeEventFilter(b"other", 0) == (False, 0)
     assert calls == [1]
 
@@ -480,3 +528,107 @@ def test_the_battery_hint_never_builds_the_context_on_the_ui_thread() -> None:
     service = controller.SearchService(factory)
     assert service.on_battery() is False
     assert built == []
+
+
+class FakeUser32:
+    """Records hotkey registrations; ``taken`` holds the (modifiers, key) other programs own."""
+
+    def __init__(self) -> None:
+        self.live: dict[int, tuple[int, int]] = {}
+        self.taken: set[tuple[int, int]] = set()
+
+    def RegisterHotKey(self, _hwnd: object, ident: int, modifiers: int, key: int) -> bool:  # noqa: N802
+        combo = (modifiers & ~hotkey.MOD_NOREPEAT, key)
+        if combo in self.taken or ident in self.live:
+            return False
+        self.live[ident] = combo
+        return True
+
+    def UnregisterHotKey(self, _hwnd: object, ident: int) -> bool:  # noqa: N802
+        return self.live.pop(ident, None) is not None
+
+
+@pytest.fixture
+def user32(monkeypatch: pytest.MonkeyPatch) -> FakeUser32:
+    from types import SimpleNamespace
+
+    fake = FakeUser32()
+    monkeypatch.setattr(hotkey, "ctypes", SimpleNamespace(windll=SimpleNamespace(user32=fake)))
+    return fake
+
+
+class TestChangingTheHotkey:
+    def test_the_old_key_is_released_only_after_the_new_one_is_secured(
+        self, qapp: QApplication, user32: FakeUser32
+    ) -> None:
+        flt = hotkey.HotkeyFilter(lambda: None)
+        assert flt.register("ctrl+alt+space")
+        first = dict(user32.live)
+        assert flt.register("ctrl+alt+f9")
+        assert len(user32.live) == 1  # exactly one live hotkey: the new one
+        assert user32.live != first
+        assert flt.spec == "ctrl+alt+f9"
+        assert flt.registered
+
+    def test_a_refused_new_key_keeps_the_old_one_working(
+        self, qapp: QApplication, user32: FakeUser32
+    ) -> None:
+        flt = hotkey.HotkeyFilter(lambda: None)
+        assert flt.register("ctrl+alt+space")
+        before = dict(user32.live)
+        user32.taken.add(hotkey.parse_hotkey("ctrl+alt+f9"))  # another program owns it
+        assert flt.register("ctrl+alt+f9") is False
+        assert user32.live == before  # nothing was lost
+        assert flt.spec == "ctrl+alt+space"
+        assert flt.registered
+
+    def test_an_invalid_spec_changes_nothing(self, qapp: QApplication, user32: FakeUser32) -> None:
+        flt = hotkey.HotkeyFilter(lambda: None)
+        flt.register("ctrl+alt+space")
+        before = dict(user32.live)
+        with pytest.raises(ValueError, match="unknown key"):
+            flt.register("ctrl+banana")
+        assert user32.live == before
+        assert flt.spec == "ctrl+alt+space"
+
+    def test_unregister_clears_everything_and_the_filter_only_answers_the_live_key(
+        self, qapp: QApplication, user32: FakeUser32
+    ) -> None:
+        calls: list[int] = []
+        flt = hotkey.HotkeyFilter(lambda: calls.append(1))
+        flt.register("ctrl+alt+space")
+        flt.register("ctrl+alt+f9")
+        stale = next(i for i in flt.HOTKEY_IDS if i != flt._active_id)
+
+        def deliver(ident: int) -> tuple[bool, int]:
+            msg = wintypes.MSG()
+            msg.message, msg.wParam = hotkey.WM_HOTKEY, ident
+            return flt.nativeEventFilter(b"windows_generic_MSG", ctypes.addressof(msg))
+
+        assert deliver(stale) == (False, 0)  # the released key's message is ignored
+        assert deliver(flt._active_id) == (True, 0)  # type: ignore[arg-type]
+        flt.unregister()
+        assert user32.live == {}
+        assert flt.spec is None
+        assert not flt.registered
+
+    def test_the_applier_reports_a_refused_key_without_losing_the_old_one(
+        self, qapp: QApplication, user32: FakeUser32
+    ) -> None:
+        flt = hotkey.HotkeyFilter(lambda: None)
+        flt.register("ctrl+alt+space")
+        tips: list[str] = []
+
+        class Tray:
+            def setToolTip(self, text: str) -> None:  # noqa: N802
+                tips.append(text)
+
+        apply = app_main.hotkey_applier(flt, Tray())  # type: ignore[arg-type]
+        apply("ctrl+alt+f8")
+        assert tips[-1] == "Vector Embed (ctrl+alt+f8)"
+        user32.taken.add(hotkey.parse_hotkey("ctrl+alt+f7"))
+        apply("ctrl+alt+f7")
+        assert tips[-1] == "Vector Embed (ctrl+alt+f8) - ctrl+alt+f7 is unavailable"
+        apply("ctrl+nonsense")
+        assert "unavailable" in tips[-1]
+        assert flt.spec == "ctrl+alt+f8"
