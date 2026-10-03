@@ -287,3 +287,53 @@ class TestIndexMaintenance:
         add(400, 300)  # now more than double
         store.maintain()
         assert state.get_meta("vector_index_rows_chunks") == "700"
+
+
+class TestSchemaVersion:
+    def test_new_tables_record_the_current_version(self, store: LanceStore, state: StateDb) -> None:
+        assert state.get_meta(lc.SCHEMA_VERSION_KEY) == str(lc.LANCE_SCHEMA_VERSION)
+
+    def test_an_index_from_before_versions_runs_every_step_once(
+        self, tmp_path: Path, state: StateDb, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        LanceStore(tmp_path, state, "m1", dim=DIM)
+        state.set_meta(lc.SCHEMA_VERSION_KEY, "")  # as written before versions were recorded
+        ran: list[str] = []
+        steps = (lambda _s: ran.append("1->2"), lambda _s: ran.append("2->3"))
+        monkeypatch.setattr(lc, "LANCE_MIGRATIONS", steps)
+        monkeypatch.setattr(lc, "LANCE_SCHEMA_VERSION", 3)
+        LanceStore(tmp_path, state, "m1", dim=DIM)
+        LanceStore(tmp_path, state, "m1", dim=DIM)  # already current: nothing runs again
+        assert ran == ["1->2", "2->3"]
+        assert state.get_meta(lc.SCHEMA_VERSION_KEY) == "3"
+
+    def test_an_interrupted_upgrade_resumes_at_the_failed_step(
+        self, tmp_path: Path, state: StateDb, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        LanceStore(tmp_path, state, "m1", dim=DIM)
+        state.set_meta(lc.SCHEMA_VERSION_KEY, "1")
+        ran: list[str] = []
+
+        def failing(_store: LanceStore) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(lc, "LANCE_MIGRATIONS", (lambda _s: ran.append("1->2"), failing))
+        monkeypatch.setattr(lc, "LANCE_SCHEMA_VERSION", 3)
+        with pytest.raises(OSError, match="disk full"):
+            LanceStore(tmp_path, state, "m1", dim=DIM)
+        assert state.get_meta(lc.SCHEMA_VERSION_KEY) == "2"  # the first step is kept
+        monkeypatch.setattr(
+            lc, "LANCE_MIGRATIONS", (lambda _s: ran.append("again"), lambda _s: ran.append("2->3"))
+        )
+        LanceStore(tmp_path, state, "m1", dim=DIM)
+        assert ran == ["1->2", "2->3"]
+
+    def test_an_index_from_a_newer_app_is_refused_for_reading_and_writing(
+        self, tmp_path: Path, state: StateDb
+    ) -> None:
+        LanceStore(tmp_path, state, "m1", dim=DIM)
+        state.set_meta(lc.SCHEMA_VERSION_KEY, str(lc.LANCE_SCHEMA_VERSION + 1))
+        with pytest.raises(lc.IndexSchemaError, match="newer"):
+            LanceStore(tmp_path, state, "m1", dim=DIM)
+        with pytest.raises(lc.IndexSchemaError):
+            LanceStore(tmp_path, state, "m1")  # read-only (search)

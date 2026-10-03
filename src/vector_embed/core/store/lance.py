@@ -111,6 +111,18 @@ class ModelMismatchError(RuntimeError):
     """The index was built with another embedding model or dimension than the one configured."""
 
 
+class IndexSchemaError(RuntimeError):
+    """The index was written by a newer version of the app than this one."""
+
+
+LanceMigration = Callable[["LanceStore"], None]
+# Index i upgrades the index schema from version i+1 to i+2. Version 1 is the first layout of the
+# chunk and document tables; a change to ``chunk_schema``/``document_schema`` adds a step here.
+LANCE_MIGRATIONS: tuple[LanceMigration, ...] = ()
+LANCE_SCHEMA_VERSION = 1 + len(LANCE_MIGRATIONS)
+SCHEMA_VERSION_KEY = "lance_schema_version"
+
+
 class LanceStore:
     """Chunk and document tables bound to one embedding model.
 
@@ -150,9 +162,33 @@ class LanceStore:
 
     def _open_existing(self) -> None:
         names = self._table_names()
+        if names:
+            self._stored_schema_version()  # refuses an index from a newer app; never migrates
         for name in (CHUNKS, DOCUMENTS):
             if name in names:
                 self._tables[name] = self.db.open_table(name)
+
+    def _stored_schema_version(self) -> int:
+        """The index's schema version (1 for an index from before versions were recorded)."""
+        stored = int(self._state.get_meta(SCHEMA_VERSION_KEY, "1") or 1)
+        if stored > LANCE_SCHEMA_VERSION:
+            raise IndexSchemaError(
+                f"the index has schema version {stored}, newer than this app supports "
+                f"({LANCE_SCHEMA_VERSION}); update the app"
+            )
+        return stored
+
+    def _migrate(self, migrations: Sequence[LanceMigration] | None = None) -> None:
+        """Bring existing tables up to ``LANCE_SCHEMA_VERSION``, one recorded step at a time, so
+        an interrupted upgrade resumes where it stopped."""
+        steps = LANCE_MIGRATIONS if migrations is None else migrations
+        latest = 1 + len(steps)
+        version = self._stored_schema_version()
+        while version < latest:
+            logger.info("lance: migrating the index schema %d -> %d", version, version + 1)
+            steps[version - 1](self)
+            version += 1
+            self._state.set_meta(SCHEMA_VERSION_KEY, str(version))
 
     def check_model(self) -> bool:
         """Create tables; rebuild the index if the model or dimension changed (True if wiped).
@@ -186,6 +222,10 @@ class LanceStore:
             else:
                 self._tables[name] = self.db.create_table(name, schema=schema)
                 self._create_fts(name, "text" if name == CHUNKS else "full_text")
+        if names:
+            self._migrate()
+        else:  # new tables are created in the current layout
+            self._state.set_meta(SCHEMA_VERSION_KEY, str(LANCE_SCHEMA_VERSION))
         self._state.set_meta("model_id", self.model_id)
         self._state.set_meta("dim", str(self.dim))
         return wiped

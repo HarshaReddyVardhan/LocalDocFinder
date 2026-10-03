@@ -388,12 +388,15 @@ class TestModelOverride:
         monkeypatch.setattr(worker, "build_parts", lambda *_a: make_parts(env))
         assert worker.main(["--model", env.settings.embedding.model]) == 0
 
+    @pytest.mark.parametrize("newer_app", [False, True])
     def test_a_mismatched_index_ends_the_run_without_touching_it(
-        self, env: Env, monkeypatch: pytest.MonkeyPatch
+        self, env: Env, monkeypatch: pytest.MonkeyPatch, newer_app: bool
     ) -> None:
-        from vector_embed.core.store.lance import ModelMismatchError
+        from vector_embed.core.store.lance import IndexSchemaError, ModelMismatchError
 
         def mismatch(*_args: object) -> WorkerParts:
+            if newer_app:
+                raise IndexSchemaError("the index has schema version 9")
             raise ModelMismatchError("the index was built with another model")
 
         monkeypatch.setattr(worker, "load_settings", lambda: env.settings)

@@ -29,7 +29,7 @@ from vector_embed.core.providers.ollama import Interrupted
 from vector_embed.core.reconcile import reconcile
 from vector_embed.core.scope import ScopePolicy
 from vector_embed.core.settings import Settings, load_settings
-from vector_embed.core.store.lance import LanceStore, ModelMismatchError
+from vector_embed.core.store.lance import IndexSchemaError, LanceStore, ModelMismatchError
 from vector_embed.core.store.sqlite import CHAT_LOCK, EMBEDDER_APPROVED_KEY, StateDb
 
 logger = logging.getLogger("worker")
@@ -268,8 +268,8 @@ def _run(settings: Settings, state: StateDb, args: argparse.Namespace) -> int:
     except ProviderError:
         logger.exception("could not reach the model server; is Ollama running?")
         return EXIT_PROVIDER
-    except ModelMismatchError as exc:
-        logger.error("%s", exc)  # the index is untouched; the message says how to switch
+    except (ModelMismatchError, IndexSchemaError) as exc:
+        logger.error("%s", exc)  # the index is untouched; the message says what to do
         return EXIT_MISMATCH
     return run_worker(
         parts,
