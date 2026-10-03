@@ -455,6 +455,13 @@ class StateDb:
         row = self._one("SELECT context_json FROM chat_sessions WHERE id=?", (session_id,))
         return dict(json.loads(row[0])) if row else {}
 
+    def set_session_context(self, session_id: int, context: dict[str, Any]) -> None:
+        with self._lock:
+            self._sql.execute(
+                "UPDATE chat_sessions SET context_json=?, updated_at=? WHERE id=?",
+                (json.dumps(context), self._clock(), session_id),
+            )
+
     def sessions(self, limit: int = 50) -> list[ChatSession]:
         rows = self._all(
             "SELECT id,title,updated_at FROM chat_sessions ORDER BY updated_at DESC LIMIT ?",

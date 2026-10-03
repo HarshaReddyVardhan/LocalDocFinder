@@ -111,6 +111,10 @@ class Launcher:
     def open_file(self, result: SearchResult) -> None:
         self._startfile(result.path)
 
+    def open_path(self, path: str) -> None:
+        """Open a file in its default app (a PDF in the PDF reader, and so on)."""
+        self._startfile(path)
+
     def reveal(self, result: SearchResult) -> None:
         self._popen(["explorer", "/select,", os.path.normpath(result.path)])
 

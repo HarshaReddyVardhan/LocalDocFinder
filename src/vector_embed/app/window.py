@@ -9,6 +9,7 @@ pane appear only outside Search. Models, health and settings live in the Setting
 """
 
 import enum
+import re
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -16,8 +17,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 
-from PySide6.QtCore import QEvent, QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QGuiApplication, QHideEvent, QKeySequence, QShortcut
+from PySide6.QtCore import (
+    QEvent,
+    QMimeData,
+    QObject,
+    QRunnable,
+    Qt,
+    QThreadPool,
+    QTimer,
+    QUrl,
+    Signal,
+)
+from PySide6.QtGui import (
+    QDragEnterEvent,
+    QDropEvent,
+    QGuiApplication,
+    QHideEvent,
+    QKeySequence,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -55,7 +73,8 @@ from vector_embed.app.controller import (
 from vector_embed.app.match_controller import MatchController
 from vector_embed.app.match_panel import MatchPanel
 from vector_embed.app.result_delegate import ROW_ROLE, ResultDelegate
-from vector_embed.core.rag import Source
+from vector_embed.core.documents import DocumentError
+from vector_embed.core.rag import CODE_KINDS, Source
 from vector_embed.core.skills.base import panel_skills
 from vector_embed.core.skills.chat import SessionSummary
 from vector_embed.core.skills.search import SearchResult
@@ -105,6 +124,29 @@ class SkillMode:
 
 
 AnyMode = Mode | SkillMode
+CITE_SCHEME = "cite"
+_CITATION = re.compile(r"(?<!\\)\[(\d+)\](?!\()")  # not escaped, and not a link's own text
+
+
+def link_citations(text: str, sources: list[Source]) -> str:
+    """Markdown with every ``[n]`` that names a real source turned into a clickable link."""
+    known = {source.n for source in sources}
+
+    def link(match: re.Match[str]) -> str:
+        number = int(match.group(1))
+        if number not in known:
+            return match.group(0)
+        return f"[\\[{number}\\]]({CITE_SCHEME}:{number})"
+
+    return _CITATION.sub(link, text)
+
+
+def dropped_files(mime: QMimeData) -> list[str]:
+    """The local files (not folders or web links) in a drag."""
+    if not mime.hasUrls():
+        return []
+    paths = (Path(url.toLocalFile()) for url in mime.urls() if url.isLocalFile())
+    return [str(path) for path in paths if path.is_file()]  # native separators, as indexed
 
 
 def skill_modes() -> list[SkillMode]:
@@ -325,6 +367,10 @@ class SearchWindow(QWidget):
         self.list.setItemDelegate(ResultDelegate(self._thumbs_dir, self.list))
         self.list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.answer = QTextBrowser()
+        self.answer.setOpenLinks(False)  # citation links are handled here, not navigated to
+        self.answer.anchorClicked.connect(self._on_link)
+        self.input.setAcceptDrops(False)  # dropped files go to the window: they pin to a chat
+        self.setAcceptDrops(True)
         bottom = self._build_bottom_bar()
 
         split = QSplitter()
@@ -729,6 +775,10 @@ class SearchWindow(QWidget):
             self._answer_text += event.note
             self._render_now()
         self._sources = event.sources
+        if event.sources:  # now the [n] markers can link to their sources
+            self.answer.setMarkdown(link_citations(self._answer_text, event.sources))
+            scrollbar = self.answer.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
         self.list.clear()
         for source in event.sources:
             where = f" ({source.location})" if source.location else ""
@@ -790,7 +840,22 @@ class SearchWindow(QWidget):
         if self._mode is Mode.SEARCH:
             self.open_selected()
         elif (source := self.selected_source()) is not None:
+            self.open_source(source)
+
+    def open_source(self, source: Source) -> None:
+        """Code opens in the editor at its line; documents (PDF, Word, images) in their app."""
+        if source.kind in CODE_KINDS:
             self._launcher.open_at(source.path, source.start_line)
+        else:
+            self._launcher.open_path(source.path)
+
+    def _on_link(self, url: QUrl) -> None:
+        if url.scheme() != CITE_SCHEME:
+            return
+        number = int(url.path()) if url.path().isdigit() else -1
+        source = next((s for s in self._sources if s.n == number), None)
+        if source is not None:
+            self.open_source(source)
 
     def open_selected(self) -> None:
         if (result := self.selected()) is not None:
@@ -816,6 +881,35 @@ class SearchWindow(QWidget):
         self._chat.pinned = [result.path]
         self.set_mode(Mode.CHAT)
         self.status.setText(f"chatting with {Path(result.path).name}")
+
+    # ------------------------------------------------------------------ drag and drop
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
+        if self._assistant is not None and dropped_files(event.mimeData()):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
+        paths = dropped_files(event.mimeData())
+        if self._assistant is None or not paths:
+            return
+        event.acceptProposedAction()
+        self.pin_files(paths)
+
+    def pin_files(self, paths: list[str]) -> None:
+        """Files dropped on the popup: chat about them (added to the chat already open)."""
+        assert self._assistant is not None
+        names = ", ".join(Path(p).name for p in paths)
+        if self._mode is not Mode.CHAT:
+            self._chat.reset()
+            self._chat.pinned = list(paths)
+            self.set_mode(Mode.CHAT)
+            self.status.setText(f"chatting with {names}")
+            return
+        try:
+            self._assistant.pin(paths, self._chat)
+        except (DocumentError, RuntimeError) as exc:
+            self.status.setText(f"⚠ {exc}")
+            return
+        self.status.setText(f"pinned {names}  ·  {self._chat.describe()}")
 
     def paste_scratch(self) -> bool:
         """Ctrl+V in Chat mode: long or multi-line text becomes a scratch document."""

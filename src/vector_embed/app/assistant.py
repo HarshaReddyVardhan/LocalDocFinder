@@ -287,6 +287,13 @@ class AssistantService:
             return
         yield from self._turn_events(prepared, state)
 
+    def pin(self, paths: list[str], state: ChatState) -> None:
+        """Add files to the conversation: to the running session, or to the next one."""
+        if state.session_id is not None:
+            state.pinned = ChatSkill(self.ctx).pin(state.session_id, paths)
+        else:
+            state.pinned = list(dict.fromkeys([*state.pinned, *paths]))
+
     def recent_sessions(self) -> list[SessionSummary]:
         return ChatSkill(self.ctx).recent_sessions()
 

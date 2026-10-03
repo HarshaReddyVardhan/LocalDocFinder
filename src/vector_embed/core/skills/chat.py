@@ -165,6 +165,18 @@ class ChatSkill(Skill):
         context = {"pinned": pinned, "scratch": scratch or ""}
         return self.ctx.state.create_session(title[:80] or "chat", context)
 
+    def pin(self, session_id: int, paths: list[str]) -> list[str]:
+        """Add files to a running conversation; returns the full pinned list.
+
+        Each file is loaded first, so a secret or unreadable file is refused now, not mid-chat.
+        """
+        for path in paths:
+            self._loader.load(path)  # raises DocumentError
+        context = self.ctx.state.session_context(session_id)
+        pinned = list(dict.fromkeys([*context.get("pinned", []), *paths]))
+        self.ctx.state.set_session_context(session_id, {**context, "pinned": pinned})
+        return pinned
+
     def _pinned(self, session_id: int) -> tuple[list[LoadedDocument], str]:
         context = self.ctx.state.session_context(session_id)
         docs: list[LoadedDocument] = []
