@@ -9,14 +9,12 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QLineEdit,
-    QListWidget,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -25,24 +23,19 @@ from PySide6.QtWidgets import (
 )
 
 from vector_embed.app.models_panel import ModelsPanel
+from vector_embed.app.scope_editor import ScopeEditor, pick_folder
 from vector_embed.app.settings_controller import SettingsController, app_version
 from vector_embed.core.models.benchmark import BenchKind, Verdict, judge
 from vector_embed.core.settings import SettingsError
 from vector_embed.core.settings_schema import OptionSpec, editable_options
 from vector_embed.core.updates import UpdateKind, UpdateOutcome
 
-ADD_FOLDER_TITLE = "Add a folder to index"
 KEY_PROMPT_TITLE = "API key"
 DEFAULT_BUDGET_USD = 10.0
 ADVANCED_HINT = (
     "Every other option. Changes are checked and saved at once; indexing options apply from "
     "the next indexing run."
 )
-
-
-def pick_folder() -> str | None:
-    path = QFileDialog.getExistingDirectory(None, ADD_FOLDER_TITLE)
-    return path or None
 
 
 def ask_secret(provider: str) -> str | None:
@@ -80,48 +73,46 @@ class GeneralTab(SettingsTab):
     hotkey_changed = Signal(str)
 
     def __init__(
-        self, controller: SettingsController, choose_folder: Callable[[], str | None] = pick_folder
+        self,
+        controller: SettingsController,
+        choose_folder: Callable[[], str | None] = pick_folder,
+        *,
+        show_scope: bool = True,
     ) -> None:
         super().__init__(controller)
-        self._choose_folder = choose_folder
         self.hotkey = QLineEdit()
         self.apply_hotkey = QPushButton("Apply")
         self.start_with_windows = QCheckBox("Start with Windows")
-        self.folders = QListWidget()
-        self.add_folder = QPushButton("Add folder…")
-        self.remove_folder = QPushButton("Remove selected")
+        self.scope = ScopeEditor(choose_folder)
+        self.save_scope = QPushButton("Save what to index")
 
         hotkey_row = QHBoxLayout()
         hotkey_row.addWidget(self.hotkey, 1)
         hotkey_row.addWidget(self.apply_hotkey)
-        folder_buttons = QHBoxLayout()
-        folder_buttons.addWidget(self.add_folder)
-        folder_buttons.addWidget(self.remove_folder)
-        folder_buttons.addStretch(1)
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Search hotkey"))
         layout.addLayout(hotkey_row)
         layout.addWidget(self.start_with_windows)
-        layout.addWidget(QLabel("Folders to index"))
-        layout.addWidget(self.folders, 1)
-        layout.addLayout(folder_buttons)
+        if show_scope:  # the setup wizard has a page of its own for this
+            layout.addWidget(QLabel("What to index"))
+            layout.addWidget(self.scope, 1)
+            layout.addWidget(self.save_scope)
+        else:
+            self.scope.hide()
+            self.save_scope.hide()
 
         self.refresh()
         self.apply_hotkey.clicked.connect(self._apply_hotkey)
         self.hotkey.returnPressed.connect(self._apply_hotkey)
         self.start_with_windows.clicked.connect(self._toggle_autostart)
-        self.add_folder.clicked.connect(self._add_folder)
-        self.remove_folder.clicked.connect(self._remove_folder)
+        self.save_scope.clicked.connect(self._save_scope)
+        self.scope.changed.connect(lambda: self.save_scope.setEnabled(self.scope.is_valid()))
 
     def refresh(self) -> None:
         settings = self._controller.settings()
         self.hotkey.setText(settings.search.hotkey)
         self.start_with_windows.setChecked(settings.app.start_with_windows)
-        self.folders.clear()
-        self.folders.addItems(list(settings.scope.roots))
-
-    def _roots(self) -> list[str]:
-        return [self.folders.item(i).text() for i in range(self.folders.count())]
+        self.scope.load(settings.scope)
 
     def _apply_hotkey(self) -> None:
         holder: list[str] = []
@@ -134,24 +125,13 @@ class GeneralTab(SettingsTab):
         if not self._guard(lambda: self._controller.set_start_with_windows(checked)):
             self.refresh()
 
-    def _add_folder(self) -> None:
-        folder = self._choose_folder()
-        if not folder or folder in self._roots():
-            return
-        added = self._guard(
-            lambda: self._controller.set_roots([*self._roots(), folder]),
-            "folder added; the watcher starts on it within a minute and scans it when idle",
+    def _save_scope(self) -> None:
+        choice = self.scope.choice()
+        self._guard(
+            lambda: self._controller.set_scope(choice.coverage, choice.roots, choice.file_types),
+            "saved; the watcher re-scans within a minute, and files outside the new scope "
+            "leave the index",
         )
-        if added:
-            self.refresh()
-
-    def _remove_folder(self) -> None:
-        row = self.folders.currentRow()
-        if row < 0:
-            return
-        remaining = [root for i, root in enumerate(self._roots()) if i != row]
-        if self._guard(lambda: self._controller.set_roots(remaining), "folder removed"):
-            self.refresh()
 
 
 class ModelsTab(SettingsTab):

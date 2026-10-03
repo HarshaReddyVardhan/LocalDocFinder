@@ -8,6 +8,7 @@ from pathlib import Path
 
 from vector_embed.core.projects import Projects
 from vector_embed.core.scope import ScopePolicy
+from vector_embed.core.scope_roots import resolve_roots
 from vector_embed.core.settings import Settings
 
 LOGS_DIRNAME = "logs"
@@ -16,11 +17,15 @@ THUMBS_DIRNAME = "thumbs"
 
 def build_scope(settings: Settings) -> ScopePolicy:
     """The scope policy; the app's own data folder is never indexed."""
-    return ScopePolicy(settings.scope, blocked_roots=[settings.storage.data_dir])
+    return ScopePolicy(
+        settings.scope,
+        blocked_roots=[settings.storage.data_dir],
+        scan_roots=resolve_roots(settings.scope),
+    )
 
 
 def build_projects(settings: Settings, scope: ScopePolicy) -> Projects:
-    return Projects(scope, settings.scope)
+    return Projects(scope, settings.scope, roots=resolve_roots(settings.scope))
 
 
 def log_dir(settings: Settings) -> Path:

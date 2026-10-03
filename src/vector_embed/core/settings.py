@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     DotEnvSettingsSource,
@@ -63,13 +63,40 @@ class _Section(BaseModel):
 class ScopeSettings(_Section):
     """What is indexed. Rule order is documented in ``vector_embed.core.scope``."""
 
-    roots: tuple[str, ...] = (str(Path.home()), "D:\\")
+    # "entire_pc": every fixed drive (the system drive: only the user's own folders).
+    # "chosen": only ``roots``. Either way, system folders are never indexed (core.protection).
+    coverage: Literal["entire_pc", "chosen"] = "entire_pc"
+    # "documents": PDF, Word, PowerPoint, text and Markdown only. "everything" adds code,
+    # data files and images.
+    file_types: Literal["documents", "everything"] = "documents"
+    roots: tuple[str, ...] = ()  # the folders/drives to index when ``coverage`` is "chosen"
+    document_exts: frozenset[str] = frozenset(
+        {".pdf", ".docx", ".pptx", ".txt", ".md", ".markdown", ".rtf"}
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _roots_imply_a_choice(cls, data: Any) -> Any:  # noqa: ANN401  # raw input
+        """Folders listed without a coverage mean the user chose them (older settings files)."""
+        if isinstance(data, dict) and data.get("roots") and "coverage" not in data:
+            return {**data, "coverage": "chosen"}
+        return data
+
+    @model_validator(mode="after")
+    def _a_choice_needs_folders(self) -> "ScopeSettings":
+        if self.coverage == "chosen" and not self.roots:
+            raise ValueError("coverage is 'chosen' but no folders are listed in roots")
+        return self
 
     blocked_dirs: frozenset[str] = frozenset(
         {
             # system and program directories
             "windows", "$recycle.bin", "system volume information", "recovery",
             "program files", "program files (x86)", "programdata", "appdata",
+            "windows.old", "perflogs", "inetpub", "intel", "msocache", "onedrivetemp",
+            "documents and settings", "drivers", "$windows.~bt", "$windows.~ws",
+            # installed games and Python packages (a whole drive may hold them)
+            "steamapps", "site-packages", "dist-packages",
             # build output, package caches, virtualenvs, tool state
             "node_modules", ".git", "target", "dist", "build", "out", "bin", "obj",
             "venv", ".venv", "env", ".env", "__pycache__", ".pytest_cache", ".mypy_cache",

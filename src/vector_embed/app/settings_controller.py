@@ -12,9 +12,10 @@ from vector_embed.core.lifecycle import (
     stop_everything,
 )
 from vector_embed.core.models.benchmark import BenchResult, load_results
+from vector_embed.core.protection import SystemProtection
 from vector_embed.core.secrets import KeyStore
 from vector_embed.core.settings import Settings, SettingsError, load_settings
-from vector_embed.core.settings_io import set_setting
+from vector_embed.core.settings_io import set_setting, set_settings
 from vector_embed.core.settings_schema import OptionSpec
 from vector_embed.core.store.sqlite import StateDb
 from vector_embed.core.updates import UpdateKind, UpdateOutcome, Updater
@@ -79,10 +80,34 @@ class SettingsController:
         self._on_changed()
         return cleaned
 
-    def set_roots(self, roots: list[str]) -> None:
-        if not roots:
-            raise SettingsError("at least one folder must be indexed")
-        set_setting(self._path, ["scope", "roots"], list(dict.fromkeys(roots)))
+    def set_scope(
+        self,
+        coverage: str,
+        roots: list[str],
+        file_types: str,
+        protection: SystemProtection | None = None,
+    ) -> None:
+        """Save what to index: the whole PC or chosen folders/drives, and which file types.
+
+        System folders are refused by name here (and skipped regardless in the scan).
+        """
+        protection = protection or SystemProtection()
+        chosen = list(dict.fromkeys(roots))
+        if coverage == "chosen":
+            if not chosen:
+                raise SettingsError("choose at least one folder or drive to index")
+            for root in chosen:
+                reason = protection.reason(root)
+                if reason:
+                    raise SettingsError(f"{root} is {reason}; it is never indexed")
+        set_settings(
+            self._path,
+            [
+                (["scope", "coverage"], coverage),
+                (["scope", "roots"], chosen if coverage == "chosen" else None),
+                (["scope", "file_types"], file_types),
+            ],
+        )
         self._on_changed()
 
     def set_start_with_windows(self, enabled: bool) -> None:

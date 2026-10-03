@@ -30,6 +30,7 @@ from vector_embed.core.power import PowerGate
 from vector_embed.core.process import self_command, single_instance, stop_requested
 from vector_embed.core.projects import Projects
 from vector_embed.core.scope import ScopePolicy
+from vector_embed.core.scope_roots import resolve_roots
 from vector_embed.core.settings import Settings, SettingsError, load_settings
 from vector_embed.core.store.sqlite import CHAT_LOCK, PROGRESS_KEY, StateDb
 from vector_embed.core.wiring import build_projects, build_scope, log_dir
@@ -249,7 +250,8 @@ class Watcher:
         self.projects = projects
         self.scope = scope
         self._clock = clock
-        self.roots = [r for r in (roots or settings.scope.roots) if Path(r).is_dir()]
+        self.roots = [r for r in (roots or resolve_roots(settings.scope)) if Path(r).is_dir()]
+        self._scope_key = (tuple(self.roots), settings.scope.file_types)
         self.observer = Observer()
         self.handle: WorkerHandle | None = None
         self.next_spawn = 0.0
@@ -390,9 +392,14 @@ class Watcher:
         except SettingsError:
             logger.warning("watcher: settings are unreadable; keeping the current folders")
             return False
-        roots = [r for r in fresh.scope.roots if Path(r).is_dir()]
-        if roots == self.roots:
+        roots = [r for r in resolve_roots(fresh.scope) if Path(r).is_dir()]
+        scope_key = (
+            tuple(roots),
+            fresh.scope.file_types,
+        )  # a new file type list needs a re-scan too
+        if scope_key == self._scope_key:
             return False
+        self._scope_key = scope_key
         logger.info("watcher: folders changed", extra={"roots": roots})
         self.settings = fresh
         self.roots = roots

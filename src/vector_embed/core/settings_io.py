@@ -33,19 +33,28 @@ def set_setting(path: Path, keys: Sequence[str], value: object) -> None:
     ``value=None`` removes the key. Raises ``SettingsError`` and leaves the file untouched if
     the result would not validate.
     """
+    set_settings(path, [(keys, value)])
+
+
+def set_settings(path: Path, changes: Sequence[tuple[Sequence[str], object]]) -> None:
+    """Apply several ``set_setting`` changes as one validated, atomic write.
+
+    Needed when the settings are only valid together (coverage "chosen" needs its folders).
+    """
     with _locked(path):
         data = _read(path)
-        node = data
-        for key in keys[:-1]:
-            child = node.get(key)
-            if not isinstance(child, dict):
-                child = {}
-                node[key] = child
-            node = child
-        if value is None:
-            node.pop(keys[-1], None)
-        else:
-            node[keys[-1]] = value
+        for keys, value in changes:
+            node = data
+            for key in keys[:-1]:
+                child = node.get(key)
+                if not isinstance(child, dict):
+                    child = {}
+                    node[key] = child
+                node = child
+            if value is None:
+                node.pop(keys[-1], None)
+            else:
+                node[keys[-1]] = value
         # What is stored is the upgraded layout: writing the old one back under a new version
         # number would leave a file that claims to be current and is not.
         _write_atomic(path, _validated(data, path))

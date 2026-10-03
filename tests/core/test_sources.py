@@ -1,3 +1,4 @@
+import os
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
@@ -39,6 +40,9 @@ class _ExtraSource:
     def iter_files(self, roots: Iterable[str | Path] | None = None) -> Iterator[Path]:
         yield from sorted(self.root.glob("*.txt"))
 
+    def owns(self, path: str) -> bool:
+        return Path(path).is_relative_to(self.root)
+
     def still_valid(self, path: str) -> bool:
         return Path(path).exists()
 
@@ -66,3 +70,18 @@ def test_reconcile_scans_every_registered_source(env: Env, extra: type[_ExtraSou
     Path(outside).unlink()
     gone = reconcile(env.state, env.projects, env.scope)
     assert gone.deleted == 1  # the extra source decided its own file is gone
+
+
+def test_a_full_scan_drops_files_of_folders_that_are_no_longer_indexed(
+    env: Env, tmp_path: Path
+) -> None:
+    kept = write(env.root / "kept.txt", "alpha " * 10)
+    elsewhere = write(tmp_path / "dropped-root" / "old.txt", "bravo " * 10)
+    env.state.manifest_set(elsewhere, 1, 1, "h")
+    env.state.manifest_set(kept, 1, 1, "h")
+    partial = reconcile(env.state, env.projects, env.scope, roots=[str(env.root)])
+    assert partial.deleted == 0  # a scan of one folder says nothing about the others
+    full = reconcile(env.state, env.projects, env.scope)
+    assert full.deleted == 1
+    deleted = [i.path for i in env.state.claim(10, ignore_debounce=True) if i.op == "delete"]
+    assert deleted == [os.path.normcase(elsewhere)]

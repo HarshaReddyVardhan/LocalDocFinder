@@ -38,7 +38,9 @@ def corpus(tmp_path: Path) -> Path:
 
 
 def settings_and_scope() -> tuple[Settings, ScopePolicy]:
-    scope_settings = ScopeSettings(blocked_dirs=ScopeSettings().blocked_dirs - {"appdata"})
+    scope_settings = ScopeSettings(
+        blocked_dirs=ScopeSettings().blocked_dirs - {"appdata"}, file_types="everything"
+    )
     return Settings(scope=scope_settings), ScopePolicy(scope_settings)
 
 

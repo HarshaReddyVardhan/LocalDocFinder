@@ -18,6 +18,7 @@ from collections.abc import Callable, Iterable
 from enum import StrEnum
 from pathlib import Path
 
+from vector_embed.core.protection import SystemProtection
 from vector_embed.core.settings import ScopeSettings
 
 logger = logging.getLogger(__name__)
@@ -96,8 +97,15 @@ def is_cloud_placeholder(info: os.stat_result) -> bool:
 class ScopePolicy:
     """Decides what the indexer may touch. Build once; methods are pure apart from ``stat``."""
 
-    def __init__(self, settings: ScopeSettings, blocked_roots: Iterable[str | Path] = ()) -> None:
+    def __init__(
+        self,
+        settings: ScopeSettings,
+        blocked_roots: Iterable[str | Path] = (),
+        scan_roots: Iterable[str | Path] | None = None,
+        protection: SystemProtection | None = None,
+    ) -> None:
         self._s = settings
+        self._protection = protection or SystemProtection()
         self._ai_keys = tuple(settings.ai_note_dirs)
         self._ai_globs = {
             key: tuple(glob_to_regex(glob) for glob in globs)
@@ -108,7 +116,10 @@ class ScopePolicy:
         # Never index the app's own data folder (index, queue, logs, chat history).
         self._blocked_roots = tuple(_normalised(root) for root in blocked_roots)
         # The folders the user chose to index: a blocked name only counts *below* one of them.
-        self._scan_roots = tuple(_lower_parts(_normalised(root)) for root in settings.roots)
+        self._scan_roots = tuple(
+            _lower_parts(_normalised(root))
+            for root in (settings.roots if scan_roots is None else scan_roots)
+        )
 
     # ------------------------------------------------------------------ secrets / noise
     def is_secret(self, path: str | Path) -> bool:
@@ -158,12 +169,12 @@ class ScopePolicy:
     def should_descend(self, dir_path: str | Path, is_ignored: IgnoreCheck | None = None) -> bool:
         """Whether a directory walk should enter ``dir_path`` (prune early; it is the fast path)."""
         name = Path(os.path.normpath(dir_path)).name.lower()
+        if self._protection.is_protected(dir_path):  # the OS and other profiles: never, anywhere
+            return False
         if not name:  # drive root
             return True
-        if name in self._s.blocked_dirs:
-            return False
         ai_key = self._ai_key(name)
-        if is_hidden_name(name) and ai_key is None:
+        if name in self._s.blocked_dirs or (is_hidden_name(name) and ai_key is None):
             return False
         if name in self._s.ai_excluded_subdirs and self._has_ai_ancestor(dir_path):
             return False
@@ -194,11 +205,18 @@ class ScopePolicy:
         is_text = ext in cfg.text_exts or name in cfg.text_filenames
         is_doc = ext in cfg.doc_exts
         is_image = ext in cfg.image_exts
+        if cfg.file_types == "documents":  # no code, data files or images
+            listed = ext in cfg.document_exts
+            is_text, is_doc, is_image = is_text and listed, is_doc and listed, False
         is_transcript_candidate = cfg.index_ai_transcripts and ext == ".jsonl"
         if not (is_text or is_doc or is_image or is_transcript_candidate):
             return False
 
-        if not self._path_allowed(path, is_transcript_candidate) or self._in_blocked_root(path):
+        if (
+            self._protection.is_protected(path)
+            or not self._path_allowed(path, is_transcript_candidate)
+            or self._in_blocked_root(path)
+        ):
             return False
         ignored = is_ignored is not None and is_ignored(str(path))
         # A link can point anywhere, including at a file we must not read.

@@ -70,8 +70,31 @@ def reconcile(
             logger.info("reconcile interrupted after queueing %d files", queued)
             return ReconcileResult(queued=queued, interrupted=True)
         deleted += _queue_deletes(state, source, scan_roots, manifest, seen)
+    if scan_roots is None:  # a full scan: files of folders the user dropped leave the index too
+        deleted += _queue_orphans(state, content_sources(projects, scope), manifest)
     logger.info("reconcile: %d changed/new, %d gone", queued, deleted)
     return ReconcileResult(queued, deleted)
+
+
+def _queue_orphans(
+    state: StateDb, sources: list[ContentSource], manifest: dict[str, tuple[int, int]]
+) -> int:
+    """Queue deletes for indexed files that lie under none of any source's roots.
+
+    A folder removed from the settings (or a file type no longer wanted) must stop showing up in
+    search; only a full scan may decide this, as a scan of one folder says nothing of the rest.
+    """
+    prefixes = tuple(
+        os.path.normcase(os.path.normpath(root)).rstrip("\\/") + os.sep
+        for source in sources
+        for root in source.roots
+    )
+    orphans = [
+        (path, "delete", _DELETE_PRIORITY)
+        for path in manifest
+        if not path.startswith(prefixes) and any(source.owns(path) for source in sources)
+    ]
+    return state.enqueue_many(orphans)
 
 
 def _queue_changes(

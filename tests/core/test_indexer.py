@@ -300,9 +300,13 @@ class TestReconcile:
         assert result.queued == 4 == env.state.queue_size()  # not thrown away
         assert env.state.get_meta("last_reconcile") is None  # but the scan is not "complete"
 
-    def test_files_outside_the_scanned_roots_are_left_alone(self, env: "Env") -> None:
+    def test_a_scan_of_one_folder_leaves_files_elsewhere_alone(self, env: "Env") -> None:
         env.state.manifest_set(str(env.root.parent / "elsewhere" / "x.txt"), 1, 1, "h")
-        assert reconcile(env.state, env.projects, env.scope).deleted == 0
+        assert reconcile(env.state, env.projects, env.scope, roots=[str(env.root)]).deleted == 0
+
+    def test_a_full_scan_drops_files_of_folders_no_longer_indexed(self, env: "Env") -> None:
+        env.state.manifest_set(str(env.root.parent / "elsewhere" / "x.txt"), 1, 1, "h")
+        assert reconcile(env.state, env.projects, env.scope).deleted == 1
 
     def test_explicit_roots(self, env: "Env") -> None:
         write(env, "one/a.txt", "a " * 10)

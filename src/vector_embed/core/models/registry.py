@@ -332,6 +332,9 @@ class ModelRegistry:
             estimated_seconds=seconds,
             message=(
                 f"Switching embedder to {new_model} requires re-indexing "
-                f"~{indexed_files} files (about {seconds / 60:.0f} min)."
+                f"~{indexed_files} files (about {seconds / 60:.0f} min). The whole index is "
+                "rebuilt from the start: vectors from different embedders cannot be mixed, so "
+                "the current index is deleted and search is incomplete until the rebuild "
+                "finishes (it runs while the PC is idle and plugged in)."
             ),
         )

@@ -45,7 +45,7 @@ def _no_real_ollama_autostart(monkeypatch: pytest.MonkeyPatch) -> None:
 def scope_settings() -> ScopeSettings:
     """Defaults, minus ``appdata``: pytest's tmp dirs live under AppData on Windows."""
     default = ScopeSettings()
-    return ScopeSettings(blocked_dirs=default.blocked_dirs - {"appdata"})
+    return ScopeSettings(blocked_dirs=default.blocked_dirs - {"appdata"}, file_types="everything")
 
 
 @pytest.fixture

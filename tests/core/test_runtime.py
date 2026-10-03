@@ -14,7 +14,7 @@ from vector_embed.core.store.sqlite import StateDb
 
 def make_settings(tmp_path: Path, **kw: object) -> Settings:
     default = ScopeSettings()
-    scope = ScopeSettings(blocked_dirs=default.blocked_dirs - {"appdata"})
+    scope = ScopeSettings(blocked_dirs=default.blocked_dirs - {"appdata"}, file_types="everything")
     return Settings(scope=scope, storage=StorageSettings(data_dir=tmp_path / "data"), **kw)  # type: ignore[arg-type]
 
 
@@ -33,8 +33,10 @@ def test_scope_never_indexes_the_data_dir(tmp_path: Path) -> None:
 
 def test_projects_use_the_configured_roots(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
+    chosen = settings.scope.model_copy(update={"coverage": "chosen", "roots": (str(tmp_path),)})
+    settings = settings.model_copy(update={"scope": chosen})
     projects = runtime.build_projects(settings, runtime.build_scope(settings))
-    assert [str(r) for r in projects.roots] == list(settings.scope.roots)
+    assert [str(r) for r in projects.roots] == [str(tmp_path)]
 
 
 def test_open_store_probes_dim_only_when_the_model_changes(tmp_path: Path) -> None:

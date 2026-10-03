@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QWizardPage,
 )
 
+from vector_embed.app.scope_editor import ScopeEditor
 from vector_embed.app.settings_controller import SettingsController
 from vector_embed.app.settings_tabs import CloudTab, GeneralTab, UpdatesTab
 from vector_embed.app.setup_controller import SetupController
@@ -28,6 +29,7 @@ from vector_embed.core.models.benchmark import Verdict, judge
 from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_EMBED, Catalog
 from vector_embed.core.models.fit import budget_mb, fits
 from vector_embed.core.models.hardware import Hardware
+from vector_embed.core.settings import SettingsError
 from vector_embed.core.setup.flow import (
     EnvironmentProbe,
     SetupEvent,
@@ -103,6 +105,36 @@ class TermsPage(QWizardPage):
 
     def validatePage(self) -> bool:  # noqa: N802
         self._record()
+        return True
+
+
+class ScopePage(QWizardPage):
+    """What to index. Defaults to the documents of the whole PC; saved when Next is pressed."""
+
+    def __init__(self, controller: SettingsController) -> None:
+        super().__init__()
+        self.setTitle("What should be searchable?")
+        self._controller = controller
+        self.editor = ScopeEditor()
+        self.status = _label()
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.editor)
+        layout.addWidget(self.status)
+        self.editor.changed.connect(self.completeChanged)
+
+    def initializePage(self) -> None:  # noqa: N802
+        self.editor.load(self._controller.settings().scope)
+
+    def isComplete(self) -> bool:  # noqa: N802
+        return self.editor.is_valid()
+
+    def validatePage(self) -> bool:  # noqa: N802
+        choice = self.editor.choice()
+        try:
+            self._controller.set_scope(choice.coverage, choice.roots, choice.file_types)
+        except SettingsError as exc:
+            self.status.setText(str(exc))
+            return False
         return True
 
 
@@ -319,7 +351,7 @@ class SettingsPage(QWizardPage):
     def __init__(self, controller: SettingsController) -> None:
         super().__init__()
         self.setTitle("Your settings")
-        self.general = GeneralTab(controller)
+        self.general = GeneralTab(controller, show_scope=False)
         self.cloud = CloudTab(controller)
         self.updates = UpdatesTab(controller)
         self.tabs = QTabWidget()
@@ -375,6 +407,7 @@ class SetupWizard(QWizard):
         self._ask_downgrade = ask_downgrade
         self.welcome = WelcomePage(hardware)
         self.terms = TermsPage(record_terms)
+        self.scope = ScopePage(settings_controller)
         self.ollama = OllamaPage(controller)
         self.models = ModelsPage(controller, catalog, hardware)
         self.download = DownloadPage()
@@ -384,6 +417,7 @@ class SetupWizard(QWizard):
         self._pages = (
             self.welcome,
             self.terms,
+            self.scope,
             self.ollama,
             self.models,
             self.download,

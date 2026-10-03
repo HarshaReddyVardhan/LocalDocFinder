@@ -75,6 +75,8 @@ def test_embedder_change_needs_confirmation_and_describes_the_cost(world: World)
     notice = world.manager.embed_change_notice("bge-m3")
     assert notice is not None
     assert notice.files == 1200
+    assert "cannot be mixed" in notice.message  # the user is told the whole index restarts
+    assert "rebuilt from the start" in notice.message
     with pytest.raises(ModelChangeError, match="re-indexing ~1200 files"):
         world.manager.change_embedder("bge-m3")
     assert not world.path.exists()  # nothing was written without confirmation

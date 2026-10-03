@@ -1,3 +1,4 @@
+import os
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
@@ -69,13 +70,29 @@ def test_hotkey_is_validated_and_normalised(env: Env, controller: SettingsContro
     assert controller.settings().search.hotkey == "ctrl+alt+f9"
 
 
-def test_roots_need_at_least_one_folder_and_dedupe(
+def test_a_chosen_scope_needs_a_folder_and_dedupes(
     env: Env, controller: SettingsController
 ) -> None:
-    controller.set_roots(["D:\\a", "D:\\a", "D:\\b"])
-    assert controller.settings().scope.roots == ("D:\\a", "D:\\b")
-    with pytest.raises(SettingsError):
-        controller.set_roots([])
+    controller.set_scope("chosen", [r"D:\a", r"D:\a", r"D:\b"], "documents")
+    scope = controller.settings().scope
+    assert (scope.coverage, scope.roots) == ("chosen", (r"D:\a", r"D:\b"))
+    with pytest.raises(SettingsError, match="at least one"):
+        controller.set_scope("chosen", [], "documents")
+
+
+def test_system_folders_cannot_be_chosen(env: Env, controller: SettingsController) -> None:
+    system = os.environ.get("SYSTEMROOT", r"C:\Windows")
+    with pytest.raises(SettingsError, match="never indexed"):
+        controller.set_scope("chosen", [system], "documents")
+
+
+def test_switching_back_to_the_whole_pc_clears_the_folders(
+    env: Env, controller: SettingsController
+) -> None:
+    controller.set_scope("chosen", [r"D:\a"], "everything")
+    controller.set_scope("entire_pc", [r"D:\a"], "documents")
+    scope = controller.settings().scope
+    assert (scope.coverage, scope.roots, scope.file_types) == ("entire_pc", (), "documents")
 
 
 def test_autostart_is_saved_and_applied(
@@ -228,29 +245,30 @@ def test_general_tab_reports_a_bad_hotkey_without_saving(
     assert controller.settings().search.hotkey == "ctrl+alt+space"
 
 
-def test_general_tab_adds_and_removes_folders(
+def test_general_tab_saves_a_chosen_scope(
     window: SettingsWindow, controller: SettingsController
 ) -> None:
-    window._folders.append("D:\\Work")  # type: ignore[attr-defined]
-    window.general.add_folder.click()
-    assert "D:\\Work" in controller.settings().scope.roots
-    assert "D:\\Work" in [
-        window.general.folders.item(i).text() for i in range(window.general.folders.count())
-    ]
-    window.general.folders.setCurrentRow(window.general.folders.count() - 1)
-    window.general.remove_folder.click()
-    assert "D:\\Work" not in controller.settings().scope.roots
+    editor = window.general.scope
+    window._folders.append(r"D:\Work")  # type: ignore[attr-defined]
+    editor.add_folder.click()  # also switches to "chosen"
+    window.general.save_scope.click()
+    scope = controller.settings().scope
+    assert (scope.coverage, scope.roots) == ("chosen", (r"D:\Work",))
+    editor.folders.setCurrentRow(0)
+    editor.remove_folder.click()
+    assert not editor.is_valid()
+    assert not window.general.save_scope.isEnabled()
 
 
-def test_removing_the_last_folder_is_refused(
+def test_general_tab_shows_the_saved_scope(
     window: SettingsWindow, controller: SettingsController
 ) -> None:
-    controller.set_roots(["D:\\only"])
+    controller.set_scope("chosen", [r"D:\only"], "everything")
     window.general.refresh()
-    window.general.folders.setCurrentRow(0)
-    window.general.remove_folder.click()
-    assert controller.settings().scope.roots == ("D:\\only",)
-    assert "at least one folder" in window.status.text()
+    editor = window.general.scope
+    assert editor.chosen.isChecked()
+    assert editor.roots() == [r"D:\only"]
+    assert editor.choice().file_types == "everything"
 
 
 def test_autostart_checkbox_saves_and_applies(
@@ -503,7 +521,7 @@ def test_every_saved_setting_notifies_the_app(env: Env, keys: FakeKeys) -> None:
     controller.set_monthly_budget(5.0)
     controller.set_start_with_windows(False)
     controller.set_hotkey("ctrl+alt+f6")
-    controller.set_roots(["D:\a"])
+    controller.set_scope("chosen", [r"D:\a"], "documents")
     controller.set_key("x", "sk-secret")
     controller.delete_key("x")
     assert len(changes) == 8
@@ -517,7 +535,7 @@ def test_a_rejected_change_does_not_notify(env: Env, keys: FakeKeys) -> None:
     with pytest.raises(SettingsError):
         controller.set_monthly_budget(-1.0)
     with pytest.raises(SettingsError):
-        controller.set_roots([])
+        controller.set_scope("chosen", [], "documents")
     assert changes == []
 
 

@@ -256,6 +256,8 @@ def test_wizard_runs_the_whole_setup(qapp: QApplication, harness: Harness) -> No
     wizard.next()  # -> Terms
     assert wizard.currentPage() is wizard.terms
     wizard.terms.accept_box.setChecked(True)
+    wizard.next()  # -> What to index
+    assert wizard.currentPage() is wizard.scope
     wizard.next()  # -> Ollama
     wizard.next()  # -> Models
     assert wizard.currentPage() is wizard.models
@@ -287,6 +289,7 @@ def test_wizard_asks_before_swapping_a_slow_model(qapp: QApplication, harness: H
     wizard.next()
     wizard.next()
     wizard.next()
+    wizard.next()
     wait_for(qapp, wizard.speed.isComplete)
     assert [o.alternative for o in asked] == ["qwen3:8b"]
     assert "qwen3:8b" in wizard.speed.results.text()
@@ -299,6 +302,7 @@ def test_wizard_shows_a_failure_and_retries(qapp: QApplication, harness: Harness
     wizard.restart()
     wizard.next()
     wizard.terms.accept_box.setChecked(True)
+    wizard.next()
     wizard.next()
     wizard.next()
     wizard.next()

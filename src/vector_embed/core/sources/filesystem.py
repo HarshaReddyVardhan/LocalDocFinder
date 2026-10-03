@@ -23,6 +23,9 @@ class FilesystemSource:
     def iter_files(self, roots: Iterable[str | Path] | None = None) -> Iterator[Path]:
         return self._projects.iter_files(roots)
 
+    def owns(self, path: str) -> bool:
+        return Path(path).is_absolute()
+
     def still_valid(self, path: str) -> bool:
         return Path(path).exists() and self._scope.is_valid_file(
             path, is_ignored=self._projects.is_ignored

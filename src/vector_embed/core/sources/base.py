@@ -23,6 +23,10 @@ class ContentSource(Protocol):
         """Every file to index, under ``roots`` (default: all of the source's roots)."""
         ...
 
+    def owns(self, path: str) -> bool:
+        """Whether a manifest entry is this kind of source's (a local file path, for the disk)."""
+        ...
+
     def still_valid(self, path: str) -> bool:
         """Whether an indexed ``path`` should stay indexed (exists and is still in scope)."""
         ...

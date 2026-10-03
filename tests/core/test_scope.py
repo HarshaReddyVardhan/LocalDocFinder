@@ -281,10 +281,10 @@ def test_glob_to_regex(pattern: str, target: str, matches: bool) -> None:
     assert bool(glob_to_regex(pattern).match(target)) is matches
 
 
-def test_default_roots_use_single_backslash() -> None:
-    roots = ScopeSettings().roots
-    assert "D:\\" in roots
-    assert "D:\\\\" not in roots
+def test_the_default_covers_the_whole_pc_not_fixed_folders() -> None:
+    settings = ScopeSettings()
+    assert settings.coverage == "entire_pc"
+    assert settings.roots == ()
 
 
 class TestBlockedNamesAboveTheRoot:

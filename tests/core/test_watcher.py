@@ -775,7 +775,9 @@ class TestRootReload:
     def with_roots(env: Env, *roots: Path) -> object:
         return env.settings.model_copy(
             update={
-                "scope": env.settings.scope.model_copy(update={"roots": tuple(map(str, roots))})
+                "scope": env.settings.scope.model_copy(
+                    update={"coverage": "chosen", "roots": tuple(map(str, roots))}
+                )
             }
         )
 
@@ -837,6 +839,17 @@ class TestRootReload:
         w.refresh_watches()
         assert str(added) in scheduled  # and it is watched from now on
         assert scheduled[0] == "unschedule_all"
+
+    def test_a_new_file_type_choice_triggers_a_rescan(
+        self, reloading: tuple[Watcher, list[object], Path], env: Env
+    ) -> None:
+        w, current, _ = reloading
+        fresh = self.with_roots(env, env.root)
+        scope = fresh.scope.model_copy(update={"file_types": "documents"})  # type: ignore[attr-defined]
+        current[0] = fresh.model_copy(update={"scope": scope})  # type: ignore[attr-defined]
+        assert env.settings.scope.file_types == "everything"
+        assert w.reload_roots() is True  # same folders, different file types
+        assert w.reconcile_due()
 
     def test_a_removed_or_missing_folder_is_dropped(
         self, reloading: tuple[Watcher, list[object], Path], env: Env, tmp_path: Path
