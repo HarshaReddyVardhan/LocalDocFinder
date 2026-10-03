@@ -7,6 +7,7 @@ gets one row in the ``documents`` table (classified type, text, mean vector) for
 
 import logging
 import os
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any, Protocol
 import numpy as np
 import xxhash
 
+from vector_embed.core import hooks
 from vector_embed.core.doctypes.base import DocInfo, DocTypeClassifierSet
 from vector_embed.core.doctypes.versions import VersionCandidate, group_versions
 from vector_embed.core.extractors.base import Chunk, ExtractError, ExtractorSet
@@ -214,7 +216,19 @@ class Indexer:
             self.state.manifest_delete(path)
             finished.append((path, seq))
             self.stats.deleted += 1
+        self._announce(prepared, rows, doc_rows)
         return finished
+
+    @staticmethod
+    def _announce(prepared: list[_Prepared], rows: list[Row], doc_rows: list[Row]) -> None:
+        """Tell hook subscribers what is now in the index (after it was written)."""
+        chunks = Counter(str(row["path"]) for row in rows)
+        for item in prepared:
+            hooks.emit(hooks.FileIndexed(item.path, chunks[item.path]))
+        for doc in doc_rows:
+            hooks.emit(
+                hooks.DocumentClassified(str(doc["path"]), str(doc["doc_type"]), str(doc["title"]))
+            )
 
     def _drop_thumbnail(self, path: str) -> None:
         """Remove the stored thumbnail of ``path``'s last indexed version, if it was an image."""

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from pydantic import Field
 
+from vector_embed.core import hooks
 from vector_embed.core.providers.base import ProviderError
 from vector_embed.core.retrieval import hybrid_candidates
 from vector_embed.core.skills.base import (
@@ -190,6 +191,13 @@ class SearchSkill(Skill):
     # ------------------------------------------------------------------ search
     def search(
         self, query: str, limit: int | None = None, current_project: str | None = None
+    ) -> list[SearchResult]:
+        results = self._search(query, limit, current_project)
+        hooks.emit(hooks.QueryRan(query, len(results)))
+        return results
+
+    def _search(
+        self, query: str, limit: int | None, current_project: str | None
     ) -> list[SearchResult]:
         if not self.ctx.power.search_allowed():
             raise SearchDisabledError("search is disabled on battery")

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from pydantic import Field
 
+from vector_embed.core import hooks
 from vector_embed.core.documents import DocumentError, DocumentLoader, LoadedDocument
 from vector_embed.core.llm import ChatBlockedError, ChatTarget, LlmGateway, NoChatModelError
 from vector_embed.core.models.catalog import ROLE_CHAT
@@ -250,6 +251,7 @@ class ChatSkill(Skill):
                 state = self.ctx.state
                 state.add_message(turn.session_id, "user", user_text)
                 state.add_message(turn.session_id, "assistant", turn.reply)
+                hooks.emit(hooks.Answered("chat", user_text, turn.reply))
 
     def stream(self, params: SkillInput) -> Iterator[str]:
         assert isinstance(params, ChatInput)

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 from pydantic import Field
 
+from vector_embed.core import hooks
 from vector_embed.core.llm import ChatBlockedError, ChatTarget, LlmGateway, NoChatModelError
 from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_CODE_CHAT
 from vector_embed.core.privacy.policy import PrivacyFilter
@@ -98,6 +99,7 @@ class AskRun:
         if not result.sources:
             result.answer, result.not_found = NOT_FOUND, True
             yield NOT_FOUND
+            hooks.emit(hooks.Answered("ask", self._question, NOT_FOUND))
             return
         parts: list[str] = []
         for chunk in self._gateway.stream(
@@ -109,6 +111,8 @@ class AskRun:
         result.answer = "".join(parts).strip()
         result.not_found = result.answer.startswith(NOT_FOUND)
         result.cited, result.invalid_citations = cited_sources(result.answer, result.sources)
+        cited = tuple(dict.fromkeys(source.path for source in result.cited))
+        hooks.emit(hooks.Answered("ask", self._question, result.answer, cited))
 
     def footer(self) -> str:
         """Text appended after the answer: the sources it actually cited."""
