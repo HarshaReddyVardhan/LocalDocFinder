@@ -3,6 +3,7 @@ from typing import Any
 from vector_embed.core import rag
 from vector_embed.core.rag import Source, build_sources, cited_sources
 from vector_embed.core.retrieval import Candidate
+from vector_embed.core.tokens import estimate_tokens
 
 
 def row(path: str, start: int, end: int, text: str, **kw: Any) -> Candidate:
@@ -71,6 +72,20 @@ class TestBuildSources:
         sources = build_sources([row(f"{n}.py", 1, 2, big) for n in "abc"], 600)
         assert 1 <= len(sources) < 3
         assert len(build_sources([row("a.py", 1, 2, big)], 10)) == 1
+
+    def test_an_oversized_best_source_is_cut_to_the_budget(self) -> None:
+        huge = "word " * 20_000
+        (only,) = build_sources([row("a.py", 1, 2, huge)], 1000)
+        assert estimate_tokens(only.text) <= 1000
+        assert only.text == huge[: len(only.text)]  # cut from the end, the start kept
+
+    def test_smaller_pieces_still_fill_the_room_a_big_one_left(self) -> None:
+        small, big = "word " * 40, "word " * 2000
+        sources = build_sources(
+            [row("a.py", 1, 2, small), row("b.py", 1, 2, big), row("c.py", 1, 2, small)], 400
+        )
+        assert [s.path for s in sources] == ["a.py", "c.py"]
+        assert [s.n for s in sources] == [1, 2]
 
     def test_document_cap(self) -> None:
         sources = build_sources([row(f"{i}.py", 1, 2, "x") for i in range(20)], 50_000, max_docs=3)

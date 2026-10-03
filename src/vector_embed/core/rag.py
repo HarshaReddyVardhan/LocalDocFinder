@@ -8,7 +8,7 @@ from typing import Any
 
 from vector_embed.core.providers.base import Message
 from vector_embed.core.retrieval import Candidate
-from vector_embed.core.tokens import estimate_tokens
+from vector_embed.core.tokens import estimate_tokens, fit_to_budget
 
 NOT_FOUND = "Not found in your indexed files."
 SOURCE_COLUMNS = [
@@ -24,6 +24,7 @@ SYSTEM_PROMPT = (
 )
 _CITATION = re.compile(r"\[(\d+)\]")
 _HEADER_TOKENS = 20  # per-source overhead in the prompt
+_MIN_SOURCE_TOKENS = 50  # the best source is never cut below this, however small the budget
 
 
 @dataclass(frozen=True)
@@ -116,7 +117,11 @@ def _merge_neighbours(rows: list[dict[str, Any]]) -> list[_Piece]:
 def build_sources(
     candidates: Sequence[Candidate], budget_tokens: int, max_docs: int = 8
 ) -> list[Source]:
-    """Group hits by file, merge neighbouring chunks, and pack the best into the token budget."""
+    """Group hits by file, merge neighbouring chunks, and pack the best into the token budget.
+
+    A piece that does not fit is skipped, not the end of packing: a smaller, later piece may
+    still fit. The best piece is always kept, cut down to the budget if it alone is too big.
+    """
     by_path: dict[str, list[dict[str, Any]]] = {}
     for candidate in candidates:  # best-first, so file order follows relevance
         by_path.setdefault(candidate.row["path"], []).append(candidate.row)
@@ -124,9 +129,15 @@ def build_sources(
     used = 0
     for path, rows in list(by_path.items())[:max_docs]:
         for piece in _merge_neighbours(rows):
-            cost = estimate_tokens(piece.text) + _HEADER_TOKENS
-            if used + cost > budget_tokens and sources:
-                return sources
+            text = piece.text
+            cost = estimate_tokens(text) + _HEADER_TOKENS
+            if used + cost > budget_tokens:
+                if sources:
+                    continue
+                text, _ = fit_to_budget(
+                    text, max(_MIN_SOURCE_TOKENS, budget_tokens - _HEADER_TOKENS)
+                )
+                cost = estimate_tokens(text) + _HEADER_TOKENS
             used += cost
             sources.append(
                 Source(
@@ -138,7 +149,7 @@ def build_sources(
                     start_line=piece.start_line,
                     end_line=piece.end_line,
                     page=piece.page,
-                    text=piece.text,
+                    text=text,
                 )
             )
     return sources
