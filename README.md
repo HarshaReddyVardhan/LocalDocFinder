@@ -61,7 +61,7 @@ UI keys: Enter open · Ctrl+Enter reveal in Explorer · Shift+Enter `code -g fil
 ## Use from Claude Code, Cursor and other MCP clients
 `ve mcp` serves `search`, `ask` and `match` over stdio. Register it once:
 ```powershell
-claude mcp add vector-embed -- D:\Projects\Vector_Embed\.venv\Scripts\ve.exe mcp
+claude mcp add vector-embed -- D:\Projects\LocalDocFinder\.venv\Scripts\ve.exe mcp
 ```
 Other clients take the same command in their MCP config. The caller is usually a cloud model, so the server treats everything it returns as outbound: files under the never-send rules (secrets, `.claude` memory) are left out, government/financial IDs are masked, and `ask`/`match` use local models only (never a cloud provider). Tools are read-only, `match` takes its text inline (it cannot read arbitrary files), and nothing is loaded until the first call. `ask` and `match` take the chat lock, so they wait while the desktop app is chatting and unload their model when done.
 

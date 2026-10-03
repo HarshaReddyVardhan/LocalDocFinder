@@ -1,15 +1,16 @@
 <Configuration>
-  <!-- Clean-machine test: no Python, no Ollama. Run scripts\build.ps1 first so Releases\ exists. -->
+  <!-- Clean-machine test: no Python, no Ollama. Run scripts\build.ps1 first so Releases\ exists.
+       Windows Sandbox needs absolute host paths: edit them if the checkout lives elsewhere. -->
   <VGpu>Enable</VGpu>
   <Networking>Enable</Networking>
   <MappedFolders>
     <MappedFolder>
-      <HostFolder>D:\Projects\Vector_Embed\Releases</HostFolder>
+      <HostFolder>D:\Projects\LocalDocFinder\Releases</HostFolder>
       <SandboxFolder>C:\Release</SandboxFolder>
       <ReadOnly>true</ReadOnly>
     </MappedFolder>
     <MappedFolder>
-      <HostFolder>D:\Projects\Vector_Embed\scripts\sandbox</HostFolder>
+      <HostFolder>D:\Projects\LocalDocFinder\scripts\sandbox</HostFolder>
       <SandboxFolder>C:\Test</SandboxFolder>
       <ReadOnly>false</ReadOnly>
     </MappedFolder>
