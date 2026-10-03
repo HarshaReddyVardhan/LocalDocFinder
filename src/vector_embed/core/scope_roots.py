@@ -1,8 +1,11 @@
 r"""Which folders are scanned, from the coverage the user picked.
 
-"Entire PC" means every fixed drive; a chosen drive or folder means just that. The Windows
-drive is special: scanning all of ``C:\`` would walk Windows, programs and every profile, so
-it is replaced by the user's own folder plus any ordinary folders the user made on it.
+"Entire PC" means every fixed drive plus the folders added on top; "chosen" means only those.
+A listed drive already includes everything below it.
+
+The Windows drive is special: scanning all of the drive root would walk Windows, programs and
+every profile, so it is replaced by the user's own folder plus any ordinary folders the user
+made on it.
 """
 
 import logging
@@ -62,7 +65,9 @@ def resolve_roots(
     """The folders to scan: protected ones removed, the Windows drive made safe, no duplicates."""
     protection = protection or SystemProtection()
     home = home if home is not None else Path.home()
-    wanted = list(scope.roots) if scope.coverage == "chosen" else drives()
+    # "Entire PC" is every fixed drive plus any folders the user added on top (an external drive,
+    # a network share, a folder the default skips); "chosen" is only the folders listed.
+    wanted = list(scope.roots) if scope.coverage == "chosen" else [*drives(), *scope.roots]
     resolved: list[str] = []
     for root in wanted:
         if protection.is_system_drive_root(root):

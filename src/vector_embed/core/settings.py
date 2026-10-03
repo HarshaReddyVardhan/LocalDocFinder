@@ -63,13 +63,14 @@ class _Section(BaseModel):
 class ScopeSettings(_Section):
     """What is indexed. Rule order is documented in ``vector_embed.core.scope``."""
 
-    # "entire_pc": every fixed drive (the system drive: only the user's own folders).
-    # "chosen": only ``roots``. Either way, system folders are never indexed (core.protection).
+    # "entire_pc": every fixed drive (the system drive: only the user's own folders) plus any
+    # extra ``roots``. "chosen": only ``roots``. Either way, system folders are never indexed
+    # (core.protection).
     coverage: Literal["entire_pc", "chosen"] = "entire_pc"
     # "documents": PDF, Word, PowerPoint, text and Markdown only. "everything" adds code,
     # data files and images.
     file_types: Literal["documents", "everything"] = "documents"
-    roots: tuple[str, ...] = ()  # the folders/drives to index when ``coverage`` is "chosen"
+    roots: tuple[str, ...] = ()  # extra folders/drives ("entire_pc") or the only ones ("chosen")
     document_exts: frozenset[str] = frozenset(
         {".pdf", ".docx", ".pptx", ".txt", ".md", ".markdown", ".rtf"}
     )

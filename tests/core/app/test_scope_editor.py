@@ -34,12 +34,15 @@ def test_it_lists_the_drives_and_marks_the_windows_drive(qapp: QApplication) -> 
     assert r"C:\ (Windows drive" in text
 
 
-def test_adding_a_folder_switches_to_a_chosen_scope(qapp: QApplication) -> None:
+def test_a_folder_added_on_the_whole_pc_is_an_extra(qapp: QApplication) -> None:
     box = editor()
-    assert box.add_root(r"D:\Work")
-    assert box.add_root(r"D:\Work")  # a duplicate is ignored
-    assert box.choice().coverage == "chosen"
-    assert box.roots() == [r"D:\Work"]
+    assert box.add_root(r"E:\External")
+    assert box.add_root(r"E:\External")  # a duplicate is ignored
+    choice = box.choice()
+    assert (choice.coverage, choice.roots) == ("entire_pc", [r"E:\External"])
+    assert "on top of the whole PC" in box.list_note.text()
+    box.chosen.setChecked(True)
+    assert "only places" in box.list_note.text()
 
 
 def test_a_chosen_scope_needs_a_folder(qapp: QApplication) -> None:
@@ -59,6 +62,7 @@ def test_system_folders_are_refused_with_a_reason(qapp: QApplication) -> None:
 def test_choosing_the_windows_drive_warns_that_only_own_folders_count(qapp: QApplication) -> None:
     box = editor()
     box.add_root("C:\\")
+    box.chosen.setChecked(True)
     assert "Windows drive" in box.warning.text()
     assert box.roots() == ["C:\\"]
 
@@ -92,6 +96,7 @@ def test_the_wizard_saves_the_choice_when_leaving_the_page(
     page = wizard.scope
     page.initializePage()
     page.editor.add_root(r"D:\Papers")
+    page.editor.chosen.setChecked(True)
     assert page.validatePage()
     assert harness.saved()["scope"]["roots"] == [r"D:\Papers"]
     assert harness.saved()["scope"]["coverage"] == "chosen"

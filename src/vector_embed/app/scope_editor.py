@@ -68,8 +68,9 @@ class ScopeEditor(QWidget):
         self._list_drives = list_drives
         self._protection = protection or SystemProtection()
         self.entire = QRadioButton("Documents from this whole PC (recommended)")
-        self.chosen = QRadioButton("Only the folders and drives I choose")
+        self.chosen = QRadioButton("Only the folders and drives listed below")
         self.drives_note = _label()
+        self.list_note = _label()
         self.folders = QListWidget()
         self.add_folder = QPushButton("Add folder…")
         self.add_drive = QPushButton("Add drive")
@@ -93,6 +94,7 @@ class ScopeEditor(QWidget):
         layout.addWidget(self.entire)
         layout.addWidget(self.drives_note)
         layout.addWidget(self.chosen)
+        layout.addWidget(self.list_note)
         layout.addWidget(self.folders, 1)
         layout.addLayout(buttons)
         layout.addWidget(_label("File types"))
@@ -102,7 +104,7 @@ class ScopeEditor(QWidget):
 
         self.entire.setChecked(True)
         self._refresh_drives_note()
-        self._sync_enabled()
+        self._sync_note()
         self.entire.toggled.connect(self._on_edited)
         self.types.currentIndexChanged.connect(self._on_edited)
         self.add_folder.clicked.connect(self._pick_folder)
@@ -140,7 +142,6 @@ class ScopeEditor(QWidget):
             return False
         if path not in self.roots():
             self.folders.addItem(path)
-        self.chosen.setChecked(True)
         self._on_edited()
         return True
 
@@ -174,11 +175,14 @@ class ScopeEditor(QWidget):
         ]
         self.drives_note.setText("Drives: " + (", ".join(names) or "none found"))
 
-    def _sync_enabled(self) -> None:
+    def _sync_note(self) -> None:
         on = self.chosen.isChecked()
-        # Adding switches to "chosen" by itself, so the add buttons are always usable.
-        for widget in (self.folders, self.remove_folder):
-            widget.setEnabled(on)
+        self.list_note.setText(
+            "These are the only places indexed."
+            if on
+            else "Folders and drives added here are indexed on top of the whole PC, for example "
+            "an external drive, a network share or a folder that is skipped by default."
+        )
 
     def _update_warning(self) -> None:
         system_roots = [r for r in self.roots() if self._protection.is_system_drive_root(r)]
@@ -193,6 +197,6 @@ class ScopeEditor(QWidget):
             self.warning.setText("")
 
     def _on_edited(self) -> None:
-        self._sync_enabled()
+        self._sync_note()
         self._update_warning()
         self.changed.emit()

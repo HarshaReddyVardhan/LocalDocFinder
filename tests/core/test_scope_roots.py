@@ -129,6 +129,13 @@ def test_chosen_system_folders_are_dropped(protection: SystemProtection) -> None
     assert resolve(settings, protection) == (r"D:\Work",)
 
 
+def test_extra_folders_are_added_on_top_of_the_whole_pc(protection: SystemProtection) -> None:
+    settings = ScopeSettings(coverage="entire_pc", roots=(r"E:\External", r"C:\Windows"))
+    # the drives (C: has no home or folders in this fake setup) plus the extra; a protected
+    # extra is still dropped
+    assert resolve(settings, protection) == ("D:\\", r"E:\External")
+
+
 def test_nested_and_duplicate_roots_are_scanned_once(protection: SystemProtection) -> None:
     settings = ScopeSettings(coverage="chosen", roots=(r"D:\Work", "D:\\", r"d:\work"))
     assert resolve(settings, protection) == ("D:\\",)

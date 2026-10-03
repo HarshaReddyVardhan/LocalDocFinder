@@ -93,18 +93,17 @@ class SettingsController:
         """
         protection = protection or SystemProtection()
         chosen = list(dict.fromkeys(roots))
-        if coverage == "chosen":
-            if not chosen:
-                raise SettingsError("choose at least one folder or drive to index")
-            for root in chosen:
-                reason = protection.reason(root)
-                if reason:
-                    raise SettingsError(f"{root} is {reason}; it is never indexed")
+        if coverage == "chosen" and not chosen:
+            raise SettingsError("choose at least one folder or drive to index")
+        for root in chosen:
+            reason = protection.reason(root)
+            if reason:
+                raise SettingsError(f"{root} is {reason}; it is never indexed")
         set_settings(
             self._path,
             [
                 (["scope", "coverage"], coverage),
-                (["scope", "roots"], chosen if coverage == "chosen" else None),
+                (["scope", "roots"], chosen or None),
                 (["scope", "file_types"], file_types),
             ],
         )

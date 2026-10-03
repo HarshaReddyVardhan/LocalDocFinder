@@ -86,13 +86,19 @@ def test_system_folders_cannot_be_chosen(env: Env, controller: SettingsControlle
         controller.set_scope("chosen", [system], "documents")
 
 
-def test_switching_back_to_the_whole_pc_clears_the_folders(
+def test_extra_folders_are_kept_on_top_of_the_whole_pc(
     env: Env, controller: SettingsController
 ) -> None:
     controller.set_scope("chosen", [r"D:\a"], "everything")
-    controller.set_scope("entire_pc", [r"D:\a"], "documents")
+    controller.set_scope("entire_pc", [r"E:\External"], "documents")
     scope = controller.settings().scope
-    assert (scope.coverage, scope.roots, scope.file_types) == ("entire_pc", (), "documents")
+    assert (scope.coverage, scope.roots, scope.file_types) == (
+        "entire_pc",
+        (r"E:\External",),
+        "documents",
+    )
+    controller.set_scope("entire_pc", [], "documents")
+    assert controller.settings().scope.roots == ()
 
 
 def test_autostart_is_saved_and_applied(
@@ -250,7 +256,8 @@ def test_general_tab_saves_a_chosen_scope(
 ) -> None:
     editor = window.general.scope
     window._folders.append(r"D:\Work")  # type: ignore[attr-defined]
-    editor.add_folder.click()  # also switches to "chosen"
+    editor.add_folder.click()
+    editor.chosen.setChecked(True)
     window.general.save_scope.click()
     scope = controller.settings().scope
     assert (scope.coverage, scope.roots) == ("chosen", (r"D:\Work",))
