@@ -186,3 +186,41 @@ class TestSkillInterface:
         skill_ctx.extras.pop("documents")
         with pytest.raises(RuntimeError, match="document loader"):
             ChatSkill(skill_ctx)
+
+
+class TestRelevanceAndRouting:
+    def test_a_long_pinned_document_keeps_the_part_the_question_is_about(
+        self, skill: ChatSkill, chat: Chat, env: Env
+    ) -> None:
+        filler = "\n\n".join(f"Paragraph {i} about office plants and lunch." for i in range(900))
+        tail = "Refunds are paid within 14 days of the returned item arriving."
+        big = write(env, "handbook.txt", f"{filler}\n\n{tail}\n")
+        turn, deltas = skill.turn(ChatInput(message="How fast are refunds paid?", pin=[big]))
+        list(deltas)
+        system = messages_of(chat)[0]["content"]
+        assert big in turn.truncated
+        assert tail in system  # the last paragraph, kept because it answers the question
+
+    def test_code_pins_route_to_the_code_model_when_routing_is_on(
+        self, skill_ctx: SkillContext, chat: Chat, env: Env
+    ) -> None:
+        code = write(env, "retry.py", "def retry():\n    return backoff()\n")
+        notes = write(env, "notes.md", "# Notes\n\nplain text\n")
+        skill = ChatSkill(skill_ctx)
+        assert skill.prepare_turn(ChatInput(message="explain", pin=[code])).role == "code_chat"
+        mixed = skill.prepare_turn(ChatInput(message="explain", pin=[code, notes, notes]))
+        assert mixed.role == "chat"  # not mostly code
+        cfg = skill_ctx.settings
+        skill_ctx.settings = cfg.model_copy(
+            update={"chat": cfg.chat.model_copy(update={"code_routing": False})}
+        )
+        assert skill.prepare_turn(ChatInput(message="explain", pin=[code])).role == "chat"
+
+
+def test_withheld_sources_are_renumbered() -> None:
+    from vector_embed.core.rag import Source
+    from vector_embed.core.skills.chat import _renumbered
+
+    sources = [Source(n, f"D:/{n}.md", "p", "doc", "", 0, 0, 0, "t") for n in (1, 3, 4)]
+    assert [s.n for s in _renumbered(sources)] == [1, 2, 3]
+    assert [s.path for s in _renumbered(sources)] == ["D:/1.md", "D:/3.md", "D:/4.md"]

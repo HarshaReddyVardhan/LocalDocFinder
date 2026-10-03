@@ -8,7 +8,7 @@ falls back to retrieving context from the index for each message.
 
 import logging
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -17,11 +17,17 @@ from pydantic import Field, model_validator
 from vector_embed.core import hooks
 from vector_embed.core.documents import DocumentError, DocumentLoader, LoadedDocument
 from vector_embed.core.llm import ChatBlockedError, ChatTarget, LlmGateway, NoChatModelError
-from vector_embed.core.models.catalog import ROLE_CHAT
-from vector_embed.core.privacy.policy import PrivacyFilter
+from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_CODE_CHAT
 from vector_embed.core.prompt_safety import Fence, fence_for
 from vector_embed.core.providers.base import Message
-from vector_embed.core.rag import SOURCE_COLUMNS, Source, build_sources, format_sources
+from vector_embed.core.rag import (
+    SOURCE_COLUMNS,
+    Source,
+    build_sources,
+    format_sources,
+    is_code_heavy,
+)
+from vector_embed.core.relevance import keywords, reduce_to_relevant
 from vector_embed.core.retrieval import hybrid_candidates
 from vector_embed.core.skills.ask import gateway_of, privacy_of
 from vector_embed.core.skills.base import (
@@ -33,7 +39,7 @@ from vector_embed.core.skills.base import (
 )
 from vector_embed.core.store.lance import CHUNKS
 from vector_embed.core.store.sqlite import ChatMessage
-from vector_embed.core.tokens import estimate_tokens, fit_to_budget
+from vector_embed.core.tokens import estimate_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -97,12 +103,30 @@ class PreparedTurn:
     messages: list[Message]
     cut: list[str]
     target: ChatTarget | None
+    role: str = ROLE_CHAT
+
+
+@dataclass(frozen=True)
+class _TurnContext:
+    docs: list[LoadedDocument]
+    scratch: str
+    sources: list[Source]
+
+
+def _renumbered(sources: list[Source]) -> list[Source]:
+    """Sources numbered 1..n again after some were withheld, so citations stay contiguous."""
+    return [replace(source, n=n) for n, source in enumerate(sources, 1)]
 
 
 def _pinned_block(
-    docs: list[LoadedDocument], scratch: str, budget_tokens: int, fence: Fence
+    docs: list[LoadedDocument], scratch: str, budget_tokens: int, fence: Fence, query: str = ""
 ) -> tuple[str, list[str]]:
-    """Pinned documents and scratch text sharing ``budget_tokens``; returns text and cut titles."""
+    """Pinned documents and scratch text sharing ``budget_tokens``; returns text and cut titles.
+
+    A document over its share keeps the paragraphs most relevant to ``query`` (the message being
+    answered), not just its start: the answer may well be on the last page.
+    """
+    wanted = keywords(query)
     items = [(d.path, d.text) for d in docs]
     if scratch.strip():
         items.append(("pasted text", scratch))
@@ -114,7 +138,7 @@ def _pinned_block(
     cut: list[str] = []
     for (name, text), weight in zip(items, weights, strict=True):
         share = max(_MIN_DOC_TOKENS, budget_tokens * weight // total)
-        body, was_cut = fit_to_budget(text, share)
+        body, was_cut = reduce_to_relevant(text, wanted, share)
         if was_cut:
             cut.append(name)
             body += _TRUNCATED
@@ -142,7 +166,7 @@ class ChatSkill(Skill):
     title = "Chat"
     description = "Chat about pinned documents or pasted text; follow-ups keep the context."
     Input = ChatInput
-    roles = (ROLE_CHAT,)
+    roles = (ROLE_CHAT, ROLE_CODE_CHAT)
     ui_hint = UI_PANEL
     cli_positional = "message"
 
@@ -196,9 +220,33 @@ class ChatSkill(Skill):
         ``target`` is the route the reply will be sent to; the privacy rules are applied for that
         exact route. Without it the current route is looked up.
         """
-        cfg = self.ctx.settings.chat
+        context = self._context(session_id, message)
+        role = self.role_for(context)
+        cloud = self._gateway.will_use_cloud(role) if target is None else not target.local
+        return self._prompt(session_id, message, context, cloud)
+
+    def _context(self, session_id: int, message: str) -> "_TurnContext":
+        """What the reply is about: the pinned documents, else passages found for the message."""
         docs, scratch = self._pinned(session_id)
-        cloud = self._gateway.will_use_cloud(ROLE_CHAT) if target is None else not target.local
+        pinned = bool(docs) or bool(scratch.strip())
+        sources = [] if pinned else self._retrieved_sources(message)
+        return _TurnContext(docs, scratch, sources)
+
+    def role_for(self, context: "_TurnContext") -> str:
+        """``code_chat`` when the conversation is mostly about code (and routing is on)."""
+        if not self.ctx.settings.chat.code_routing:
+            return ROLE_CHAT
+        if context.docs:
+            code_exts = self.ctx.settings.scope.code_exts
+            code = sum(Path(d.path).suffix.lower() in code_exts for d in context.docs)
+            return ROLE_CODE_CHAT if code * 2 > len(context.docs) else ROLE_CHAT
+        return ROLE_CODE_CHAT if is_code_heavy(context.sources) else ROLE_CHAT
+
+    def _prompt(
+        self, session_id: int, message: str, context: "_TurnContext", cloud: bool
+    ) -> tuple[list[Message], list[str]]:
+        cfg = self.ctx.settings.chat
+        docs, scratch, sources = context.docs, context.scratch, context.sources
         privacy = privacy_of(self.ctx)
         if cloud and privacy is not None:
             private = [d.path for d in docs if privacy.is_never_send(d.path, d.doc_type or None)]
@@ -208,11 +256,10 @@ class ChatSkill(Skill):
                     f"{names} is private and cannot be sent to a cloud model; "
                     "switch to the local model or unpin it"
                 )
-        pinned = bool(docs) or bool(scratch.strip())
-        sources = [] if pinned else self._retrieved_sources(message, privacy if cloud else None)
+            sources = _renumbered([s for s in sources if not privacy.is_never_send(s.path)])
         fence = fence_for(*(d.text for d in docs), scratch, *(s.text for s in sources))
-        if pinned:
-            block, cut = _pinned_block(docs, scratch, cfg.context_token_budget, fence)
+        if docs or scratch.strip():
+            block, cut = _pinned_block(docs, scratch, cfg.context_token_budget, fence, message)
         else:
             block, cut = format_sources(sources, fence), []
         system = SYSTEM_PROMPT
@@ -221,9 +268,7 @@ class ChatSkill(Skill):
         history = trim_history(self.ctx.state.messages(session_id), cfg.history_token_budget)
         return [Message("system", system), *history, Message("user", message)], cut
 
-    def _retrieved_sources(
-        self, message: str, cloud_filter: PrivacyFilter | None = None
-    ) -> list[Source]:
+    def _retrieved_sources(self, message: str) -> list[Source]:
         ctx = self.ctx
         cfg = ctx.settings.chat
         candidates = hybrid_candidates(
@@ -237,17 +282,18 @@ class ChatSkill(Skill):
             limit=cfg.retrieve_chunks,
             force_cpu=True,
         )
-        if cloud_filter is not None:  # a cloud request never contains private files
-            candidates = [c for c in candidates if not cloud_filter.is_never_send(c.row["path"])]
         return build_sources(candidates, cfg.context_token_budget)
 
     # ------------------------------------------------------------------ turns
     def prepare_turn(self, params: ChatInput) -> "PreparedTurn":
         """Everything one turn will send, built once: the preview and the send share it."""
         session_id = params.session or self.open_session(params.message, params.pin, params.scratch)
-        target = self._target()
-        messages, cut = self.build_prompt(session_id, params.message, target)
-        return PreparedTurn(session_id, params.message, messages, cut, target)
+        context = self._context(session_id, params.message)
+        role = self.role_for(context)
+        target = self._target(role)
+        cloud = self._gateway.will_use_cloud(role) if target is None else not target.local
+        messages, cut = self._prompt(session_id, params.message, context, cloud)
+        return PreparedTurn(session_id, params.message, messages, cut, target, role)
 
     def turn(self, params: ChatInput) -> tuple[ChatTurn, Iterator[str]]:
         return self.start_turn(self.prepare_turn(params), params.keep_loaded)
@@ -257,29 +303,23 @@ class ChatSkill(Skill):
     ) -> tuple[ChatTurn, Iterator[str]]:
         turn = ChatTurn(prepared.session_id, truncated=prepared.cut)
         keep = keep_loaded or self._gateway.session_active
-        generate = self._generate(
-            turn, prepared.messages, prepared.user_text, keep, prepared.target
-        )
-        return turn, generate
+        return turn, self._generate(turn, prepared, keep)
 
-    def _target(self) -> ChatTarget | None:
+    def _target(self, role: str) -> ChatTarget | None:
         """The route decided once per turn; ``None`` lets the stream raise the usual error."""
         try:
-            return self._gateway.target(ROLE_CHAT)
+            return self._gateway.target(role)
         except (ChatBlockedError, NoChatModelError):
             return None
 
-    def _generate(
-        self,
-        turn: ChatTurn,
-        messages: list[Message],
-        user_text: str,
-        keep: bool,
-        target: ChatTarget | None = None,
-    ) -> Iterator[str]:
+    def _generate(self, turn: ChatTurn, prepared: "PreparedTurn", keep: bool) -> Iterator[str]:
+        user_text = prepared.user_text
+        stream = self._gateway.stream(
+            prepared.messages, prepared.role, session=keep, target=prepared.target
+        )
         parts: list[str] = []
         try:
-            for chunk in self._gateway.stream(messages, ROLE_CHAT, session=keep, target=target):
+            for chunk in stream:
                 if chunk.text:
                     parts.append(chunk.text)
                     yield chunk.text

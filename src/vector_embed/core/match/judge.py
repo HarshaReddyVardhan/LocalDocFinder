@@ -8,7 +8,6 @@ job description, and that is reported (``reduced``) as reduced reliability.
 
 import json
 import logging
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,6 +23,7 @@ from vector_embed.core.providers.base import (
     ProviderError,
     ProviderUnavailableError,
 )
+from vector_embed.core.relevance import keywords, reduce_to_relevant
 from vector_embed.core.settings import ChatSettings, MatchSettings
 from vector_embed.core.tokens import estimate_tokens, fit_to_budget
 
@@ -33,8 +33,6 @@ _JD_SUMMARY_TOKENS = 400
 _MIN_JD_TOKENS = 200  # never cut a job description to less than this, however small the window
 _FENCE_TOKENS = 20  # the fence lines around the job description
 _JUDGE_ATTEMPTS = 2  # a malformed judgement is usually fine on a second try
-_WORD = re.compile(r"[a-z0-9+#.]{2,}")
-_SECTION_SPLIT = re.compile(r"\n\s*\n")
 
 REQUIREMENTS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -195,13 +193,6 @@ def _checklist_text(requirements: list[Requirement]) -> str:
     return "\n".join(f"{r.id}. [{r.kind}] {r.text}" for r in requirements if r.enabled)
 
 
-def _keywords(requirements: list[Requirement], jd_text: str) -> set[str]:
-    words = set(_WORD.findall(jd_text.lower()))
-    for req in requirements:
-        words.update(_WORD.findall(req.text.lower()))
-    return words
-
-
 def reduce_document(
     text: str, requirements: list[Requirement], jd_text: str, budget_tokens: int
 ) -> tuple[str, bool]:
@@ -210,26 +201,8 @@ def reduce_document(
     Sections are paragraphs; their original order is preserved. Returns the text and whether
     anything was dropped (reduced reliability).
     """
-    if estimate_tokens(text) <= budget_tokens:
-        return text, False
-    sections = [s for s in _SECTION_SPLIT.split(text) if s.strip()]
-    keywords = _keywords(requirements, jd_text)
-    ranked = sorted(
-        range(len(sections)),
-        key=lambda i: len(keywords & set(_WORD.findall(sections[i].lower()))),
-        reverse=True,
-    )
-    kept: set[int] = set()
-    used = 0
-    for index in ranked:
-        cost = estimate_tokens(sections[index])
-        if used + cost > budget_tokens:
-            continue
-        kept.add(index)
-        used += cost
-    if not kept:  # one huge section: cut it
-        return fit_to_budget(sections[0] if sections else text, budget_tokens)[0], True
-    return "\n\n".join(sections[i] for i in sorted(kept)), True
+    wanted = keywords(jd_text, *(req.text for req in requirements))
+    return reduce_to_relevant(text, wanted, budget_tokens)
 
 
 def build_judge_messages(
