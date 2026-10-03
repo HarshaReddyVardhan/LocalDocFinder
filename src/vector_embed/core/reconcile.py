@@ -8,10 +8,10 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 
 from vector_embed.core.projects import Projects
 from vector_embed.core.scope import ScopePolicy
+from vector_embed.core.sources.base import ContentSource, content_sources
 from vector_embed.core.store.sqlite import StateDb
 
 logger = logging.getLogger(__name__)
@@ -55,18 +55,40 @@ def reconcile(
     roots: list[str] | None = None,
     stop_check: Callable[[], bool] | None = None,
 ) -> ReconcileResult:
-    """Queue new/changed files (priority = mtime, newest first) and files that vanished."""
+    """Queue new/changed files (priority = mtime, newest first) and files that vanished.
+
+    Every registered content source is scanned (see ``core.sources``).
+    """
     scan_roots = [str(r) for r in roots] if roots else None
     manifest = state.manifest_all()
+    should_stop = _Throttled(stop_check)
+    queued = deleted = 0
+    for source in content_sources(projects, scope):
+        found, seen = _queue_changes(state, source, scan_roots, manifest, should_stop)
+        queued += found
+        if seen is None:
+            logger.info("reconcile interrupted after queueing %d files", queued)
+            return ReconcileResult(queued=queued, interrupted=True)
+        deleted += _queue_deletes(state, source, scan_roots, manifest, seen)
+    logger.info("reconcile: %d changed/new, %d gone", queued, deleted)
+    return ReconcileResult(queued, deleted)
+
+
+def _queue_changes(
+    state: StateDb,
+    source: ContentSource,
+    scan_roots: list[str] | None,
+    manifest: dict[str, tuple[int, int]],
+    should_stop: Callable[[], bool],
+) -> tuple[int, set[str] | None]:
+    """Queue the source's new and changed files. Returns how many, and the keys of every file
+    seen (``None`` when the scan was interrupted: what was found so far is still queued)."""
     seen: set[str] = set()
     upserts: list[tuple[str, str, float]] = []
     queued = 0
-    should_stop = _Throttled(stop_check)
-    for found in projects.iter_files(scan_roots):
+    for found in source.iter_files(scan_roots):
         if should_stop():
-            queued += state.enqueue_many(upserts)  # what was found so far is kept
-            logger.info("reconcile interrupted after queueing %d files", queued)
-            return ReconcileResult(queued=queued, interrupted=True)
+            return queued + state.enqueue_many(upserts), None
         path = str(found)
         key = os.path.normcase(path)
         seen.add(key)
@@ -79,21 +101,26 @@ def reconcile(
             if len(upserts) >= _FLUSH_EVERY:  # keep progress: an interrupted scan loses nothing
                 queued += state.enqueue_many(upserts)
                 upserts = []
-    queued += state.enqueue_many(upserts)
+    return queued + state.enqueue_many(upserts), seen
 
+
+def _queue_deletes(
+    state: StateDb,
+    source: ContentSource,
+    scan_roots: list[str] | None,
+    manifest: dict[str, tuple[int, int]],
+    seen: set[str],
+) -> int:
+    """Queue deletes for the source's indexed files that are gone or no longer in scope."""
     prefixes = tuple(
         os.path.normcase(os.path.normpath(r)).rstrip("\\/") + os.sep
-        for r in (scan_roots or [str(r) for r in projects.roots])
+        for r in (scan_roots or [str(r) for r in source.roots])
     )
     gone = [
         (path, "delete", _DELETE_PRIORITY)
         for path in manifest
         if path not in seen  # both sides are lower-cased keys
         and path.startswith(prefixes)
-        and (
-            not Path(path).exists() or not scope.is_valid_file(path, is_ignored=projects.is_ignored)
-        )
+        and not source.still_valid(path)
     ]
-    deleted = state.enqueue_many(gone)
-    logger.info("reconcile: %d changed/new, %d gone", queued, deleted)
-    return ReconcileResult(queued, deleted)
+    return state.enqueue_many(gone)
