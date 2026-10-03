@@ -13,10 +13,12 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import TypeVar
 
 from PySide6.QtCore import QEvent, QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QHideEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -58,6 +60,7 @@ COMPACT_HEIGHT = 84  # just the search bar and the status line
 EXPANDED_HEIGHT = 520
 POPUP_WIDTH = 820
 DEBOUNCE_MS = 180
+_T = TypeVar("_T")
 RENDER_MS = 80  # streamed text is re-rendered at most this often
 MAINTAIN_MS = 15_000
 STREAM_STOP_WAIT_SECONDS = 10.0  # how long ending a chat waits for the answer to stop
@@ -229,6 +232,7 @@ class SearchWindow(QWidget):
         self._launcher = launcher
         self._thumbs_dir = thumbs_dir
         self._generation = 0
+        self._dialogs = 0  # dialogs currently open on top of the popup
         self._stream_job: _StreamJob | None = None
         self._results: list[SearchResult] = []
         self._sources: list[Source] = []
@@ -303,7 +307,11 @@ class SearchWindow(QWidget):
         self.body = QStackedWidget()
         self.body.addWidget(split)
         if self._matcher is not None:
-            self.panel = MatchPanel(self._matcher, self._pick_file)
+            self.panel = MatchPanel(
+                self._matcher,
+                lambda: self._in_dialog(self._pick_file),
+                confirm_cloud=lambda preview: self._in_dialog(lambda: self.cloud_confirm(preview)),
+            )
             self.panel.chat_requested.connect(self._chat_from_match)
             self.panel.status_changed.connect(self._set_status)
             self.body.addWidget(self.panel)
@@ -492,8 +500,36 @@ class SearchWindow(QWidget):
             QTimer.singleShot(150, self._hide_if_inactive)
 
     def _hide_if_inactive(self) -> None:
-        if not self.isActiveWindow():
-            self.hide()  # the chat session (if any) stays; idle timeout unloads it later
+        # A dialog opened from here (cloud preview, file picker) takes the focus: the popup must
+        # not vanish from under it.
+        if self.isActiveWindow() or self._dialogs or QApplication.activeModalWidget() is not None:
+            return
+        self.hide()  # the chat session (if any) stays; idle timeout unloads it later
+
+    def _in_dialog(self, call: Callable[[], _T]) -> _T:
+        """Run something that opens a dialog, keeping the popup visible meanwhile."""
+        self._dialogs += 1
+        try:
+            return call()
+        finally:
+            self._dialogs -= 1
+            self.activateWindow()  # the focus returns here when the dialog closes
+
+    def shutdown(self) -> None:
+        """The app is quitting: stop any answer and unload every model, now.
+
+        Runs on the UI thread and waits: the process is about to end, so a background job
+        would never finish, and the GPU would be left holding the model.
+        """
+        self._maintain.stop()
+        job = self._cancel_stream()
+        if job is not None:
+            job.finished.wait(STREAM_STOP_WAIT_SECONDS)
+        if self._matcher is not None:
+            self._matcher.revoke_cloud_consent()
+        if self._assistant is not None:
+            self._assistant.end_chat("quitting")
+        self._service.release()
 
     # ------------------------------------------------------------------ input
     def _on_text(self, text: str) -> None:
@@ -559,7 +595,7 @@ class SearchWindow(QWidget):
             self.status.setText("no cloud provider is configured (see: ve keys set)")
             return
         assert isinstance(preview, CloudPreview)
-        if not self.cloud_confirm(preview):
+        if not self._in_dialog(lambda: self.cloud_confirm(preview)):
             self.status.setText("cancelled: nothing was sent")
             return
         self._generation += 1

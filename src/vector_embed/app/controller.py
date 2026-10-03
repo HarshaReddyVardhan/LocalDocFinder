@@ -1,6 +1,7 @@
 """Qt-free logic behind the search window: project guessing, labels, launching, searching."""
 
 import ctypes
+import logging
 import os
 import shutil
 import subprocess
@@ -9,8 +10,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from vector_embed.core.providers.base import ProviderError
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.skills.search import SearchResult, SearchSkill
+
+logger = logging.getLogger(__name__)
 
 _EDITOR_TITLES = ("Visual Studio Code", "Cursor", "Windsurf")
 _MIN_TITLE_PARTS = 3
@@ -146,6 +150,17 @@ class SearchService:
     def reset(self) -> None:
         """Forget the built skill so the next query uses the current settings."""
         self._skill = None
+
+    def release(self) -> None:
+        """Unload the embedding model (the app is quitting). Does nothing if never loaded."""
+        if self._skill is None:
+            return
+        unload = getattr(self._skill.ctx.embedder, "unload_embedder", None)
+        if callable(unload):
+            try:
+                unload()
+            except ProviderError:
+                logger.debug("search: embedder unload failed", exc_info=True)
 
     def warm(self) -> None:
         self.skill.warm()

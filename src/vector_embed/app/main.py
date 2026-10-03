@@ -8,6 +8,7 @@ import logging
 import sys
 import threading
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -324,6 +325,7 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
         restart_action = menu.addAction("Restart to update", updater.restart_to_update)
         restart_action.setVisible(False)  # shown once an update has been downloaded
         menu.addAction("Quit", app.quit)
+        app.aboutToQuit.connect(window.shutdown)  # every way of quitting unloads the models
         tray.setContextMenu(menu)
         suffix = "" if registered else " - hotkey unavailable"
         tray.setToolTip(f"Vector Embed ({settings.search.hotkey}){suffix}")
@@ -351,8 +353,10 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
             run_setup_wizard(settings, state, updater=updater, on_changed=settings_changed)
         if args.show:
             window.summon()
-        code = app.exec()
+        code = app.exec()  # ``aboutToQuit`` fires inside this call, before it returns
         hotkey.unregister()
+        with suppress(RuntimeError, TypeError):  # the window is going away; drop the connection
+            app.aboutToQuit.disconnect(window.shutdown)
     return code
 
 

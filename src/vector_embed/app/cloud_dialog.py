@@ -1,13 +1,13 @@
 """The "what will be sent" dialog shown before any cloud request."""
 
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from vector_embed.app.assistant import CloudPreview
 
 
 def confirm_cloud_dialog(preview: CloudPreview) -> bool:
     """Show the privacy badge and let the user inspect the exact text before anything is sent."""
-    box = QMessageBox()
+    box = QMessageBox(QApplication.activeWindow())  # owned by the popup, so it stays on top of it
     box.setWindowTitle("Answer better with the cloud?")
     note = f"\n{preview.shield}" if preview.shield else ""
     box.setText(preview.badge + note)

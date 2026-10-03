@@ -249,9 +249,13 @@ class FakeService:
         self.warmed = 0
         self.battery = False
         self.resets = 0
+        self.released = 0
 
     def reset(self) -> None:
         self.resets += 1
+
+    def release(self) -> None:
+        self.released += 1
 
     def warm(self) -> None:
         self.warmed += 1
@@ -632,3 +636,25 @@ class TestChangingTheHotkey:
         apply("ctrl+nonsense")
         assert "unavailable" in tips[-1]
         assert flt.spec == "ctrl+alt+f8"
+
+
+def test_quitting_from_the_tray_unloads_the_models(
+    qapp: QApplication, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shutdowns: list[int] = []
+    monkeypatch.setattr(app_main, "load_settings", lambda: env.settings)
+    monkeypatch.setattr(app_main, "install_excepthooks", lambda: None)
+    monkeypatch.setattr(app_main, "configure_logging", lambda *_a, **_k: None)
+    monkeypatch.setattr(app_main, "QApplication", lambda _argv: qapp)
+    # quitting makes ``exec`` return, and ``aboutToQuit`` fires inside it, however the app ends:
+    # the tray's Quit, a log-off, Delete my data
+    monkeypatch.setattr(qapp, "exec", lambda: (qapp.aboutToQuit.emit(), 0)[1])
+    monkeypatch.setattr(QSystemTrayIcon, "show", lambda _self: None)
+    monkeypatch.setattr(QSystemTrayIcon, "showMessage", lambda *_a: None)
+    monkeypatch.setattr(app_main.UpdateScheduler, "start", lambda _self: None)
+    monkeypatch.setattr(app_main, "run_setup_wizard", lambda *_a, **_k: None)
+    monkeypatch.setattr(app_main.SearchWindow, "shutdown", lambda _self: shutdowns.append(1))
+    assert app_main.main([]) == 0
+    assert shutdowns == [1]
+    qapp.aboutToQuit.emit()  # the connection was dropped with the window: no second call
+    assert shutdowns == [1]

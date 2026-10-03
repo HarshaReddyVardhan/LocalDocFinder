@@ -443,3 +443,69 @@ class TestStreamingRender:
         window._on_event(window._generation, Delta("second"))  # held back by the throttle
         window._on_event(window._generation, Finished([], ""))
         assert "second" in window.answer.toPlainText()  # no wait for the timer
+
+
+class TestDialogsAndQuitting:
+    def test_the_popup_stays_while_a_dialog_is_open_and_hides_afterwards(
+        self, qapp: QApplication, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, _, _ = parts
+        window.show()
+        window.isActiveWindow = lambda: False  # type: ignore[method-assign]  # focus went to the dialog
+
+        def while_open() -> bool:
+            window._hide_if_inactive()  # the focus-lost timer fires while the dialog is up
+            return window.isVisible()
+
+        assert window._in_dialog(while_open) is True
+        window._hide_if_inactive()  # once it closed and focus is elsewhere, it hides as before
+        assert not window.isVisible()
+
+    def test_the_dialog_guard_counts_nested_dialogs_and_survives_errors(
+        self, qapp: QApplication, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, _, _ = parts
+
+        def boom() -> None:
+            raise RuntimeError("dialog crashed")
+
+        with pytest.raises(RuntimeError):
+            window._in_dialog(boom)
+        assert window._dialogs == 0  # never stuck "open"
+        window._in_dialog(lambda: window._in_dialog(lambda: None))
+        assert window._dialogs == 0
+
+    def test_shutdown_ends_the_chat_and_releases_the_embedder(
+        self, qapp: QApplication, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, assistant, _ = parts
+        window._maintain.start()
+        window.shutdown()
+        assert ("end", "quitting") in assistant.calls  # synchronous: nothing left to a pool job
+        assert window._service.released == 1  # type: ignore[attr-defined]
+        assert not window._maintain.isActive()
+
+    def test_shutdown_waits_for_a_running_answer_to_stop(
+        self, qapp: QApplication, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, assistant, _ = parts
+        release = threading.Event()
+        closed = threading.Event()
+
+        def slow_ask(question: str) -> Iterator[Event]:
+            try:
+                yield Delta("started")
+                release.wait(5)
+                yield Delta("more")
+            finally:
+                closed.set()
+
+        assistant.ask = slow_ask  # type: ignore[method-assign]
+        window.set_mode(Mode.ASK)
+        window.input.setText("q")
+        window.submit()
+        wait_for(qapp, lambda: "started" in window.answer.toPlainText())
+        threading.Timer(0.2, release.set).start()
+        window.shutdown()
+        assert closed.is_set()  # the answer was stopped before the models were unloaded
+        assert ("end", "quitting") in assistant.calls
