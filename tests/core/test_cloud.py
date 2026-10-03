@@ -85,8 +85,7 @@ class TestCloudChatProvider:
         assert "123-45-6789" not in sent
         assert "[PASSPORT REMOVED]" in sent
         assert "jane@example.com" in sent  # personal details stay unless the box is ticked
-        assert provider.last_outbound is not None
-        assert len(provider.last_outbound.findings) == 2
+        assert len(provider.prepare(MESSAGES).findings) == 2
 
     def test_personal_details_are_redacted_and_restored_in_the_streamed_answer(
         self, env: Env
@@ -214,12 +213,42 @@ class TestRouter:
         chat.gateway._registry.refresh()
         assert not chat.gateway.target().local  # no local chat model fits or exists
 
-    def test_answer_better_escalates_one_request_until_reset(self, env: Env, chat: Chat) -> None:
+    def test_answer_better_escalates_until_the_block_ends(self, env: Env, chat: Chat) -> None:
         router, _, _ = self.setup_cloud(env, chat)
-        router.escalate = True
-        assert not chat.gateway.target().local
-        assert not chat.gateway.target().local  # still escalated until reset
-        router.reset()
+        with router.escalated():
+            assert not chat.gateway.target().local
+            with router.escalated():  # nested scopes (preview, then send) end in turn
+                assert not chat.gateway.target().local
+            assert not chat.gateway.target().local  # the outer scope is still open
+        assert chat.gateway.target().local
+        assert not router.escalate
+
+    def test_escalation_applies_only_to_the_thread_that_asked(self, env: Env, chat: Chat) -> None:
+        router, _, _ = self.setup_cloud(env, chat)
+        other: list[bool] = []
+        with router.escalated():
+            worker = threading.Thread(target=lambda: other.append(chat.gateway.target().local))
+            worker.start()
+            worker.join()
+            assert not chat.gateway.target().local
+        assert other == [True]  # e.g. a Match run on another thread stays local
+
+    def test_an_escalated_generator_closed_from_another_thread_ends_its_scope(
+        self, env: Env, chat: Chat
+    ) -> None:
+        router, _, _ = self.setup_cloud(env, chat)
+
+        def answer() -> Any:
+            with router.escalated():
+                yield chat.gateway.target().local
+                yield chat.gateway.target().local
+
+        stream = answer()
+        assert next(stream) is False
+        closer = threading.Thread(target=stream.close)  # e.g. the UI cancels the stream
+        closer.start()
+        closer.join()
+        assert not router.escalate
         assert chat.gateway.target().local
 
     def test_local_only_requests_bypass_the_router(self, env: Env, chat: Chat) -> None:

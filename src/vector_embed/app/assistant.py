@@ -176,11 +176,10 @@ class AssistantService:
         return self._preview(cloud, prepared.messages, excerpts)
 
     def _prepare_cloud_ask(self, cloud: CloudContext, question: str) -> AskRun:
-        cloud.router.escalate = True  # so private files are filtered as for a cloud request
-        try:
+        # escalated so private files are filtered as for a cloud request; the prepared run keeps
+        # its cloud route, nothing else does
+        with cloud.router.escalated():
             return AskSkill(self.ctx).prepare(question, session=self.session_active)
-        finally:
-            cloud.router.reset()  # the prepared run keeps its cloud route; nothing else does
 
     def _prepare_cloud_turn(
         self, cloud: CloudContext, message: str, state: ChatState
@@ -192,11 +191,8 @@ class AssistantService:
             pin=[] if state.session_id else state.pinned,
             scratch=None if state.session_id else state.scratch or None,
         )
-        cloud.router.escalate = True
-        try:
+        with cloud.router.escalated():
             prepared = skill.prepare_turn(params)
-        finally:
-            cloud.router.reset()
         state.session_id = prepared.session_id
         return prepared
 
@@ -248,11 +244,10 @@ class AssistantService:
             yield Failed("no cloud provider is configured")
             return
         cloud.consent.grant()
-        cloud.router.escalate = True
         try:
-            yield from events
+            with cloud.router.escalated():
+                yield from events
         finally:
-            cloud.router.reset()
             cloud.consent.revoke()  # consent covers this one request, never the next
 
     # ------------------------------------------------------------------ streaming

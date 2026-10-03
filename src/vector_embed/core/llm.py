@@ -10,6 +10,7 @@ Rules from the design:
 """
 
 import logging
+import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -92,6 +93,10 @@ class LlmGateway:
         self._session_models: dict[str, str] = {}  # role -> model, fixed for one session
         self._lease_ttl = 0.0  # > 0 while this gateway holds the chat lock
         self._lease_renewed = 0.0
+        self._one_shot_calls = 0  # local one-shot calls sharing the chat lock right now
+        # Guards the bookkeeping above: Match scores in parallel, and the UI, MCP and the idle
+        # check call in from different threads. Never held while a model generates.
+        self._lock = threading.RLock()
         self.session_active = False
         self.router: TargetRouter | None = None
         # Optional rewrite of what a *local* model is sent (e.g. mask IDs); cloud has its own.
@@ -111,14 +116,17 @@ class LlmGateway:
             return routed
         if not self._power.local_chat_allowed():
             raise ChatBlockedError("on battery: plug in to chat (or configure a cloud provider)")
-        if self.session_active and (pinned := self._session_models.get(role)) is not None:
-            return ChatTarget(role, pinned, self._local, local=True)  # no mid-chat model switch
-        self._registry.refresh_if_stale(self._refresh_seconds)
+        with self._lock:
+            if self.session_active and (pinned := self._session_models.get(role)) is not None:
+                return ChatTarget(role, pinned, self._local, local=True)  # no mid-chat switch
+        self._registry.refresh_if_stale(self._refresh_seconds)  # may reach Ollama: not locked
         resolution = self._registry.resolve(role)
         if resolution.model is None and role != ROLE_CHAT:
             resolution = self._registry.resolve(ROLE_CHAT)
         if resolution.model is not None and self.session_active:
-            self._session_models[role] = resolution.model
+            with self._lock:  # the first resolution wins, so parallel callers agree on a model
+                model = self._session_models.setdefault(role, resolution.model)
+            return ChatTarget(role, model, self._local, local=True)
         if resolution.model is None:
             preferred = self._registry.preferences(role)
             hint = preferred[0] if preferred else "qwen3.5:9b"
@@ -169,58 +177,79 @@ class LlmGateway:
 
         A session already holds it; a cloud call does not need it.
         """
-        if not target.local or self.session_active:
-            yield
-            return
-        if not self._state.acquire_lock(CHAT_LOCK, self._owner, _ONE_SHOT_LEASE_SECONDS):
-            raise ChatBlockedError("another chat session is active")
-        self._lease_ttl, self._lease_renewed = _ONE_SHOT_LEASE_SECONDS, self._clock()
+        with self._lock:
+            held = target.local and not self.session_active
+            if held:
+                # Calls in flight share one lease: the first takes the lock and the last frees
+                # it, so one call ending never releases the lock under another still running.
+                if self._one_shot_calls == 0:
+                    if not self._state.acquire_lock(
+                        CHAT_LOCK, self._owner, _ONE_SHOT_LEASE_SECONDS
+                    ):
+                        raise ChatBlockedError("another chat session is active")
+                    self._lease_ttl, self._lease_renewed = _ONE_SHOT_LEASE_SECONDS, self._clock()
+                self._one_shot_calls += 1
         try:
             yield
         finally:
-            self._lease_ttl = 0.0
-            self._state.release_lock(CHAT_LOCK, self._owner)
+            if held:
+                self._end_one_shot()
+
+    def _end_one_shot(self) -> None:
+        with self._lock:
+            self._one_shot_calls -= 1
+            if self._one_shot_calls == 0 and not self.session_active:
+                self._lease_ttl = 0.0
+                self._state.release_lock(CHAT_LOCK, self._owner)
 
     # ------------------------------------------------------------------ session lifecycle
     def begin_chat(self) -> None:
         """Start a session: take the chat lock and clear the embedder off the GPU."""
         ttl = self._cfg.idle_unload_seconds + _LOCK_GRACE_SECONDS
-        if not self._state.acquire_lock(CHAT_LOCK, self._owner, ttl):
-            raise ChatBlockedError("another chat session is active")
-        self.session_active = True
-        self._lease_ttl, self._lease_renewed = ttl, self._clock()
-        self._last_activity = self._clock()
+        with self._lock:
+            if not self._state.acquire_lock(CHAT_LOCK, self._owner, ttl):
+                raise ChatBlockedError("another chat session is active")
+            self.session_active = True
+            self._lease_ttl, self._lease_renewed = ttl, self._clock()
+            self._last_activity = self._clock()
         self._free_embedder()
 
     def touch(self) -> None:
         """Record activity: refreshes the idle timer and, at most every 30 s, the lock lease."""
-        now = self._clock()
-        self._last_activity = now
-        if self._lease_ttl and now - self._lease_renewed >= _LEASE_REFRESH_SECONDS:
-            self._state.acquire_lock(CHAT_LOCK, self._owner, self._lease_ttl)
-            self._lease_renewed = now
+        with self._lock:
+            now = self._clock()
+            self._last_activity = now
+            if self._lease_ttl and now - self._lease_renewed >= _LEASE_REFRESH_SECONDS:
+                self._state.acquire_lock(CHAT_LOCK, self._owner, self._lease_ttl)
+                self._lease_renewed = now
 
     def end_chat(self, reason: str = "closed") -> None:
         """Unload every chat model this gateway loaded and release the lock."""
         logger.info("chat session ended", extra={"reason": reason})
-        for model in sorted(self._loaded):
+        with self._lock:
+            loaded = sorted(self._loaded)
+            self._loaded.clear()
+            self._session_models.clear()
+            self.session_active = False
+            if self._one_shot_calls == 0:  # otherwise the last one-shot call releases it
+                self._state.release_lock(CHAT_LOCK, self._owner)
+                self._lease_ttl = 0.0
+        for model in loaded:
             self._local.unload(model)
-        self._loaded.clear()
-        self._state.release_lock(CHAT_LOCK, self._owner)
-        self._lease_ttl = 0.0
-        self._session_models.clear()
-        self.session_active = False
 
     def check(self) -> str | None:
         """Poll the unload conditions; ends the session and returns the reason if one applies."""
-        if not self.session_active and not self._loaded:
+        with self._lock:
+            loaded = bool(self._loaded)
+            idle_for = self._clock() - self._last_activity
+        if not self.session_active and not loaded:
             return None
         reason: str | None = None
-        if not self._power.local_chat_allowed() and self._loaded:
+        if not self._power.local_chat_allowed() and loaded:
             reason = REASON_UNPLUGGED
         elif self._fullscreen():
             reason = REASON_FULLSCREEN
-        elif self._clock() - self._last_activity > self._cfg.idle_unload_seconds:
+        elif idle_for > self._cfg.idle_unload_seconds:
             reason = REASON_IDLE
         if reason is not None:
             self.end_chat(reason)
@@ -233,6 +262,14 @@ class LlmGateway:
         except ProviderError:
             logger.debug("llm: embedder unload failed", exc_info=True)
 
+    def _remember_loaded(self, model: str) -> None:
+        with self._lock:
+            self._loaded.add(model)
+
+    def _forget_loaded(self, model: str) -> None:
+        with self._lock:
+            self._loaded.discard(model)
+
     def _for_local(self, messages: list[Message]) -> list[Message]:
         return self.local_filter(messages) if self.local_filter is not None else messages
 
@@ -242,7 +279,7 @@ class LlmGateway:
         if target.local:
             self._free_embedder()
             self._local.prewarm(target.model, self.options(session=True))
-            self._loaded.add(target.model)
+            self._remember_loaded(target.model)
 
     def stream(
         self,
@@ -258,7 +295,7 @@ class LlmGateway:
         target = target or self.target(role, local_only=local_only)
         if target.local:
             self._free_embedder()
-            self._loaded.add(target.model)
+            self._remember_loaded(target.model)
             messages = self._for_local(messages)
         options = self.options(session=session)
         try:
@@ -268,7 +305,7 @@ class LlmGateway:
                     yield chunk
         finally:
             if not session and target.local:
-                self._loaded.discard(target.model)  # keep_alive=0 already unloaded it
+                self._forget_loaded(target.model)  # keep_alive=0 already unloaded it
 
     def chat_json(
         self,
@@ -283,7 +320,7 @@ class LlmGateway:
         target = target or self.target(role, local_only=local_only)
         if target.local:
             self._free_embedder()
-            self._loaded.add(target.model)
+            self._remember_loaded(target.model)
             messages = self._for_local(messages)
         with self._local_lease(target):
             result = target.provider.chat_json(
@@ -291,5 +328,5 @@ class LlmGateway:
             )
         self.touch()
         if not session and target.local:
-            self._loaded.discard(target.model)
+            self._forget_loaded(target.model)
         return result

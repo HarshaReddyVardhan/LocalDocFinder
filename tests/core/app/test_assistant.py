@@ -11,6 +11,7 @@ from vector_embed.app.assistant import (
     Failed,
     Finished,
 )
+from vector_embed.core.privacy.policy import Outbound
 from vector_embed.core.skills.base import SkillContext
 
 NOTES = "# Decisions\n\nWe retry failed payments with exponential backoff.\n"
@@ -220,8 +221,7 @@ class TestAnswerBetter:
         assert preview is not None
         local_by_default.inner.reply = ["Cloud answer."]
         drain(service.ask_escalated(question))
-        sent = local_by_default.provider.last_outbound
-        assert sent is not None
+        sent = Outbound(local_by_default.inner.sent[-1])  # exactly what reached the provider
         assert preview.text == local_by_default.privacy.preview(sent)
         assert "123-45-6789" not in preview.text
 
@@ -233,8 +233,7 @@ class TestAnswerBetter:
         service.cloud_preview_ask("how do we retry failed payments")
         local_by_default.inner.reply = ["ok"]
         drain(service.ask_escalated("what is the refund policy"))
-        sent = local_by_default.provider.last_outbound
-        assert sent is not None
+        sent = Outbound(local_by_default.inner.sent[-1])  # exactly what reached the provider
         assert "refund policy" in local_by_default.privacy.preview(sent)
 
     def test_the_chat_preview_is_what_the_chat_turn_sends(
@@ -247,8 +246,7 @@ class TestAnswerBetter:
         assert preview is not None
         local_by_default.inner.reply = ["Cloud answer."]
         drain(service.chat_escalated("how do we retry failed payments", state))
-        sent = local_by_default.provider.last_outbound
-        assert sent is not None
+        sent = Outbound(local_by_default.inner.sent[-1])  # exactly what reached the provider
         assert preview.text == local_by_default.privacy.preview(sent)
 
     def test_escalation_resets_even_if_the_stream_fails(

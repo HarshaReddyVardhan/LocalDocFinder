@@ -11,7 +11,9 @@
 import logging
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -109,7 +111,6 @@ class CloudChatProvider:
         self._clock = clock
         self.name = inner.name
         self.label: str = getattr(inner, "label", inner.name)
-        self.last_outbound: Outbound | None = None
         self._budget_lock = threading.Lock()
         self._reserved = 0.0  # worst-case cost of the calls in flight
         self._prices_asked: float = -_PRICE_REFRESH_SECONDS  # so the first need asks at once
@@ -199,8 +200,7 @@ class CloudChatProvider:
     def stream_chat(
         self, messages: list[Message], model: str, options: ChatOptions | None = None
     ) -> Iterator[ChatChunk]:
-        outbound = self.prepare(messages)
-        self.last_outbound = outbound
+        outbound = self.prepare(messages)  # per call: concurrent requests never share it
         capped = self._capped(options)
         reserved = self._reserve(model, outbound.messages, capped)
         restorer = _Restorer(outbound)
@@ -230,8 +230,7 @@ class CloudChatProvider:
         schema: dict[str, Any],
         options: ChatOptions | None = None,
     ) -> JsonResult:
-        outbound = self.prepare(messages)
-        self.last_outbound = outbound
+        outbound = self.prepare(messages)  # per call: concurrent requests never share it
         capped = self._capped(options)
         reserved = self._reserve(model, outbound.messages, capped)
         usage = Usage()
@@ -279,11 +278,33 @@ class CloudRouter:
         self._settings = settings
         self._provider = provider
         self._registry = registry
-        self.escalate = False  # set by "Answer better" for one request; clear with ``reset``
+        self._escalations: Counter[int] = Counter()  # thread id -> open "Answer better" scopes
+        self._escalations_lock = threading.Lock()
 
-    def reset(self) -> None:
-        """End a one-request escalation (call after the answer is complete)."""
-        self.escalate = False
+    @contextmanager
+    def escalated(self) -> Iterator[None]:
+        """Route this thread's requests to the cloud ("Answer better") until the block ends.
+
+        Per thread, not global: a Match run or an MCP call on another thread is never sent to the
+        cloud because the user escalated one answer. The thread is captured on entry, so the
+        scope still ends correctly when a generator holding it is closed from another thread.
+        """
+        thread = threading.get_ident()
+        with self._escalations_lock:
+            self._escalations[thread] += 1
+        try:
+            yield
+        finally:
+            with self._escalations_lock:
+                self._escalations[thread] -= 1
+                if self._escalations[thread] <= 0:
+                    del self._escalations[thread]
+
+    @property
+    def escalate(self) -> bool:
+        """Whether the calling thread is inside an ``escalated()`` block."""
+        with self._escalations_lock:
+            return threading.get_ident() in self._escalations
 
     def model_for(self, role: str) -> str | None:
         active = self._settings.active

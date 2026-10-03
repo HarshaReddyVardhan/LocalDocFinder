@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import ClassVar
 
@@ -153,6 +154,34 @@ class TestLease:
         world.state.acquire_lock(CHAT_LOCK, "other-process", 60)
         with pytest.raises(ChatBlockedError):
             list(world.gateway.stream(MESSAGES))
+
+    def test_overlapping_one_shot_calls_share_the_lock_until_the_last_ends(
+        self, world: World
+    ) -> None:
+        first = world.gateway.stream(MESSAGES)
+        second = world.gateway.stream(MESSAGES)
+        next(first)
+        next(second)
+        list(first)
+        assert world.state.lock_held(CHAT_LOCK)  # the second call is still generating
+        list(second)
+        assert not world.state.lock_held(CHAT_LOCK)
+
+    def test_a_session_ending_during_a_one_shot_call_leaves_it_the_lock(self, world: World) -> None:
+        stream = world.gateway.stream(MESSAGES)
+        next(stream)
+        world.gateway.end_chat()
+        assert world.state.lock_held(CHAT_LOCK)
+        list(stream)
+        assert not world.state.lock_held(CHAT_LOCK)
+
+    def test_parallel_json_calls_keep_the_bookkeeping_consistent(self, world: World) -> None:
+        world.client.chat_json_fn = lambda _kw: "{}"
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda _i: world.gateway.chat_json(MESSAGES, {}), range(64)))
+        assert world.gateway._one_shot_calls == 0
+        assert not world.gateway._loaded
+        assert not world.state.lock_held(CHAT_LOCK)
 
     def test_the_lock_is_released_when_the_caller_abandons_the_stream(self, world: World) -> None:
         stream = world.gateway.stream(MESSAGES)

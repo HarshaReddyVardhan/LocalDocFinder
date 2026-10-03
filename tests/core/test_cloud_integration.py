@@ -325,7 +325,6 @@ class TestMatch:
         cloud_text = sent_text(cloud.inner)
         assert "K1234567" not in cloud_text
         assert "[PASSPORT REMOVED]" in cloud_text
-        assert cloud.provider.last_outbound is not None
 
     def test_the_footer_names_the_destination_and_estimates_the_cost(
         self,
