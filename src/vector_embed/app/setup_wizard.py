@@ -24,7 +24,7 @@ from vector_embed.app.scope_editor import ScopeEditor
 from vector_embed.app.settings_controller import SettingsController
 from vector_embed.app.settings_tabs import CloudTab, GeneralTab, UpdatesTab
 from vector_embed.app.setup_controller import SetupController
-from vector_embed.app.theme import apply_light_theme
+from vector_embed.app.theme import scheme_in_use, style_check_boxes
 from vector_embed.core.models.benchmark import Verdict, judge
 from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_EMBED, Catalog
 from vector_embed.core.models.fit import budget_mb, fits
@@ -478,7 +478,7 @@ class SetupWizard(QWizard):
         self.speed.retry.clicked.connect(self._start)
         self.setButtonText(QWizard.WizardButton.CommitButton, "Download")
         self.currentIdChanged.connect(self._on_page)
-        apply_light_theme(self)  # last: it only reaches the widgets that exist by now
+        style_check_boxes(self, scheme_in_use())  # last: only reaches widgets that exist by now
 
     # ------------------------------------------------------------------ closing
     def reject(self) -> None:

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Generic, TypeVar
 
 from PySide6.QtCore import QFileInfo, QModelIndex, QPersistentModelIndex, QRect, QSize, Qt
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QFont, QFontMetrics, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from vector_embed.app.controller import ResultRow
+from vector_embed.app.theme import secondary_text
 from vector_embed.core.extractors.image import thumbnail_path
 
 _V = TypeVar("_V")
@@ -34,8 +35,8 @@ PADDING = 8
 LINE_GAP = 2
 GAP = 10
 META_MAX_WIDTH = 170
-PATH_COLOR = QColor("#8a8f9c")
-SNIPPET_COLOR = QColor("#b5bac6")
+PATH_STRENGTH = 0.55  # how much of the text colour the path and file details keep
+SNIPPET_STRENGTH = 0.75
 # Their icon is part of the file (or differs per file), so one icon per extension would be wrong.
 PER_FILE_ICON_EXTS = frozenset({"", ".exe", ".lnk", ".ico", ".msi", ".url", ".appx"})
 
@@ -189,13 +190,13 @@ class ResultDelegate(QStyledItemDelegate):
         painter.setFont(option.font)
         if row.meta:
             meta_box = QRect(area.right() - meta_width, area.top(), meta_width, first.height())
-            painter.setPen(PATH_COLOR)
+            painter.setPen(secondary_text(option.palette, PATH_STRENGTH))
             painter.drawText(
                 meta_box, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, row.meta
             )
 
         second = QRect(left, first.bottom() + LINE_GAP, area.right() - left, metrics.height())
-        painter.setPen(PATH_COLOR)
+        painter.setPen(secondary_text(option.palette, PATH_STRENGTH))
         place = f"{row.project}  {row.path}" if row.project else row.path
         painter.drawText(
             second,
@@ -205,7 +206,7 @@ class ResultDelegate(QStyledItemDelegate):
 
         if selected and row.snippet:
             third = QRect(left, second.bottom() + LINE_GAP, area.right() - left, metrics.height())
-            painter.setPen(SNIPPET_COLOR)
+            painter.setPen(secondary_text(option.palette, SNIPPET_STRENGTH))
             painter.drawText(
                 third,
                 Qt.AlignmentFlag.AlignVCenter,

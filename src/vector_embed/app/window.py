@@ -73,6 +73,7 @@ from vector_embed.app.controller import (
 from vector_embed.app.match_controller import MatchController
 from vector_embed.app.match_panel import MatchPanel
 from vector_embed.app.result_delegate import ROW_ROLE, ResultDelegate
+from vector_embed.app.theme import Scheme, popup_style, scheme_in_use
 from vector_embed.core.documents import DocumentError
 from vector_embed.core.rag import CODE_KINDS, Source
 from vector_embed.core.skills.base import panel_skills
@@ -94,17 +95,6 @@ PLACEHOLDERS = {
     "chat": "Chat about the pinned documents…  (Enter to send, Ctrl+V pastes a document)",
     "match": "Paste a job description (Ctrl+V) and press Enter to rank your documents…",
 }
-STYLE = """
-QWidget { background:#1e1f24; color:#e6e6e6; font-size:13px; }
-QLineEdit { background:#2a2c33; border:1px solid #3b3e47; border-radius:6px;
-            padding:9px 12px; font-size:16px; }
-QListWidget { background:#1e1f24; border:none; outline:0; }
-QListWidget::item { padding:6px 8px; border-bottom:1px solid #2a2c33; }
-QListWidget::item:selected { background:#33405a; }
-QTextBrowser { background:#17181c; border:1px solid #2a2c33; font-size:13px; }
-QLabel#status { color:#8a8f9c; padding:2px 6px; }
-QLabel#mode { color:#4c7dff; font-weight:bold; padding:0 8px; }
-"""
 
 
 class Mode(enum.Enum):
@@ -352,10 +342,14 @@ class SearchWindow(QWidget):
         if self._matcher is not None:
             self._matcher.reset_context()
 
+    def apply_scheme(self, scheme: Scheme) -> None:
+        """Restyle the popup for light or dark (the Settings theme choice changed)."""
+        self.setStyleSheet(popup_style(scheme))
+
     def _build_ui(self) -> None:
         self.setWindowTitle("Vector Embed")
         self.resize(POPUP_WIDTH, COMPACT_HEIGHT)
-        self.setStyleSheet(STYLE)
+        self.apply_scheme(scheme_in_use())
         self.input = QLineEdit()
         self.mode_label = QLabel("SEARCH")
         self.mode_label.setObjectName("mode")

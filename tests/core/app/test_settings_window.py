@@ -12,7 +12,8 @@ from vector_embed.app import main as app_main
 from vector_embed.app.models_controller import ModelsController
 from vector_embed.app.settings_controller import NO_UPDATES, SettingsController, app_version
 from vector_embed.app.settings_tabs import AboutTab, CloudTab, GeneralTab, IndexingTab
-from vector_embed.app.settings_window import SettingsWindow
+from vector_embed.app.settings_window import MIN_WINDOW_SIZE, SettingsWindow
+from vector_embed.app.theme import Scheme, apply_theme, palette_for, scheme_in_use, secondary_text
 from vector_embed.core.indexing_control import IndexingStatus, StartResult
 from vector_embed.core.models.benchmark import BenchKind, BenchResult, record_result
 from vector_embed.core.settings import (
@@ -24,6 +25,8 @@ from vector_embed.core.settings import (
 from vector_embed.core.settings_io import set_setting
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.updates import UpdateKind, Updater
+
+SETTINGS_MIN_WIDTH, SETTINGS_MIN_HEIGHT = MIN_WINDOW_SIZE
 
 
 class FakeKeys:
@@ -645,3 +648,47 @@ def test_tray_menu_toggles_start_and_pause(qapp: QApplication) -> None:
     toggle.trigger()
     assert fake.log == ["start", "pause"]
     assert shown == ["started", "pausing"]
+
+
+# ------------------------------------------------------------------ resizing and theme
+def test_window_can_shrink_below_its_content(window: SettingsWindow) -> None:
+    """A tab's content scrolls; it must never set a minimum size bigger than the default."""
+    assert window.minimumSizeHint().width() <= SETTINGS_MIN_WIDTH
+    assert window.minimumSizeHint().height() <= SETTINGS_MIN_HEIGHT
+    window.resize(SETTINGS_MIN_WIDTH, SETTINGS_MIN_HEIGHT)
+    assert window.width() == SETTINGS_MIN_WIDTH
+
+
+def test_theme_is_saved_and_validated(env: Env, controller: SettingsController) -> None:
+    controller.set_theme("dark")
+    assert saved(env)["app"] == {"theme": "dark"}
+    with pytest.raises(SettingsError, match="unknown theme"):
+        controller.set_theme("purple")
+
+
+def test_theme_combo_saves_and_shows_the_choice(
+    env: Env, window: SettingsWindow, controller: SettingsController
+) -> None:
+    assert window.general.theme.currentData() == "system"
+    window.general.theme.setCurrentIndex(window.general.theme.findData("light"))
+    window.general.theme.activated.emit(window.general.theme.currentIndex())
+    assert saved(env)["app"]["theme"] == "light"  # type: ignore[index]  # TOML table
+    window.general.refresh()
+    assert window.general.theme.currentData() == "light"
+
+
+def test_apply_theme_pins_a_light_or_dark_palette(qapp: QApplication) -> None:
+    original = qapp.palette()
+    try:
+        assert apply_theme(qapp, "dark") is Scheme.DARK
+        assert scheme_in_use() is Scheme.DARK
+        assert apply_theme(qapp, "light") is Scheme.LIGHT
+        assert scheme_in_use() is Scheme.LIGHT
+    finally:
+        qapp.setPalette(original)
+
+
+def test_secondary_text_fades_toward_the_background(qapp: QApplication) -> None:
+    palette = palette_for(Scheme.LIGHT)
+    assert secondary_text(palette, 1).name() == "#1b1b1f"
+    assert secondary_text(palette, 0).name() == "#ffffff"

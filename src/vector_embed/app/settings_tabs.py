@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from vector_embed.app.models_panel import ModelsPanel
 from vector_embed.app.scope_editor import ScopeEditor, pick_folder
 from vector_embed.app.settings_controller import SettingsController, app_version
+from vector_embed.app.theme import THEME_CHOICES
 from vector_embed.core.indexing_control import IndexingControl
 from vector_embed.core.models.benchmark import BenchKind, Verdict, judge
 from vector_embed.core.settings import SettingsError
@@ -34,6 +35,7 @@ from vector_embed.core.updates import UpdateKind, UpdateOutcome
 
 KEY_PROMPT_TITLE = "API key"
 DEFAULT_BUDGET_USD = 10.0
+THEME_LABELS = {"system": "Follow Windows", "light": "Light", "dark": "Dark"}
 ADVANCED_HINT = (
     "Every other option. Changes are checked and saved at once; indexing options apply from "
     "the next indexing run."
@@ -85,6 +87,9 @@ class GeneralTab(SettingsTab):
         self.hotkey = QLineEdit()
         self.apply_hotkey = QPushButton("Apply")
         self.start_with_windows = QCheckBox("Start with Windows")
+        self.theme = QComboBox()
+        for choice in THEME_CHOICES:
+            self.theme.addItem(THEME_LABELS[choice], choice)
         self.scope = ScopeEditor(choose_folder)
         self.save_scope = QPushButton("Save what to index")
 
@@ -95,6 +100,8 @@ class GeneralTab(SettingsTab):
         layout.addWidget(QLabel("Search hotkey"))
         layout.addLayout(hotkey_row)
         layout.addWidget(self.start_with_windows)
+        layout.addWidget(QLabel("Appearance"))
+        layout.addWidget(self.theme)
         if show_scope:  # the setup wizard has a page of its own for this
             layout.addWidget(QLabel("What to index"))
             layout.addWidget(self.scope, 1)
@@ -107,6 +114,7 @@ class GeneralTab(SettingsTab):
         self.apply_hotkey.clicked.connect(self._apply_hotkey)
         self.hotkey.returnPressed.connect(self._apply_hotkey)
         self.start_with_windows.clicked.connect(self._toggle_autostart)
+        self.theme.activated.connect(self._choose_theme)
         self.save_scope.clicked.connect(self._save_scope)
         self.scope.changed.connect(lambda: self.save_scope.setEnabled(self.scope.is_valid()))
 
@@ -114,6 +122,7 @@ class GeneralTab(SettingsTab):
         settings = self._controller.settings()
         self.hotkey.setText(settings.search.hotkey)
         self.start_with_windows.setChecked(settings.app.start_with_windows)
+        self.theme.setCurrentIndex(self.theme.findData(settings.app.theme))
         self.scope.load(settings.scope)
 
     def _apply_hotkey(self) -> None:
@@ -125,6 +134,10 @@ class GeneralTab(SettingsTab):
 
     def _toggle_autostart(self, checked: bool) -> None:
         if not self._guard(lambda: self._controller.set_start_with_windows(checked)):
+            self.refresh()
+
+    def _choose_theme(self, index: int) -> None:
+        if not self._guard(lambda: self._controller.set_theme(self.theme.itemData(index))):
             self.refresh()
 
     def _save_scope(self) -> None:

@@ -1,7 +1,7 @@
 """The Settings window: one tab per concern, opened from the tray."""
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QLabel, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QLabel, QScrollArea, QTabWidget, QVBoxLayout, QWidget
 
 from vector_embed.app.models_controller import ModelsController
 from vector_embed.app.models_panel import ModelsPanel
@@ -16,10 +16,21 @@ from vector_embed.app.settings_tabs import (
     SettingsTab,
     UpdatesTab,
 )
+from vector_embed.app.theme import scheme_in_use, style_check_boxes
 from vector_embed.core.indexing_control import IndexingControl
 
 WINDOW_TITLE = "Vector Embed settings"
 WINDOW_SIZE = (720, 560)
+MIN_WINDOW_SIZE = (420, 320)  # smaller than any tab's content: a tab scrolls instead of growing
+
+
+def _scrolling(page: QWidget) -> QScrollArea:
+    """A tab inside a scroll area, so its content can never force the window wider or taller."""
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.Shape.NoFrame)
+    area.setWidget(page)
+    return area
 
 
 class SettingsWindow(QWidget):
@@ -38,6 +49,7 @@ class SettingsWindow(QWidget):
         super().__init__()
         self.setWindowTitle(WINDOW_TITLE)
         self.resize(*WINDOW_SIZE)
+        self.setMinimumSize(*MIN_WINDOW_SIZE)
         self.general = general or GeneralTab(controller)
         self.models = ModelsTab(controller, ModelsPanel(models))
         self.cloud = cloud or CloudTab(controller)
@@ -58,7 +70,7 @@ class SettingsWindow(QWidget):
             ("Advanced", self.advanced),
             ("About", self.about),
         ):
-            self.tabs.addTab(page, title)
+            self.tabs.addTab(_scrolling(page), title)
             self._pages.append(page)
             page.message.connect(self._show_status)
         self.general.hotkey_changed.connect(self.hotkey_changed)
@@ -67,6 +79,7 @@ class SettingsWindow(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(self.tabs, 1)
         layout.addWidget(self.status)
+        style_check_boxes(self, scheme_in_use())
 
     def _show_status(self, text: str) -> None:
         self.status.setText(text)

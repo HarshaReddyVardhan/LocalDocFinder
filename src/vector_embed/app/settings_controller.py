@@ -6,6 +6,7 @@ from importlib import metadata
 from pathlib import Path
 
 from vector_embed.app.hotkey import parse_hotkey
+from vector_embed.app.theme import THEME_CHOICES
 from vector_embed.core.lifecycle import (
     ensure_data_folder,
     schedule_data_deletion,
@@ -112,6 +113,12 @@ class SettingsController:
     def set_start_with_windows(self, enabled: bool) -> None:
         set_setting(self._path, ["app", "start_with_windows"], enabled)
         self._apply_autostart(enabled)
+        self._on_changed()
+
+    def set_theme(self, choice: str) -> None:
+        if choice not in THEME_CHOICES:
+            raise SettingsError(f"unknown theme {choice!r}")
+        set_setting(self._path, ["app", "theme"], choice)
         self._on_changed()
 
     # ------------------------------------------------------------------ models

@@ -22,6 +22,7 @@ OWNED_OPTIONS = frozenset(
         ("schema_version",),
         ("search", "hotkey"),
         ("app", "start_with_windows"),
+        ("app", "theme"),
         ("embedding", "model"),  # switching re-indexes everything: `ve models --embedder`
         ("embedding", "dim"),
         ("privacy", "redact_personal"),

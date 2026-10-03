@@ -30,6 +30,7 @@ COVERAGE_ENTIRE = "entire_pc"
 COVERAGE_CHOSEN = "chosen"
 TYPES_DOCUMENTS = "documents"
 TYPES_EVERYTHING = "everything"
+MIN_COMBO_CHARS = 20
 ALWAYS_SKIPPED = (
     "Never indexed, whatever you choose: Windows and program folders, other users' profiles, "
     "the recycle bin, build and cache folders, and files that look like passwords or keys."
@@ -76,6 +77,11 @@ class ScopeEditor(QWidget):
         self.add_drive = QPushButton("Add drive")
         self.remove_folder = QPushButton("Remove selected")
         self.types = QComboBox()
+        # Without this the combo is as wide as its longest line and stops the window shrinking.
+        self.types.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.types.setMinimumContentsLength(MIN_COMBO_CHARS)
         self.types.addItem(
             "Documents only: PDF, Word, PowerPoint, text, Markdown (recommended)", TYPES_DOCUMENTS
         )

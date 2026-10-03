@@ -25,6 +25,7 @@ from vector_embed.app.settings_controller import SettingsController
 from vector_embed.app.settings_window import SettingsWindow
 from vector_embed.app.setup_controller import SetupController
 from vector_embed.app.setup_wizard import SetupWizard
+from vector_embed.app.theme import apply_theme
 from vector_embed.app.update_scheduler import UpdateScheduler
 from vector_embed.app.window import SearchWindow
 from vector_embed.core import runtime
@@ -372,6 +373,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if settings is None:
         return EXIT_BAD_SETTINGS
     configure_logging("app", runtime.log_dir(settings), settings.log_level)
+    apply_theme(app, settings.app.theme)
     with single_instance("app", settings.storage.data_dir) as acquired:
         if not acquired:
             logger.info("another copy of the app is already running")
@@ -410,6 +412,22 @@ def warn_hotkey_unavailable(tray: QSystemTrayIcon, spec: str) -> None:
     )
 
 
+def settings_applier(
+    app: QApplication, context: ContextFactory, window: SearchWindow, settings_path: Path
+) -> Callable[[], None]:
+    """What to do after a setting is saved, so no restart is needed."""
+
+    def apply() -> None:
+        context.invalidate()
+        window.reload_context()
+        try:
+            window.apply_scheme(apply_theme(app, load_settings(settings_path).app.theme))
+        except SettingsError:
+            logger.exception("could not re-read the theme")
+
+    return apply
+
+
 def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> int:
     with StateDb(settings.storage.data_dir) as state:
         settings_path = settings.settings_path()
@@ -417,10 +435,7 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
         updater = Updater(resolve_source(settings.updates.repo_url), state=state)
         window = build_window(settings, state, context)
 
-        def settings_changed() -> None:
-            """A setting was saved: rebuild what depends on it so no restart is needed."""
-            context.invalidate()
-            window.reload_context()
+        settings_changed = settings_applier(app, context, window, settings_path)
 
         hotkey = HotkeyFilter(window.summon)
         app.installNativeEventFilter(hotkey)
