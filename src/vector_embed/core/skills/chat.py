@@ -9,9 +9,10 @@ falls back to retrieving context from the index for each message.
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from vector_embed.core import hooks
 from vector_embed.core.documents import DocumentError, DocumentLoader, LoadedDocument
@@ -41,16 +42,41 @@ SYSTEM_PROMPT = (
     "answers on the provided documents and the conversation; quote them when it helps. If "
     "something is not in the documents, say so instead of guessing."
 )
+_SESSION_TIME_FORMAT = "%Y-%m-%d %H:%M"
+_RECENT_SESSIONS = 20
 _TRUNCATED = "\n[... document truncated to fit the model's context ...]"
 _MIN_DOC_TOKENS = 200
 
 
 class ChatInput(SkillInput):
-    message: str = Field(description="What to ask or tell the assistant")
+    message: str = Field(default="", description="What to ask or tell the assistant")
     session: int | None = Field(default=None, description="Continue this chat session id")
     pin: list[str] = Field(default_factory=list, description="Files to pin to a new session")
     scratch: str | None = Field(default=None, description="Pasted text kept only in the session")
     keep_loaded: bool = Field(default=False, description="Keep the model loaded for follow-ups")
+    list_sessions: bool = Field(
+        default=False, description="List recent chat sessions (continue one with --session ID)"
+    )
+
+    @model_validator(mode="after")
+    def _needs_a_message(self) -> "ChatInput":
+        if not self.list_sessions and not self.message.strip():
+            raise ValueError("a message is required (or --list-sessions)")
+        return self
+
+
+@dataclass(frozen=True)
+class SessionSummary:
+    """A past conversation, for listing and reopening."""
+
+    id: int
+    title: str
+    updated_at: float
+    messages: int
+
+    def line(self) -> str:
+        when = datetime.fromtimestamp(self.updated_at).strftime(_SESSION_TIME_FORMAT)
+        return f"{self.id:>5}  {when}  {self.messages:>3} msgs  {self.title}"
 
 
 @dataclass
@@ -253,8 +279,19 @@ class ChatSkill(Skill):
                 state.add_message(turn.session_id, "assistant", turn.reply)
                 hooks.emit(hooks.Answered("chat", user_text, turn.reply))
 
+    def recent_sessions(self, limit: int = _RECENT_SESSIONS) -> list[SessionSummary]:
+        """The newest conversations first, with how many messages each holds."""
+        state = self.ctx.state
+        return [
+            SessionSummary(s.id, s.title, s.updated_at, len(state.messages(s.id)))
+            for s in state.sessions(limit)
+        ]
+
     def stream(self, params: SkillInput) -> Iterator[str]:
         assert isinstance(params, ChatInput)
+        if params.list_sessions:
+            yield self.render(self.recent_sessions())
+            return
         turn, deltas = self.turn(params)
         yield from deltas
         notes = []
@@ -263,13 +300,18 @@ class ChatSkill(Skill):
         notes.append(f"[session {turn.session_id}]")
         yield "\n\n" + " ".join(notes)
 
-    def run(self, params: SkillInput) -> ChatTurn:
+    def run(self, params: SkillInput) -> ChatTurn | list[SessionSummary]:
         assert isinstance(params, ChatInput)
+        if params.list_sessions:
+            return self.recent_sessions()
         turn, deltas = self.turn(params)
         for _ in deltas:
             pass
         return turn
 
     def render(self, output: object) -> str:
+        if isinstance(output, list):
+            lines = [s.line() for s in output if isinstance(s, SessionSummary)]
+            return "\n".join(lines) if lines else "no chat sessions yet"
         assert isinstance(output, ChatTurn)
         return output.reply

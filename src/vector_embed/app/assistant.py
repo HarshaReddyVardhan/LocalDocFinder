@@ -15,7 +15,7 @@ from vector_embed.core.registry import RegistryError
 from vector_embed.core.runtime import CloudContext
 from vector_embed.core.skills.ask import AskRun, AskSkill, gateway_of, privacy_of
 from vector_embed.core.skills.base import SkillContext, create_skill
-from vector_embed.core.skills.chat import ChatInput, ChatSkill, PreparedTurn
+from vector_embed.core.skills.chat import ChatInput, ChatSkill, PreparedTurn, SessionSummary
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +286,24 @@ class AssistantService:
             yield Failed(str(exc))
             return
         yield from self._turn_events(prepared, state)
+
+    def recent_sessions(self) -> list[SessionSummary]:
+        return ChatSkill(self.ctx).recent_sessions()
+
+    def reopen(self, session_id: int, state: ChatState) -> str:
+        """Continue an earlier conversation: its pinned files come back, and the conversation so
+        far is returned as text to show. The next message is sent within that session."""
+        store = self.ctx.state
+        context = store.session_context(session_id)
+        if not context and not store.messages(session_id):
+            raise RuntimeError(f"no chat session {session_id}")
+        state.session_id = session_id
+        state.pinned = [str(p) for p in context.get("pinned", [])]
+        state.scratch = str(context.get("scratch", ""))
+        return "".join(
+            f"**You:** {m.content}\n\n" if m.role == "user" else f"{m.content}\n\n"
+            for m in store.messages(session_id)
+        )
 
     def run_skill(self, name: str, text: str) -> Iterator[Event]:
         """Run any panel skill from the registry with ``text`` as its main input (a skill added

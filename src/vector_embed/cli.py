@@ -13,6 +13,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
 from pydantic.fields import FieldInfo
 
 from vector_embed import mcp_server, watcher, worker
@@ -73,8 +74,8 @@ def add_input_arguments(
     """Turn a skill's pydantic input model into argparse arguments."""
     for name, info in fields.items():
         help_text = info.description or ""
-        if name == positional:
-            parser.add_argument(name, nargs="+", help=help_text)
+        if name == positional:  # optional when the field has a default (e.g. chat --list-...)
+            parser.add_argument(name, nargs="+" if info.is_required() else "*", help=help_text)
             continue
         flag = "--" + name.replace("_", "-")
         kind = _unwrap(info.annotation)
@@ -103,7 +104,7 @@ def collect_input(
     values: dict[str, Any] = {}
     for name in fields:
         value = getattr(args, name, None)
-        if value is None:
+        if value is None or (name == positional and not value):
             continue
         values[name] = " ".join(value) if name == positional else value
     return values
@@ -111,7 +112,12 @@ def collect_input(
 
 def run_skill(skill_cls: type[Skill], args: argparse.Namespace, settings: Settings) -> int:
     fields = dict(skill_cls.Input.model_fields)
-    params = skill_cls.Input(**collect_input(args, fields, skill_cls.cli_positional))
+    try:
+        params = skill_cls.Input(**collect_input(args, fields, skill_cls.cli_positional))
+    except ValidationError as exc:
+        problem = exc.errors(include_input=False)[0]
+        err(f"ve {skill_cls.name}: {problem['msg'].removeprefix('Value error, ')}")
+        return EXIT_USAGE
     with StateDb(settings.storage.data_dir) as state:
         ctx = runtime.build_skill_context(settings, state)
         if getattr(args, "cloud_ok", False):

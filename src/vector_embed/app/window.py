@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QPushButton,
     QSplitter,
     QStackedWidget,
@@ -56,6 +57,7 @@ from vector_embed.app.match_panel import MatchPanel
 from vector_embed.app.result_delegate import ROW_ROLE, ResultDelegate
 from vector_embed.core.rag import Source
 from vector_embed.core.skills.base import panel_skills
+from vector_embed.core.skills.chat import SessionSummary
 from vector_embed.core.skills.search import SearchResult
 
 COMPACT_HEIGHT = 84  # just the search bar and the status line
@@ -253,6 +255,7 @@ class SearchWindow(QWidget):
         self._jd_text = ""
         self._last_text = ""
         self.cloud_confirm: Callable[[CloudPreview], bool] = confirm_cloud_dialog
+        self.choose_session: Callable[[list[SessionSummary]], int | None] = self._session_menu
         self._launcher = launcher
         self._thumbs_dir = thumbs_dir
         self._generation = 0
@@ -353,8 +356,13 @@ class SearchWindow(QWidget):
         self.cloud_button = QPushButton("Answer better ☁")
         self.cloud_button.setVisible(False)
         self.cloud_button.clicked.connect(self.answer_better)
+        self.history_button = QPushButton("History ▾")
+        self.history_button.setToolTip("Reopen an earlier conversation")
+        self.history_button.setVisible(False)
+        self.history_button.clicked.connect(self.show_history)
         bottom = QHBoxLayout()
         bottom.addWidget(self.status, 1)
+        bottom.addWidget(self.history_button)
         bottom.addWidget(self.cloud_button)
         return bottom
 
@@ -405,6 +413,7 @@ class SearchWindow(QWidget):
         self.body.setCurrentIndex(self._body_index())
         self._check_cloud_async()
         self.answer.setVisible(not searching)
+        self.history_button.setVisible(mode is Mode.CHAT)
         self.answer.clear()
         self._answer_text = ""
         self._fit_height()
@@ -532,6 +541,47 @@ class SearchWindow(QWidget):
         if self.isActiveWindow() or self._dialogs or QApplication.activeModalWidget() is not None:
             return
         self.hide()  # the chat session (if any) stays; idle timeout unloads it later
+
+    # ------------------------------------------------------------------ chat history
+    def show_history(self) -> None:
+        """Pick an earlier conversation from a menu and continue it."""
+        if self._assistant is None or self._mode is not Mode.CHAT:
+            return
+        try:
+            sessions = self._assistant.recent_sessions()
+        except RuntimeError as exc:
+            self.status.setText(f"⚠ {exc}")
+            return
+        if not sessions:
+            self.status.setText("no earlier conversations yet")
+            return
+        chosen = self._in_dialog(lambda: self.choose_session(sessions))
+        if chosen is not None:
+            self.reopen_session(chosen)
+
+    def _session_menu(self, sessions: list[SessionSummary]) -> int | None:
+        menu = QMenu(self)
+        for summary in sessions:
+            action = menu.addAction(summary.line().strip())
+            action.setData(summary.id)
+        picked = menu.exec(self.history_button.mapToGlobal(self.history_button.rect().topLeft()))
+        return int(picked.data()) if picked is not None else None
+
+    def reopen_session(self, session_id: int) -> None:
+        """Show an earlier conversation; the next message continues it."""
+        if self._assistant is None:
+            return
+        self._generation += 1
+        self._cancel_stream()
+        try:
+            transcript = self._assistant.reopen(session_id, self._chat)
+        except RuntimeError as exc:
+            self.status.setText(f"⚠ {exc}")
+            return
+        self._answer_text = transcript
+        self.answer.setMarkdown(transcript)
+        details = self._chat.describe()
+        self.status.setText(f"reopened chat {session_id}" + (f"  ·  {details}" if details else ""))
 
     def _in_dialog(self, call: Callable[[], _T]) -> _T:
         """Run something that opens a dialog, keeping the popup visible meanwhile."""

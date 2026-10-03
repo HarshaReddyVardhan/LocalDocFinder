@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import Field
-from tests.core.conftest import Env
+from tests.core.conftest import Chat, Env
 from tests.core.providers.fakes import FakeOllamaClient
 
 from vector_embed import cli
@@ -226,3 +226,23 @@ class TestNewSkillAppearsInTheCli:
 def test_model_info_is_exposed_to_the_report() -> None:
     info = ModelInfo("m", "ollama")
     assert not info.is_embedding
+
+
+class TestChatSessions:
+    def test_list_sessions_needs_no_message(
+        self, env: Env, wired: SkillContext, chat: Chat, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert cli.main(["chat", "--list-sessions"]) == 0
+        assert capsys.readouterr().out.strip() == "no chat sessions yet"
+        chat.client.chat_reply = ["Hi."]
+        assert cli.main(["chat", "hello", "there"]) == 0
+        capsys.readouterr()
+        assert cli.main(["chat", "--list-sessions"]) == 0
+        listed = capsys.readouterr().out
+        assert "hello there" in listed and "2 msgs" in listed
+
+    def test_a_chat_without_a_message_is_a_usage_error(
+        self, wired: SkillContext, chat: Chat, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert cli.main(["chat"]) == cli.EXIT_USAGE
+        assert "ve chat: a message is required" in capsys.readouterr().err
