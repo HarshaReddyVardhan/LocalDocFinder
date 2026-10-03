@@ -6,6 +6,7 @@ from tests.core.conftest import Env
 from vector_embed import worker
 from vector_embed.core.providers.base import ProviderError
 from vector_embed.core.store.lance import CHUNKS, DOCUMENTS
+from vector_embed.core.store.sqlite import INDEXING_PAUSED_KEY, StateDb
 from vector_embed.worker import WorkerOptions, WorkerParts, run_worker
 
 RESUME = (
@@ -29,6 +30,22 @@ class FakeGate:
         if self.allowed is not None and len(self.calls) > self.allowed:
             return False, self.reason
         return True, ""
+
+
+class PausingGate(FakeGate):
+    """The user presses Pause after ``pause_at`` checks."""
+
+    def __init__(self, state: StateDb, pause_at: int) -> None:
+        super().__init__()
+        self._state = state
+        self._pause_at = pause_at
+
+    def worker_may_continue(
+        self, allow_battery: bool = False, respect_activity: bool = True
+    ) -> tuple[bool, str]:
+        if len(self.calls) + 1 == self._pause_at:
+            self._state.set_meta(INDEXING_PAUSED_KEY, "1")
+        return super().worker_may_continue(allow_battery, respect_activity)
 
 
 class Unloader:
@@ -91,6 +108,28 @@ def test_does_not_start_on_battery(env: Env) -> None:
     assert env.store.count(CHUNKS) == 0
     assert gate.calls == [(False, False)]
     assert unload.count == 0
+
+
+def test_a_paused_worker_does_not_start(env: Env) -> None:
+    env.state.enqueue(write(env, "a.txt", "alpha text " * 20), delay=0)
+    env.state.set_meta(INDEXING_PAUSED_KEY, "1")
+    unload = Unloader()
+    assert run_worker(make_parts(env, FakeGate(), unload), WorkerOptions(now=True)) == 0
+    assert env.state.queue_size() == 1
+    assert env.store.count(CHUNKS) == 0
+
+
+def test_pausing_mid_run_keeps_what_is_done_and_the_rest_queued(env: Env) -> None:
+    env.settings = env.settings.model_copy(
+        update={"chunking": env.settings.chunking.model_copy(update={"worker_batch_files": 1})}
+    )
+    for i in range(4):
+        env.state.enqueue(write(env, f"f{i}.txt", f"file {i} content " * 20), delay=0)
+    gate = PausingGate(env.state, pause_at=5)
+    run_worker(make_parts(env, gate, Unloader()), WorkerOptions())
+    done = env.state.manifest_count()
+    assert 0 < done < 4
+    assert env.state.queue_size() == 4 - done  # nothing lost: the rest waits for Start
 
 
 def test_unplugging_mid_run_commits_progress_and_keeps_the_queue(env: Env) -> None:

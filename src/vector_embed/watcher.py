@@ -32,7 +32,7 @@ from vector_embed.core.projects import Projects
 from vector_embed.core.scope import ScopePolicy
 from vector_embed.core.scope_roots import resolve_roots
 from vector_embed.core.settings import Settings, SettingsError, load_settings
-from vector_embed.core.store.sqlite import CHAT_LOCK, PROGRESS_KEY, StateDb
+from vector_embed.core.store.sqlite import CHAT_LOCK, INDEXING_PAUSED_KEY, PROGRESS_KEY, StateDb
 from vector_embed.core.wiring import build_projects, build_scope, log_dir
 
 logger = logging.getLogger("watcher")
@@ -198,10 +198,13 @@ class SubprocessLauncher:
     def __init__(self, log_dir: Path) -> None:
         self._log_dir = log_dir
 
-    def start(self, reconcile: bool) -> WorkerHandle:
+    def start(self, reconcile: bool, now: bool = False) -> WorkerHandle:
+        """``now`` skips the idle wait and debounce: the user asked for indexing to start."""
         command = self_command("worker")
         if reconcile:
             command.append("--reconcile")
+        if now:
+            command.append("--now")
         self._log_dir.mkdir(parents=True, exist_ok=True)
         output = self._log_dir / "worker.out.log"
         rotate_if_large(output)  # the worker redirects its streams here, so it cannot rotate it
@@ -424,7 +427,8 @@ class Watcher:
         if why != self.last_reason:
             self.last_reason = why
             logger.info("gate: %s", why or "ready", extra={"queued": self.state.queue_size()})
-        if not ready or self._clock() < self.next_spawn:
+        paused = self.state.get_meta(INDEXING_PAUSED_KEY) == "1"
+        if not ready or paused or self._clock() < self.next_spawn:
             return
         reconcile = self.reconcile_due()
         if reconcile or self.state.queue_size(due_only=True) > 0:

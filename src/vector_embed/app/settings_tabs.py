@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QUrl, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 from vector_embed.app.models_panel import ModelsPanel
 from vector_embed.app.scope_editor import ScopeEditor, pick_folder
 from vector_embed.app.settings_controller import SettingsController, app_version
+from vector_embed.core.indexing_control import IndexingControl
 from vector_embed.core.models.benchmark import BenchKind, Verdict, judge
 from vector_embed.core.settings import SettingsError
 from vector_embed.core.settings_schema import OptionSpec, editable_options
@@ -132,6 +134,66 @@ class GeneralTab(SettingsTab):
             "saved; the watcher re-scans within a minute, and files outside the new scope "
             "leave the index",
         )
+
+
+REFRESH_MS = 2000
+INDEXING_NOTE = (
+    "Pausing keeps everything done so far. Starting again continues from the saved list of "
+    "waiting files; only the files being processed at the moment of the pause are redone. "
+    "Indexing only runs while the PC is plugged in. A very large file is processed in one "
+    "piece, so pausing may take a moment."
+)
+
+
+class IndexingTab(SettingsTab):
+    """Start and pause indexing by hand, with live progress (useful for the first big scan)."""
+
+    def __init__(self, controller: SettingsController, indexing: IndexingControl) -> None:
+        super().__init__(controller)
+        self._indexing = indexing
+        self.status = QLabel()
+        self.status.setWordWrap(True)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        self.start = QPushButton("Start indexing now")
+        self.pause = QPushButton("Pause indexing")
+        note = QLabel(INDEXING_NOTE)
+        note.setWordWrap(True)
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.start)
+        buttons.addWidget(self.pause)
+        buttons.addStretch(1)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.status)
+        layout.addWidget(self.bar)
+        layout.addLayout(buttons)
+        layout.addWidget(note)
+        layout.addStretch(1)
+        self._timer = QTimer(self)
+        self._timer.setInterval(REFRESH_MS)
+        self._timer.timeout.connect(self.refresh)
+        self.start.clicked.connect(lambda: self._act(lambda: self._indexing.start().message))
+        self.pause.clicked.connect(lambda: self._act(self._indexing.pause))
+
+    def refresh(self) -> None:
+        status = self._indexing.status()
+        self.status.setText(status.summary)
+        self.bar.setValue(int(status.fraction * 100))
+        self.start.setEnabled(not status.running or status.paused)
+        self.pause.setEnabled(status.running and not status.paused)
+
+    def _act(self, action: Callable[[], str]) -> None:
+        self.message.emit(action())
+        self.refresh()
+
+    def showEvent(self, event: object) -> None:  # noqa: N802
+        super().showEvent(event)  # type: ignore[arg-type]
+        self.refresh()
+        self._timer.start()  # live numbers only while the tab is on screen
+
+    def hideEvent(self, event: object) -> None:  # noqa: N802
+        self._timer.stop()
+        super().hideEvent(event)  # type: ignore[arg-type]
 
 
 class ModelsTab(SettingsTab):

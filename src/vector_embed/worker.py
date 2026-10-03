@@ -31,7 +31,12 @@ from vector_embed.core.reconcile import reconcile
 from vector_embed.core.scope import ScopePolicy
 from vector_embed.core.settings import Settings, load_settings
 from vector_embed.core.store.lance import IndexSchemaError, LanceStore, ModelMismatchError
-from vector_embed.core.store.sqlite import CHAT_LOCK, EMBEDDER_APPROVED_KEY, StateDb
+from vector_embed.core.store.sqlite import (
+    CHAT_LOCK,
+    EMBEDDER_APPROVED_KEY,
+    INDEXING_PAUSED_KEY,
+    StateDb,
+)
 
 logger = logging.getLogger("worker")
 
@@ -81,11 +86,17 @@ def run_worker(parts: WorkerParts, options: WorkerOptions) -> int:
     if not ok:
         logger.info("not starting: %s", why)
         return EXIT_OK
+    if parts.state.get_meta(INDEXING_PAUSED_KEY) == "1":
+        logger.info("not starting: indexing is paused")
+        return EXIT_OK
 
     stopped = {"why": ""}
 
     def stop_check() -> bool:
         if stopped["why"]:
+            return True
+        if parts.state.get_meta(INDEXING_PAUSED_KEY) == "1":  # the user pressed Pause
+            stopped["why"] = "paused by the user"
             return True
         if stop_requested(parts.settings.storage.data_dir):
             stopped["why"] = "stop requested"

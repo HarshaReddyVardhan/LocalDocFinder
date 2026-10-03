@@ -24,6 +24,7 @@ MAX_STORED_MESSAGES = 400  # per chat session
 _OPEN_ATTEMPTS = 8  # opening a database that another process is creating or upgrading
 _OPEN_RETRY_SECONDS = 0.05
 EMBEDDER_APPROVED_KEY = "embedder_change_approved"  # the model whose index rebuild the user OK'd
+INDEXING_PAUSED_KEY = "indexing_paused"  # "1" while the user has paused indexing
 PROGRESS_KEY = "last_queue_progress"  # meta key stamped whenever queue items are finished
 FAILED_HASH = "failed"  # manifest hash of a file given up on (never equals a real digest)
 _FAR_FUTURE = 1e18

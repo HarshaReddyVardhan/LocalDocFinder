@@ -11,10 +11,12 @@ from vector_embed.app.settings_tabs import (
     AdvancedTab,
     CloudTab,
     GeneralTab,
+    IndexingTab,
     ModelsTab,
     SettingsTab,
     UpdatesTab,
 )
+from vector_embed.core.indexing_control import IndexingControl
 
 WINDOW_TITLE = "Vector Embed settings"
 WINDOW_SIZE = (720, 560)
@@ -31,6 +33,7 @@ class SettingsWindow(QWidget):
         general: GeneralTab | None = None,
         cloud: CloudTab | None = None,
         about: AboutTab | None = None,
+        indexing: IndexingControl | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle(WINDOW_TITLE)
@@ -43,8 +46,12 @@ class SettingsWindow(QWidget):
         self.about = about or AboutTab(controller)
         self.tabs = QTabWidget()
         self._pages: list[SettingsTab] = []
+        self.indexing = IndexingTab(controller, indexing) if indexing else None
+        tabs: list[tuple[str, SettingsTab]] = [("General", self.general)]
+        if self.indexing:
+            tabs.append(("Indexing", self.indexing))
         for title, page in (
-            ("General", self.general),
+            *tabs,
             ("Models & Health", self.models),
             ("Cloud & Privacy", self.cloud),
             ("Updates", self.updates),

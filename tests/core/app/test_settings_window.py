@@ -4,15 +4,16 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLineEdit
+from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLineEdit, QMenu
 from tests.core.app.test_models_panel import GPU, wait_for
 from tests.core.conftest import Chat, Env
 
 from vector_embed.app import main as app_main
 from vector_embed.app.models_controller import ModelsController
 from vector_embed.app.settings_controller import NO_UPDATES, SettingsController, app_version
-from vector_embed.app.settings_tabs import AboutTab, CloudTab, GeneralTab
+from vector_embed.app.settings_tabs import AboutTab, CloudTab, GeneralTab, IndexingTab
 from vector_embed.app.settings_window import SettingsWindow
+from vector_embed.core.indexing_control import IndexingStatus, StartResult
 from vector_embed.core.models.benchmark import BenchKind, BenchResult, record_result
 from vector_embed.core.settings import (
     CloudProviderSettings,
@@ -577,3 +578,70 @@ def test_an_invalid_settings_file_keeps_the_working_context_settings(
     factory = app_main.make_context_factory(env.settings, env.state, broken)  # type: ignore[arg-type]
     factory.invalidate()  # must not raise
     assert factory() is not None
+
+
+# ------------------------------------------------------------------ indexing tab and tray entry
+class FakeIndexing:
+    def __init__(self) -> None:
+        self.running = False
+        self.paused = False
+        self.log: list[str] = []
+
+    def status(self) -> IndexingStatus:
+        return IndexingStatus(10, 5, self.running, self.paused)
+
+    def start(self) -> StartResult:
+        self.log.append("start")
+        self.running, self.paused = True, False
+        return StartResult(True, "started")
+
+    def pause(self) -> str:
+        self.log.append("pause")
+        self.paused = True
+        return "pausing"
+
+
+def test_indexing_tab_starts_and_pauses_and_shows_progress(
+    qapp: QApplication, controller: SettingsController
+) -> None:
+    fake = FakeIndexing()
+    tab = IndexingTab(controller, fake)  # type: ignore[arg-type]
+    messages: list[str] = []
+    tab.message.connect(messages.append)
+    tab.refresh()
+    assert tab.start.isEnabled()
+    assert not tab.pause.isEnabled()
+    assert tab.bar.value() == 66
+    tab.start.click()
+    assert tab.pause.isEnabled()
+    assert not tab.start.isEnabled()
+    tab.pause.click()
+    assert fake.log == ["start", "pause"]
+    assert messages == ["started", "pausing"]
+    assert "paused" in tab.status.text()
+
+
+def test_settings_window_shows_the_indexing_tab_only_with_a_control(
+    qapp: QApplication, controller: SettingsController, models: ModelsController
+) -> None:
+    without = SettingsWindow(controller, models)
+    assert without.indexing is None
+    with_it = SettingsWindow(controller, models, indexing=FakeIndexing())  # type: ignore[arg-type]
+    assert with_it.indexing is not None
+
+
+def test_tray_menu_toggles_start_and_pause(qapp: QApplication) -> None:
+    fake = FakeIndexing()
+    shown: list[str] = []
+    menu = QMenu()
+    app_main.add_indexing_actions(menu, lambda: fake, shown.append)  # type: ignore[arg-type,return-value]
+    status_line, toggle = menu.actions()
+    menu.aboutToShow.emit()
+    assert toggle.text() == "Start indexing"
+    assert "10 files indexed" in status_line.text()
+    toggle.trigger()
+    menu.aboutToShow.emit()
+    assert toggle.text() == "Pause indexing"
+    toggle.trigger()
+    assert fake.log == ["start", "pause"]
+    assert shown == ["started", "pausing"]

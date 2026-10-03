@@ -19,6 +19,7 @@ from watchdog.events import (
 from vector_embed import watcher
 from vector_embed.core import ollama_http
 from vector_embed.core.process import request_stop
+from vector_embed.core.store.sqlite import INDEXING_PAUSED_KEY
 from vector_embed.watcher import ChangeHandler, Watcher, quick_reject
 
 DEBOUNCE = 30
@@ -224,7 +225,7 @@ class FakeLauncher:
         self.started: list[bool] = []
         self.handles: list[FakeHandle] = []
 
-    def start(self, reconcile: bool) -> FakeHandle:
+    def start(self, reconcile: bool, now: bool = False) -> FakeHandle:
         self.started.append(reconcile)
         handle = FakeHandle()
         self.handles.append(handle)
@@ -309,6 +310,18 @@ class TestScheduling:
         w.tick()
         assert launcher.started == [True]
         assert w.next_spawn > clock.now  # does not immediately re-trigger
+
+    def test_a_paused_indexing_starts_no_worker(
+        self, parts: tuple[Watcher, FakeGate, FakeLauncher, list[int]], env: Env
+    ) -> None:
+        w, _, launcher, _ = parts
+        env.state.enqueue("a", delay=0)
+        env.state.set_meta(INDEXING_PAUSED_KEY, "1")
+        w.tick()
+        assert launcher.started == []
+        env.state.delete_meta(INDEXING_PAUSED_KEY)  # the user pressed Start
+        w.tick()
+        assert launcher.started == [False]
 
     def test_running_worker_blocks_a_second_spawn_and_exit_clears_it(
         self, parts: tuple[Watcher, FakeGate, FakeLauncher, list[int]], env: Env

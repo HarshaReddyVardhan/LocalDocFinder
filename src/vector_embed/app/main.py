@@ -10,6 +10,7 @@ import threading
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from pathlib import Path
+from typing import Generic, TypeVar
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
@@ -29,10 +30,11 @@ from vector_embed.app.window import SearchWindow
 from vector_embed.core import runtime
 from vector_embed.core.autostart import Autostart
 from vector_embed.core.idle import SystemActivity
+from vector_embed.core.indexing_control import IndexingControl
 from vector_embed.core.lifecycle import start_watcher
 from vector_embed.core.logging_setup import configure_logging, install_excepthooks
 from vector_embed.core.models.catalog import load_catalog
-from vector_embed.core.models.hardware import probe_hardware
+from vector_embed.core.models.hardware import on_ac_power, probe_hardware
 from vector_embed.core.ollama_service import ensure_ollama_running
 from vector_embed.core.process import is_frozen, single_instance
 from vector_embed.core.secrets import KeyringStore
@@ -51,6 +53,7 @@ from vector_embed.core.terms import accept_terms, terms_accepted
 from vector_embed.core.updates import Updater, resolve_source
 
 logger = logging.getLogger("app")
+T = TypeVar("T")
 
 _open_wizards: list[SetupWizard] = []  # at most one: see run_setup_wizard
 
@@ -168,6 +171,56 @@ def auto_check_enabled(path: Path) -> Callable[[], bool]:
     return enabled
 
 
+class Lazy(Generic[T]):
+    """Builds its value on first use and keeps it (idle cost stays near zero until needed)."""
+
+    def __init__(self, factory: Callable[[], T]) -> None:
+        self._factory = factory
+        self._value: T | None = None
+
+    def __call__(self) -> T:
+        if self._value is None:
+            self._value = self._factory()
+        return self._value
+
+
+def make_indexing_control(settings: Settings, state: StateDb) -> IndexingControl:
+    """Manual start/pause of indexing; the watcher module is imported only when it is needed."""
+    from vector_embed.watcher import SubprocessLauncher  # pulls in watchdog
+
+    return IndexingControl(
+        state,
+        settings.storage.data_dir,
+        SubprocessLauncher(runtime.log_dir(settings)),
+        on_ac_power,
+        settings.power.require_ac_power,
+    )
+
+
+def add_indexing_actions(
+    menu: QMenu, get_control: Callable[[], IndexingControl], notify: Callable[[str], None]
+) -> None:
+    """A status line and one Start/Pause entry in the tray menu, refreshed when it opens."""
+    status_line = menu.addAction("Indexing")
+    status_line.setEnabled(False)
+    toggle = menu.addAction("Start indexing")
+
+    def refresh() -> None:
+        status = get_control().status()
+        status_line.setText(status.summary)
+        toggle.setText(
+            "Pause indexing" if status.running and not status.paused else "Start indexing"
+        )
+
+    def toggled() -> None:
+        control = get_control()
+        status = control.status()
+        notify(control.pause() if status.running and not status.paused else control.start().message)
+
+    menu.aboutToShow.connect(refresh)
+    toggle.triggered.connect(toggled)
+
+
 def build_settings_window(
     settings: Settings,
     state: StateDb,
@@ -176,10 +229,13 @@ def build_settings_window(
     updater: Updater | None = None,
     *,
     on_changed: Callable[[], None] = lambda: None,
+    indexing: IndexingControl | None = None,
 ) -> SettingsWindow:
     path = settings.settings_path()
     window = SettingsWindow(
-        make_settings_controller(path, state, updater, on_changed), ModelsController(context, path)
+        make_settings_controller(path, state, updater, on_changed),
+        ModelsController(context, path),
+        indexing=indexing,
     )
     window.hotkey_changed.connect(on_hotkey)
     return window
@@ -331,6 +387,14 @@ def register_hotkey(hotkey: HotkeyFilter, spec: str) -> bool:
         return False
 
 
+def announce(tray: QSystemTrayIcon, text: str) -> None:
+    tray.showMessage("Vector Embed", text, QSystemTrayIcon.MessageIcon.Information, 5000)
+
+
+def hotkey_tooltip(spec: str, registered: bool) -> str:
+    return f"Vector Embed ({spec})" + ("" if registered else " - hotkey unavailable")
+
+
 def leave_without_terms(hotkey: HotkeyFilter, tray: QSystemTrayIcon) -> None:
     logger.info("the terms were not accepted; exiting")
     hotkey.unregister()
@@ -365,6 +429,7 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
         tray = QSystemTrayIcon(tray_icon(), app)
         menu = QMenu()
         settings_window: list[SettingsWindow] = []  # built on first use: idle cost stays near zero
+        indexing_control = Lazy(lambda: make_indexing_control(settings, state))
 
         def open_settings() -> None:
             if not settings_window:
@@ -376,12 +441,14 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
                         hotkey_applier(hotkey, tray),
                         updater,
                         on_changed=settings_changed,
+                        indexing=indexing_control(),
                     )
                 )
             settings_window[0].open()
 
         menu.addAction("Search", window.summon)
         menu.addAction("Settings…", open_settings)
+        add_indexing_actions(menu, indexing_control, lambda text: announce(tray, text))
         menu.addAction(
             "Run setup again…",
             lambda: run_setup_wizard(settings, state, updater=updater, on_changed=settings_changed),
@@ -391,8 +458,7 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
         menu.addAction("Quit", app.quit)
         app.aboutToQuit.connect(window.shutdown)  # every way of quitting unloads the models
         tray.setContextMenu(menu)
-        suffix = "" if registered else " - hotkey unavailable"
-        tray.setToolTip(f"Vector Embed ({settings.search.hotkey}){suffix}")
+        tray.setToolTip(hotkey_tooltip(settings.search.hotkey, registered))
         tray.activated.connect(
             lambda reason: (
                 window.summon() if reason == QSystemTrayIcon.ActivationReason.Trigger else None
