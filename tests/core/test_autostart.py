@@ -1,4 +1,5 @@
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -123,3 +124,33 @@ def test_cli_autostart_failure_is_reported(
     monkeypatch.setattr(cli.Autostart, "apply", fail)
     assert cli.main(["autostart", "on"]) == 1
     assert "could not register" in capsys.readouterr().err
+
+
+def test_tasks_are_registered_for_domain_and_user_not_the_bare_name() -> None:
+    script = register_script(TASKS, fake_command)
+    assert "$env:USERNAME" not in script  # a bare name does not resolve on a domain PC
+    assert "WindowsIdentity]::GetCurrent().Name" in script  # DOMAIN\user or MACHINE\user
+    assert "-AtLogOn -User $me" in script
+    assert "-UserId $me" in script
+    identity_line = script.splitlines().index(
+        "$me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name"
+    )
+    assert identity_line < script.index("$trigger") and identity_line < len(script.splitlines())
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="needs Windows PowerShell")
+def test_the_identity_expression_really_yields_domain_and_user() -> None:
+    result = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[System.Security.Principal.WindowsIdentity]::GetCurrent().Name",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    assert "\\" in result.stdout.strip()  # DOMAIN\user: both parts are there

@@ -51,8 +51,11 @@ def register_script(tasks: tuple[AutostartTask, ...], command: CommandBuilder) -
         "-DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) "
         f"-RestartCount {_RESTART_COUNT} "
         f"-RestartInterval (New-TimeSpan -Minutes {_RESTART_MINUTES}) -MultipleInstances IgnoreNew",
-        "$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME",
-        "$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME "
+        # DOMAIN\user (or MACHINE\user): the bare user name fails to resolve on a domain or
+        # Microsoft-account PC ("No mapping between account names and security IDs").
+        "$me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name",
+        "$trigger = New-ScheduledTaskTrigger -AtLogOn -User $me",
+        "$principal = New-ScheduledTaskPrincipal -UserId $me "
         "-LogonType Interactive -RunLevel Limited",
     ]
     for task in tasks:
