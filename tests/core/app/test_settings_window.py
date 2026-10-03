@@ -3,7 +3,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLineEdit
 from tests.core.app.test_models_panel import GPU, wait_for
 from tests.core.conftest import Chat, Env
 
@@ -156,7 +156,52 @@ def window(
 
 def test_window_has_the_expected_tabs(window: SettingsWindow) -> None:
     titles = [window.tabs.tabText(i) for i in range(window.tabs.count())]
-    assert titles == ["General", "Models & Health", "Cloud & Privacy", "Updates", "About"]
+    assert titles == [
+        "General",
+        "Models & Health",
+        "Cloud & Privacy",
+        "Updates",
+        "Advanced",
+        "About",
+    ]
+
+
+def test_advanced_tab_saves_each_kind_of_option(
+    window: SettingsWindow, controller: SettingsController
+) -> None:
+    tab = window.advanced
+    results = tab.editors[("search", "results")]
+    assert isinstance(results, QLineEdit)
+    assert results.text() == str(controller.settings().search.results)
+    results.setText("12")
+    results.editingFinished.emit()
+    assert controller.settings().search.results == 12
+    assert "Results saved" in window.status.text()
+
+    captions = tab.editors[("images", "enable_captions")]
+    assert isinstance(captions, QCheckBox)
+    captions.click()
+    assert controller.settings().images.enable_captions is captions.isChecked()
+
+    level = tab.editors[("log_level",)]
+    assert isinstance(level, QComboBox)
+    level.setCurrentText("DEBUG")
+    level.activated.emit(level.currentIndex())
+    assert controller.settings().log_level == "DEBUG"
+
+
+def test_advanced_tab_rejects_an_invalid_value_and_shows_the_real_one(
+    window: SettingsWindow, controller: SettingsController
+) -> None:
+    results = window.advanced.editors[("search", "results")]
+    assert isinstance(results, QLineEdit)
+    before = controller.settings().search.results
+    for bad in ("many", "0"):  # not a number; a number the schema forbids (must be > 0)
+        results.setText(bad)
+        results.editingFinished.emit()
+        assert controller.settings().search.results == before
+        assert results.text() == str(before)
+    assert window.status.text()
 
 
 def test_general_tab_applies_a_hotkey(

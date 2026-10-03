@@ -7,9 +7,11 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -17,6 +19,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -25,11 +28,16 @@ from vector_embed.app.models_panel import ModelsPanel
 from vector_embed.app.settings_controller import SettingsController, app_version
 from vector_embed.core.models.benchmark import BenchKind, Verdict, judge
 from vector_embed.core.settings import SettingsError
+from vector_embed.core.settings_schema import OptionSpec, editable_options
 from vector_embed.core.updates import UpdateKind, UpdateOutcome
 
 ADD_FOLDER_TITLE = "Add a folder to index"
 KEY_PROMPT_TITLE = "API key"
 DEFAULT_BUDGET_USD = 10.0
+ADVANCED_HINT = (
+    "Every other option. Changes are checked and saved at once; indexing options apply from "
+    "the next indexing run."
+)
 
 
 def pick_folder() -> str | None:
@@ -360,3 +368,84 @@ class AboutTab(SettingsTab):
 
     def _open(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._controller.settings_path.parent)))
+
+
+class AdvancedTab(SettingsTab):
+    """Every other option, generated from the settings schema: a new option shows up here
+    without UI code. Each change is validated against the whole schema and saved at once."""
+
+    def __init__(self, controller: SettingsController) -> None:
+        super().__init__(controller)
+        self.options = editable_options()
+        self.editors: dict[tuple[str, ...], QWidget] = {}
+        body = QWidget()
+        column = QVBoxLayout(body)
+        hint = QLabel(ADVANCED_HINT)
+        hint.setWordWrap(True)
+        column.addWidget(hint)
+        sections: dict[str, QFormLayout] = {}
+        for option in self.options:
+            form = sections.get(option.section)
+            if form is None:
+                group = QGroupBox(option.section.capitalize())
+                form = sections[option.section] = QFormLayout(group)
+                column.addWidget(group)
+            editor = self._editor(option)
+            self.editors[option.path] = editor
+            form.addRow(option.label, editor)
+        column.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(body)
+        layout = QVBoxLayout(self)
+        layout.addWidget(scroll)
+        self.refresh()
+
+    def _editor(self, option: OptionSpec) -> QWidget:
+        if option.kind == "bool":
+            box = QCheckBox()
+            box.clicked.connect(lambda checked, o=option: self._save(o, lambda: checked))
+            return box
+        if option.kind == "choice":
+            combo = QComboBox()
+            combo.addItems([*([""] if option.optional else []), *option.choices])
+            combo.activated.connect(
+                lambda _i, o=option, c=combo: self._save(o, lambda: c.currentText() or None)
+            )
+            return combo
+        line = QLineEdit()
+        line.editingFinished.connect(lambda o=option, e=line: self._edited(o, e))
+        return line
+
+    def _edited(self, option: OptionSpec, line: QLineEdit) -> None:
+        if line.text().strip() != _shown(option.value_of(self._controller.settings())):
+            self._save(option, lambda: option.parse(line.text()))
+
+    def _save(self, option: OptionSpec, value: Callable[[], object]) -> None:
+        saved = self._guard(
+            lambda: self._controller.set_option(option, value()), f"{option.label} saved"
+        )
+        if not saved:
+            self.refresh()  # show the value that is really in effect
+
+    def refresh(self) -> None:
+        try:
+            settings = self._controller.settings()
+        except SettingsError as exc:
+            self.message.emit(str(exc))
+            return
+        for option in self.options:
+            editor = self.editors[option.path]
+            value = option.value_of(settings)
+            editor.blockSignals(True)
+            if isinstance(editor, QCheckBox):
+                editor.setChecked(bool(value))
+            elif isinstance(editor, QComboBox):
+                editor.setCurrentText(_shown(value))
+            elif isinstance(editor, QLineEdit):
+                editor.setText(_shown(value))
+            editor.blockSignals(False)
+
+
+def _shown(value: object) -> str:
+    return "" if value is None else str(value)

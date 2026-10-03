@@ -15,6 +15,7 @@ from vector_embed.core.models.benchmark import BenchResult, load_results
 from vector_embed.core.secrets import KeyStore
 from vector_embed.core.settings import Settings, SettingsError, load_settings
 from vector_embed.core.settings_io import set_setting
+from vector_embed.core.settings_schema import OptionSpec
 from vector_embed.core.store.sqlite import StateDb
 from vector_embed.core.updates import UpdateKind, UpdateOutcome, Updater
 
@@ -121,6 +122,13 @@ class SettingsController:
         if usd is not None and usd <= 0:
             raise SettingsError("the monthly budget must be above zero (or off)")
         set_setting(self._path, ["cloud", "monthly_budget_usd"], usd)
+        self._on_changed()
+
+    # ------------------------------------------------------------------ advanced
+    def set_option(self, option: OptionSpec, value: object) -> None:
+        """Save one option of the generated Advanced page (validated against the full schema;
+        ``None`` clears it back to the default)."""
+        set_setting(self._path, list(option.path), value)
         self._on_changed()
 
     # ------------------------------------------------------------------ updates

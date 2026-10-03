@@ -8,6 +8,7 @@ from vector_embed.app.models_panel import ModelsPanel
 from vector_embed.app.settings_controller import SettingsController
 from vector_embed.app.settings_tabs import (
     AboutTab,
+    AdvancedTab,
     CloudTab,
     GeneralTab,
     ModelsTab,
@@ -38,6 +39,7 @@ class SettingsWindow(QWidget):
         self.models = ModelsTab(controller, ModelsPanel(models))
         self.cloud = cloud or CloudTab(controller)
         self.updates = UpdatesTab(controller)
+        self.advanced = AdvancedTab(controller)
         self.about = about or AboutTab(controller)
         self.tabs = QTabWidget()
         self._pages: list[SettingsTab] = []
@@ -46,6 +48,7 @@ class SettingsWindow(QWidget):
             ("Models & Health", self.models),
             ("Cloud & Privacy", self.cloud),
             ("Updates", self.updates),
+            ("Advanced", self.advanced),
             ("About", self.about),
         ):
             self.tabs.addTab(page, title)
