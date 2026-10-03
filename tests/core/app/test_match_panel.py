@@ -453,3 +453,26 @@ class TestCloudConsent:
         panel.buttons["checklist"].click()
         wait_for(qapp, lambda: panel.pages.currentIndex() == PAGE_CHECKLIST)
         assert shown == []
+
+
+class TestSessionChoices:
+    def test_a_row_unticked_in_the_table_stays_unticked_for_the_next_job(
+        self, qapp: QApplication, panel: MatchPanel, controller: MatchController
+    ) -> None:
+        recall(qapp, panel)
+        names = [panel.candidates.item(r, 1).text() for r in range(panel.candidates.rowCount())]
+        row = names.index("Resume_a.txt")
+        panel.candidates.item(row, 0).setCheckState(Qt.CheckState.Unchecked)
+        panel.begin(JD + " Another role.")
+        wait_for(qapp, lambda: controller.run is not None and "Another" in controller.run.jd_text)
+        wait_for(qapp, lambda: not panel._busy)
+        again = {c.name: c.selected for c in controller.run.candidates}  # type: ignore[union-attr]
+        assert again["Resume_a.txt"] is False
+
+    def test_the_personal_details_box_reaches_the_privacy_filter(
+        self, qapp: QApplication, panel: MatchPanel, cloud: CloudRig
+    ) -> None:
+        recall(qapp, panel)
+        assert panel.redact.isChecked() is cloud.privacy.redacts_personal
+        panel.redact.click()
+        assert cloud.privacy.redacts_personal is panel.redact.isChecked()

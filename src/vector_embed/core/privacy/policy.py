@@ -82,6 +82,18 @@ class PrivacyFilter:
         # turn's history, and must still be masked there.
         self._learned_names: dict[str, str] = {}
         self._names_lock = threading.Lock()
+        self._redact_override: bool | None = None  # the user's choice for this app session
+
+    @property
+    def redacts_personal(self) -> bool:
+        """Whether names, emails, phones and addresses are replaced before a cloud request."""
+        override = self._redact_override
+        return self._settings.redact_personal if override is None else override
+
+    def set_redact_personal(self, enabled: bool) -> None:
+        """Turn "Remove personal details" on or off until the app restarts or settings change
+        (the Match panel's checkbox); the saved setting is left as it is."""
+        self._redact_override = enabled
 
     # ------------------------------------------------------------------ never-send rules
     def is_never_send(self, path: str | Path, doc_type: str | None = None) -> bool:
@@ -124,7 +136,7 @@ class PrivacyFilter:
 
     def _new_redactor(self, messages: list[Message]) -> PersonalRedactor | None:
         """A redactor that already knows every name in this request and in earlier ones."""
-        if not self._settings.redact_personal:
+        if not self.redacts_personal:
             return None
         with self._names_lock:
             earlier = list(self._learned_names.values())

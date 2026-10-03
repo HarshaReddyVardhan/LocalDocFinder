@@ -194,3 +194,17 @@ class TestNamesAcrossTurns:
         policy.forget_names()
         fresh = policy.prepare([Message("user", "Is Priya Nair a good fit?")])
         assert "Priya Nair" in fresh.messages[0].content  # nothing remembered from before
+
+
+def test_the_personal_details_choice_can_be_changed_for_the_session() -> None:
+    from vector_embed.core.privacy.policy import PrivacyFilter
+    from vector_embed.core.scope import ScopePolicy
+    from vector_embed.core.settings import PrivacySettings, ScopeSettings
+
+    privacy = PrivacyFilter(PrivacySettings(), ScopePolicy(ScopeSettings()))
+    message = [Message("user", "Jane Doe\njane@example.com")]
+    assert not privacy.redacts_personal
+    assert "jane@example.com" in privacy.prepare(message).messages[0].content
+    privacy.set_redact_personal(True)
+    assert privacy.redacts_personal
+    assert "jane@example.com" not in privacy.prepare(message).messages[0].content

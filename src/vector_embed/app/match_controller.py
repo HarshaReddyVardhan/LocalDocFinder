@@ -1,5 +1,6 @@
 """Qt-free logic behind the Match panel: the run state, live token footer, and step helpers."""
 
+import os
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -27,6 +28,10 @@ _TOKENS_PER_REQUIREMENT = 15
 _OUTPUT_TOKENS_PER_DOCUMENT = 400
 
 
+def _key(path: str) -> str:
+    return os.path.normcase(path)  # Windows paths ignore case
+
+
 def format_tokens(tokens: int) -> str:
     return f"{tokens / 1000:.1f}k" if tokens >= 1000 else str(tokens)
 
@@ -43,6 +48,8 @@ class MatchController:
         self._destination = destination or self._default_destination
         self._pipeline: MatchPipeline | None = None
         self._destination_cache: tuple[float, str] | None = None
+        self._choices: dict[str, bool] = {}  # ticks the user set, by path, kept between runs
+        self._redact: bool | None = None  # "Remove personal details" chosen in the panel
         self.run: MatchRun | None = None
 
     def reset_context(self) -> None:
@@ -105,8 +112,46 @@ class MatchController:
     ) -> MatchRun:
         self.revoke_cloud_consent()  # consent belongs to one run, never the next
         self._destination_cache = None
-        self.run = self.pipeline.start(jd_text, doc_type, all_versions)
-        return self.run
+        self._apply_redaction()
+        run = self.pipeline.start(jd_text, doc_type, all_versions)
+        for candidate in run.candidates:  # the user's earlier ticks win over the default
+            choice = self._choices.get(_key(candidate.path))
+            if choice is not None:
+                candidate.selected = choice
+        self.run = run
+        return run
+
+    # ------------------------------------------------------------------ selection
+    def choose(self, candidate: MatchCandidate, selected_: bool) -> None:
+        """Tick or untick a document; remembered for later runs in this session."""
+        candidate.selected = selected_
+        self._choices[_key(candidate.path)] = selected_
+
+    def choose_all(self, selected_: bool) -> None:
+        for candidate in self._require().candidates:
+            self.choose(candidate, selected_)
+
+    # ------------------------------------------------------------------ personal details
+    @property
+    def redacts_personal(self) -> bool:
+        """The checkbox state: the panel's choice, else the saved setting (once known)."""
+        if self._redact is not None:
+            return self._redact
+        if self._pipeline is None:
+            return False  # not loaded yet; the panel syncs after the first recall
+        cloud = self._cloud()
+        return cloud.privacy.redacts_personal if cloud is not None else False
+
+    def set_redact_personal(self, enabled: bool) -> None:
+        """Remove names, emails, phones and addresses from what Match sends to the cloud."""
+        self._redact = enabled
+        if self._pipeline is not None:  # else applied when the next run starts
+            self._apply_redaction()
+
+    def _apply_redaction(self) -> None:
+        cloud = self._cloud()
+        if self._redact is not None and cloud is not None:
+            cloud.privacy.set_redact_personal(self._redact)
 
     def _ensure_session(self) -> None:
         """One chat session for the whole match, so the model loads once instead of per call.
@@ -147,7 +192,10 @@ class MatchController:
         return candidate
 
     def top(self, n: int) -> None:
-        select_top(self._require().candidates, n)
+        candidates = self._require().candidates
+        select_top(candidates, n)
+        for candidate in candidates:
+            self._choices[_key(candidate.path)] = candidate.selected
 
     def chat_state(self, top: int | None = None) -> ChatState:
         """Pinned resumes and scratch text (JD + step-3 results) for the follow-up chat.

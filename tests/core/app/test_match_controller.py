@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
-from tests.core.conftest import Chat, Env
+from tests.core.conftest import Chat, CloudRig, Env
 from tests.core.match.test_pipeline import JD, faithful_model, resume, write
 
 from vector_embed.app.match_controller import LOCAL, MatchController, format_tokens
@@ -177,3 +177,31 @@ def test_the_route_is_worked_out_once_for_all_table_rows(
     controller.reset_context()  # a setting changed: look again
     controller.candidate_row(run.candidates[0])
     assert len(calls) == 2
+
+
+def test_the_users_ticks_are_kept_for_later_runs(controller: MatchController) -> None:
+    run = controller.start(JD)
+    by_name = {c.name: c for c in run.candidates}
+    defaults = {name: c.selected for name, c in by_name.items()}
+    flipped = "Resume_b.txt"
+    controller.choose(by_name[flipped], not defaults[flipped])
+    again = {c.name: c.selected for c in controller.start(JD + " Also Go.").candidates}
+    assert again[flipped] is not defaults[flipped]  # the user's choice survived a new JD
+    assert again["Resume_a.txt"] is defaults["Resume_a.txt"]  # untouched: the default applies
+
+    controller.choose_all(False)
+    assert not any(c.selected for c in controller.start(JD).candidates)
+    controller.top(1)
+    assert sum(c.selected for c in controller.start(JD).candidates) == 1
+
+
+def test_the_personal_details_box_overrides_the_setting_for_the_session(
+    controller: MatchController, cloud: CloudRig
+) -> None:
+    assert not controller.redacts_personal  # nothing loaded yet: shown off until the first run
+    controller.set_redact_personal(True)  # before any run: applied when the run starts
+    assert not cloud.privacy.redacts_personal
+    controller.start(JD)
+    assert cloud.privacy.redacts_personal and controller.redacts_personal
+    controller.set_redact_personal(False)  # with a run: applied at once
+    assert not cloud.privacy.redacts_personal

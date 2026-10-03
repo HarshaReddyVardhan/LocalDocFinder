@@ -10,6 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -107,12 +108,18 @@ class MatchPanel(QWidget):
                 "chat": "Chat ▶",
             }.items()
         }
+        self.redact = QCheckBox("Remove personal details")
+        self.redact.setToolTip(
+            "Replace names, emails, phone numbers and addresses before anything is sent to a "
+            "cloud model (IDs are always masked). Applies until the app restarts."
+        )
         bar = QHBoxLayout()
         bar.addWidget(QLabel("Find best match in:"))
         bar.addWidget(self.doc_type)
         for button in self.buttons.values():
             bar.addWidget(button)
         bar.addStretch(1)
+        bar.addWidget(self.redact)
 
         self.candidates = QTableWidget(0, len(CANDIDATE_HEADERS))
         self.candidates.setHorizontalHeaderLabels(CANDIDATE_HEADERS)
@@ -137,6 +144,7 @@ class MatchPanel(QWidget):
 
         self.candidates.itemChanged.connect(self._candidate_edited)
         self.checklist.itemChanged.connect(self._checklist_edited)
+        self.redact.clicked.connect(self._controller.set_redact_personal)
         b = self.buttons
         b["all"].clicked.connect(lambda: self._tick_all(True))
         b["none"].clicked.connect(lambda: self._tick_all(False))
@@ -211,6 +219,7 @@ class MatchPanel(QWidget):
                 cell.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
                 self.candidates.setItem(row, col, cell)
         self._updating = False
+        self.redact.setChecked(self._controller.redacts_personal)  # the setting is known now
         self._show_page(PAGE_CANDIDATES)
         self._refresh_footer()
 
@@ -222,15 +231,15 @@ class MatchPanel(QWidget):
         run = self._controller.run
         if self._updating or run is None or item.column() != 0:
             return
-        run.candidates[item.row()].selected = item.checkState() == Qt.CheckState.Checked
+        ticked = item.checkState() == Qt.CheckState.Checked
+        self._controller.choose(run.candidates[item.row()], ticked)
         self._refresh_footer()
 
     def _tick_all(self, state: bool) -> None:
         run = self._controller.run
         if run is None:
             return
-        for candidate in run.candidates:
-            candidate.selected = state
+        self._controller.choose_all(state)
         self._fill_candidates(run)
 
     def _tick_top3(self) -> None:
