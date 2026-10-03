@@ -562,7 +562,8 @@ class TestLifecycle:
         thread.start()
         path = write(env, "live.py", "value = 1\n")
         deadline = time.time() + 10
-        while time.time() < deadline and not launcher.started:
+        # The startup reconcile can launch a worker before the file event is queued: wait for both.
+        while time.time() < deadline and not (launcher.started and path in queued(env)):
             time.sleep(0.05)
         w.stop()
         thread.join(timeout=10)
