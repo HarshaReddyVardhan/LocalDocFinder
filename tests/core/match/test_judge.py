@@ -9,6 +9,7 @@ from vector_embed.core.match.judge import MatchError
 from vector_embed.core.match.scoring import Requirement, RowResult
 from vector_embed.core.providers.base import ProviderUnavailableError
 from vector_embed.core.settings import ChatSettings, MatchSettings
+from vector_embed.core.tokens import estimate_tokens
 
 JD = "Senior backend engineer. Must know Python and PostgreSQL. Kubernetes is a plus."
 RESUME = (
@@ -74,6 +75,25 @@ class TestExtractRequirements:
         chat.client.chat_json_reply = '{"wrong": 1}'
         with pytest.raises(MatchError, match="could not extract"):
             judge.extract_requirements(chat.gateway, JD, MATCH)
+
+    def test_a_job_description_longer_than_the_window_is_cut_to_fit(
+        self, chat: Chat, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        chat.client.chat_json_reply = json.dumps(CHECKLIST)
+        small = ChatSettings(num_ctx=2048)
+        huge = "Must know Python. " + "Company history and benefits. " * 2000
+        with caplog.at_level("WARNING", logger="vector_embed.core.match.judge"):
+            judge.extract_requirements(chat.gateway, huge, MATCH, chat=small)
+        messages = chat.chat_calls()[0]["messages"]
+        sent = sum(estimate_tokens(m["content"]) for m in messages)  # type: ignore[union-attr]
+        assert sent + MATCH.reserved_output_tokens <= small.num_ctx
+        assert user_prompt(chat.chat_calls()[0]).startswith("Must know Python.")
+        assert "cut" in caplog.text
+
+    def test_the_preview_shows_the_cut_job_description(self) -> None:
+        huge = "x " * 50_000
+        sent = judge.requirements_messages(huge, MATCH, ChatSettings(num_ctx=2048))[1].content
+        assert len(sent) < len(huge)
 
     def test_unreachable_server_is_not_retried(
         self, chat: Chat, monkeypatch: pytest.MonkeyPatch
@@ -196,12 +216,24 @@ class TestJudge:
         ).rows[0]
         assert row.status == "missing"
 
+    @pytest.mark.parametrize("bad", ['{"results": "oops"}', "not json at all"])
+    def test_one_malformed_judgement_is_asked_again(self, chat: Chat, bad: str) -> None:
+        good = self.reply([{"id": 1, "status": "met", "evidence_quote": "Python"}])
+        replies = iter([bad, good])
+        chat.client.chat_json_fn = lambda _kw: next(replies)
+        result = judge.judge_document(
+            chat.gateway, reqs(), JD, name="r", document_text=RESUME, match=MATCH, chat=CHAT
+        )
+        assert result.rows[0].status == "met"
+        assert len(chat.chat_calls()) == 2
+
     def test_malformed_judgements_are_an_error(self, chat: Chat) -> None:
         chat.client.chat_json_reply = '{"results": "oops"}'
         with pytest.raises(MatchError, match="unusable judgement"):
             judge.judge_document(
                 chat.gateway, reqs(), JD, name="r", document_text=RESUME, match=MATCH, chat=CHAT
             )
+        assert len(chat.chat_calls()) == 2  # asked twice, then gave up
 
     def test_a_malformed_reply_never_quotes_its_content_in_the_error(
         self, chat: Chat, caplog: pytest.LogCaptureFixture

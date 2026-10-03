@@ -6,10 +6,11 @@ import pytest
 from tests.core.conftest import Chat, Env
 
 from vector_embed.core.documents import DocumentLoader
+from vector_embed.core.llm import ChatBlockedError
 from vector_embed.core.match.judge import MatchError
 from vector_embed.core.match.pipeline import MatchPipeline
 from vector_embed.core.match.recall import select_all, select_none
-from vector_embed.core.providers.base import ProviderUnavailableError
+from vector_embed.core.providers.base import Message, ProviderUnavailableError
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.skills.chat import ChatInput, ChatSkill
 
@@ -255,6 +256,26 @@ class TestFailures:
         assert [s.candidate.name for s in failed] == ["Resume_java.txt"]
         assert failed[0].error
         assert run.ranked()[-1] is failed[0]  # errors sort last
+
+    def test_a_blocked_document_does_not_stop_the_others(
+        self, pipeline: MatchPipeline, library: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run = pipeline.start(JD)
+        select_all(run.candidates)
+        pipeline.build_checklist(run)
+        real = pipeline._gateway.chat_json
+
+        def blocking(messages: list[Message], *args: Any, **kwargs: Any) -> Any:
+            if "Resume (Resume_java.txt)" in messages[-1].content:
+                raise ChatBlockedError("the monthly cloud budget ($5.00) would be exceeded")
+            return real(messages, *args, **kwargs)
+
+        monkeypatch.setattr(pipeline._gateway, "chat_json", blocking)
+        pipeline.score(run)
+        failed = [s for s in run.scores if s.breakdown is None]
+        assert [s.candidate.name for s in failed] == ["Resume_java.txt"]
+        assert "budget" in (failed[0].error or "")
+        assert len(run.scores) > 1
 
     def test_an_unreachable_server_aborts_the_run(
         self, pipeline: MatchPipeline, library: dict[str, str], monkeypatch: pytest.MonkeyPatch

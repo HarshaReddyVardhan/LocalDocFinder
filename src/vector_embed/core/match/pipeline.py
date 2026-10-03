@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 from vector_embed.core.documents import DocumentError, DocumentLoader
-from vector_embed.core.llm import LlmGateway
+from vector_embed.core.llm import ChatBlockedError, LlmGateway
 from vector_embed.core.match import judge
 from vector_embed.core.match.judge import Judgement, MatchError
 from vector_embed.core.match.recall import MatchCandidate, Recall, selected
@@ -98,8 +98,9 @@ class MatchPipeline:
     def build_checklist(self, run: MatchRun, session: bool = False) -> list[Requirement]:
         """Extract the requirement checklist once; later calls reuse (and keep user edits)."""
         if not run.requirements:
+            settings = self._ctx.settings
             run.requirements = judge.extract_requirements(
-                self._gateway, run.jd_text, self._ctx.settings.match, session
+                self._gateway, run.jd_text, settings.match, session, chat=settings.chat
             )
         return run.requirements
 
@@ -108,7 +109,8 @@ class MatchPipeline:
         """The checklist request, if building it would go to the cloud (else nothing)."""
         if run.requirements or not self._gateway.will_use_cloud(ROLE_MATCH_SCORER):
             return []
-        return judge.requirements_messages(run.jd_text, self._ctx.settings.match)
+        settings = self._ctx.settings
+        return judge.requirements_messages(run.jd_text, settings.match, settings.chat)
 
     def cloud_messages(self, run: MatchRun) -> list[Message]:
         """Every judge prompt that scoring would send to the cloud (none if it stays local).
@@ -206,7 +208,8 @@ class MatchPipeline:
             )
         except ProviderUnavailableError:
             raise
-        except (MatchError, ProviderError, DocumentError) as exc:
+        except (MatchError, ProviderError, DocumentError, ChatBlockedError) as exc:
+            # one blocked document (never-send, over budget) must not sink the rest of the run
             logger.warning("match: scoring %s failed: %s", candidate.name, exc)
             return DocumentScore(candidate, error=str(exc))
         breakdown = compute_score(requirements, judgement.rows, settings.match)

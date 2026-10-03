@@ -17,13 +17,20 @@ from pydantic import BaseModel, ValidationError
 from vector_embed.core.llm import LlmGateway
 from vector_embed.core.match.scoring import Requirement, RowResult, verify_rows
 from vector_embed.core.models.catalog import ROLE_MATCH_SCORER
-from vector_embed.core.providers.base import Message, ProviderError, ProviderUnavailableError
+from vector_embed.core.providers.base import (
+    InvalidJsonError,
+    Message,
+    ProviderError,
+    ProviderUnavailableError,
+)
 from vector_embed.core.settings import ChatSettings, MatchSettings
 from vector_embed.core.tokens import estimate_tokens, fit_to_budget
 
 logger = logging.getLogger(__name__)
 
 _JD_SUMMARY_TOKENS = 400
+_MIN_JD_TOKENS = 200  # never cut a job description to less than this, however small the window
+_JUDGE_ATTEMPTS = 2  # a malformed judgement is usually fine on a second try
 _WORD = re.compile(r"[a-z0-9+#.]{2,}")
 _SECTION_SPLIT = re.compile(r"\n\s*\n")
 
@@ -137,19 +144,32 @@ def _json(
     ).data
 
 
-def requirements_messages(jd_text: str, settings: MatchSettings) -> list[Message]:
-    """The checklist-extraction prompt (also what the "what will be sent" preview shows)."""
-    return [
-        Message("system", EXTRACT_SYSTEM.format(limit=settings.max_requirements)),
-        Message("user", jd_text),
-    ]
+def requirements_messages(
+    jd_text: str, settings: MatchSettings, chat: ChatSettings | None = None
+) -> list[Message]:
+    """The checklist-extraction prompt (also what the "what will be sent" preview shows).
+
+    A job description longer than the context window is cut to fit: Ollama would otherwise
+    silently drop its *start*, which is where the role and its must-haves usually are.
+    """
+    system = EXTRACT_SYSTEM.format(limit=settings.max_requirements)
+    num_ctx = (chat or ChatSettings()).num_ctx
+    room = num_ctx - settings.reserved_output_tokens - estimate_tokens(system)
+    body, cut = fit_to_budget(jd_text, max(_MIN_JD_TOKENS, room))
+    if cut:
+        logger.warning("match: the job description was cut to fit the context window")
+    return [Message("system", system), Message("user", body)]
 
 
 def extract_requirements(
-    gateway: LlmGateway, jd_text: str, settings: MatchSettings, session: bool = False
+    gateway: LlmGateway,
+    jd_text: str,
+    settings: MatchSettings,
+    session: bool = False,
+    chat: ChatSettings | None = None,
 ) -> list[Requirement]:
     """The checklist, generated once and reused for every document."""
-    messages = requirements_messages(jd_text, settings)
+    messages = requirements_messages(jd_text, settings, chat)
     last: Exception | None = None
     for attempt in range(2):
         try:
@@ -241,6 +261,22 @@ def prepare_judge_messages(
     return build_judge_messages(requirements, jd_text, name, body), reduced
 
 
+def _judge_payload(
+    gateway: LlmGateway, messages: list[Message], name: str, session: bool, local_only: bool
+) -> _JudgePayload:
+    """The parsed judgement, asking again once when the reply is not the JSON asked for."""
+    last: Exception = MatchError("not judged")
+    for attempt in range(1, _JUDGE_ATTEMPTS + 1):
+        try:
+            return _JudgePayload.model_validate(
+                _json(gateway, messages, JUDGE_SCHEMA, session, local_only)
+            )
+        except (ValidationError, InvalidJsonError) as exc:
+            last = exc
+            logger.info("match: judgement %d of %s unusable: %s", attempt, name, _describe(exc))
+    raise MatchError(f"unusable judgement for {name}: {_describe(last)}") from last
+
+
 def judge_document(
     gateway: LlmGateway,
     requirements: list[Requirement],
@@ -261,12 +297,7 @@ def judge_document(
     logger.info(
         "match: judging", extra={"doc": name, "prompt_tokens": prompt_tokens, "reduced": reduced}
     )
-    try:
-        payload = _JudgePayload.model_validate(
-            _json(gateway, messages, JUDGE_SCHEMA, session, local_only)
-        )
-    except ValidationError as exc:
-        raise MatchError(f"unusable judgement for {name}: {_describe(exc)}") from exc
+    payload = _judge_payload(gateway, messages, name, session, local_only)
     allowed = {"met", "partial", "missing"}
     rows = [
         RowResult(r.id, r.status if r.status in allowed else "missing", r.evidence_quote.strip())  # type: ignore[arg-type]
