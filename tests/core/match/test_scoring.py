@@ -1,9 +1,12 @@
+import time
+
 import pytest
 
 from vector_embed.core.match.scoring import (
     Requirement,
     RowResult,
     compute_score,
+    key_terms,
     normalise,
     quote_in_text,
     verify_rows,
@@ -42,7 +45,44 @@ class TestQuotes:
 
     def test_empty_or_tiny_quotes_never_verify(self) -> None:
         assert not quote_in_text("", RESUME)
-        assert not quote_in_text("Python", RESUME)
+        assert not quote_in_text("D", RESUME)
+        assert not quote_in_text("--", RESUME)
+
+    def test_short_quotes_verify_as_exact_whole_words(self) -> None:
+        text = RESUME + "Languages: Go, C++, C#\n"
+        assert quote_in_text("Python", text)
+        assert quote_in_text("AWS", text)
+        assert quote_in_text("Go", text)
+        assert quote_in_text("c++", text)
+        assert quote_in_text("C#", text)
+        assert not quote_in_text("Pyth", text)  # part of a word
+        assert not quote_in_text("Rust", text)
+        assert not quote_in_text("C", text)  # "C++" is not "C"
+
+    def test_a_swapped_technology_is_not_close_enough(self) -> None:
+        swapped = "Built payment systems in Python and MySQL serving 2M users"
+        assert quote_in_text(swapped, RESUME)  # fuzzily close without the requirement's terms
+        assert not quote_in_text(swapped, RESUME, terms=key_terms("MySQL database experience"))
+
+    def test_terms_the_quote_does_not_use_are_not_required(self) -> None:
+        quote = "Built payments systems in Python and Postgres SQL serving 2M user"
+        assert quote_in_text(quote, RESUME, terms=key_terms("Relational databases, e.g. Oracle"))
+        assert quote_in_text(quote, RESUME, terms=key_terms("3+ years of Python"))
+
+    def test_key_terms_drop_filler_words(self) -> None:
+        assert key_terms("5+ years of experience with Kubernetes and AWS") == {
+            "5",
+            "kubernetes",
+            "aws",
+        }
+
+    def test_long_documents_are_checked_quickly(self) -> None:
+        filler = " ".join(f"word{i} lorem ipsum dolor" for i in range(20_000))
+        text = filler + RESUME
+        started = time.perf_counter()
+        assert quote_in_text("Led migration of service to Kubernetes on AWS", text)
+        assert not quote_in_text("Designed a compiler for a new functional language", text)
+        assert time.perf_counter() - started < 5
 
     def test_threshold_is_configurable(self) -> None:
         loose = "Built payment systems in Ruby and MySQL serving 2M users"
@@ -67,6 +107,13 @@ class TestVerifyRows:
         assert out[1].evidence == "Ten years of Rust at NASA"
         assert not out[1].verified
         assert out[0].verified
+
+    def test_requirement_terms_are_used_when_given(self) -> None:
+        reqs = [Requirement(id=1, text="MySQL"), Requirement(id=2, text="PostgreSQL")]
+        quote = "Built payment systems in Python and MySQL serving 2M users"
+        rows = [RowResult(1, "met", quote), RowResult(2, "met", quote)]
+        out = verify_rows(rows, RESUME, SETTINGS, reqs)
+        assert [r.status for r in out] == ["unverified", "met"]
 
     def test_missing_rows_need_no_evidence(self) -> None:
         assert verify_rows([RowResult(1, "missing")], RESUME, SETTINGS)[0].status == "missing"

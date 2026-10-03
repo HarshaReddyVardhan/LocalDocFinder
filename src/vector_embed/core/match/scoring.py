@@ -18,7 +18,44 @@ Status = Literal["met", "partial", "missing", "unverified"]
 Kind = Literal["must", "nice"]
 
 STATUS_CREDIT: dict[str, float] = {"met": 1.0, "partial": 0.5, "missing": 0.0, "unverified": 0.0}
-_MIN_QUOTE_CHARS = 8
+_MIN_QUOTE_CHARS = 8  # below this a quote is checked as exact whole words, not fuzzily
+_MIN_SHORT_QUOTE_CHARS = 2  # a single letter proves nothing
+_MIN_TERM_CHARS = 2
+_MIN_SHARED_WORDS = 0.5  # a near-verbatim quote shares at least half its words with its source
+_STOPWORDS = frozenset(
+    [
+        "a",
+        "an",
+        "and",
+        "or",
+        "of",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "with",
+        "by",
+        "from",
+        "the",
+        "as",
+        "is",
+        "are",
+        "be",
+        "years",
+        "year",
+        "experience",
+        "strong",
+        "good",
+        "knowledge",
+        "working",
+        "skills",
+        "skill",
+        "ability",
+        "plus",
+        "least",
+    ]
+)
 _NON_WORD = re.compile(r"[^\w\s]")
 _SPACES = re.compile(r"\s+")
 
@@ -71,33 +108,79 @@ def normalise(text: str) -> str:
     return _SPACES.sub(" ", _NON_WORD.sub(" ", text.lower())).strip()
 
 
-def quote_in_text(quote: str, text: str, threshold: float = 0.85) -> bool:
-    """Whether ``quote`` really appears in ``text`` (whitespace/case/punctuation-insensitive)."""
+def key_terms(requirement: str) -> frozenset[str]:
+    """The words of a requirement that a quote must not swap out ("Kubernetes", "SQL", "5")."""
+    return frozenset(
+        word
+        for word in normalise(requirement).split()
+        if word not in _STOPWORDS and (len(word) >= _MIN_TERM_CHARS or word.isdigit())
+    )
+
+
+def _short_quote_in_text(quote: str, text: str) -> bool:
+    """A short quote ("Go", "AWS", "C++") counts only as whole words, exactly as written.
+
+    Fuzzy matching is meaningless at this length, and the punctuation is often the point.
+    """
+    wanted = _SPACES.sub(" ", quote.lower()).strip()
+    if not any(char.isalnum() for char in wanted) or len(wanted) < _MIN_SHORT_QUOTE_CHARS:
+        return False
+    pattern = r"(?<!\w)" + re.escape(wanted).replace(r"\ ", r"\s+") + r"(?!\w)"
+    return re.search(pattern, text.lower()) is not None
+
+
+def quote_in_text(
+    quote: str, text: str, threshold: float = 0.85, terms: frozenset[str] = frozenset()
+) -> bool:
+    """Whether ``quote`` really appears in ``text`` (whitespace/case/punctuation-insensitive).
+
+    A near match must still contain every word of ``terms`` the quote uses, so a quote that
+    swaps one technology for another ("MySQL" for "PostgreSQL") is not accepted as close enough.
+    """
     wanted = normalise(quote)
     if len(wanted) < _MIN_QUOTE_CHARS:
-        return False
+        return _short_quote_in_text(quote, text)
     haystack = normalise(text)
     if wanted in haystack:
         return True
+    quote_words = set(wanted.split())
+    needed = terms.intersection(quote_words)
+    min_shared = max(1, int(len(quote_words) * _MIN_SHARED_WORDS))
     words = haystack.split()
     size = len(wanted.split())
+    matcher = difflib.SequenceMatcher(None, autojunk=False)
+    matcher.set_seq2(wanted)  # the quote's index is built once, not per window
     for start in range(max(1, len(words) - size + 1)):
-        window = " ".join(words[start : start + size + 1])
-        matcher = difflib.SequenceMatcher(None, window, wanted, autojunk=False)
+        window_words = words[start : start + size + 1]
+        if not needed.issubset(window_words) or (
+            len(quote_words.intersection(window_words)) < min_shared
+        ):
+            continue
+        matcher.set_seq1(" ".join(window_words))
+        # the quick ratios are cheap upper bounds that rule out most windows
+        if matcher.real_quick_ratio() < threshold or matcher.quick_ratio() < threshold:
+            continue
         if matcher.ratio() >= threshold:
             return True
     return False
 
 
 def verify_rows(
-    rows: list[RowResult], document_text: str, settings: MatchSettings
+    rows: list[RowResult],
+    document_text: str,
+    settings: MatchSettings,
+    requirements: list[Requirement] | None = None,
 ) -> list[RowResult]:
     """Downgrade met/partial rows whose evidence quote is not found in the document."""
+    terms = {req.id: key_terms(req.text) for req in requirements or []}
     verified: list[RowResult] = []
     for row in rows:
         claims_match = row.status in ("met", "partial")
         if claims_match and not quote_in_text(
-            row.evidence, document_text, settings.evidence_threshold
+            row.evidence,
+            document_text,
+            settings.evidence_threshold,
+            terms.get(row.requirement_id, frozenset()),
         ):
             verified.append(RowResult(row.requirement_id, "unverified", row.evidence))
         else:

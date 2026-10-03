@@ -273,7 +273,7 @@ def judge_document(
         for r in payload.results
     ]
     return Judgement(
-        rows=verify_rows(rows, document_text, match),
+        rows=verify_rows(rows, document_text, match, requirements),
         seniority_fit=payload.seniority_fit,
         summary=payload.summary.strip(),
         reduced=reduced,
