@@ -372,6 +372,12 @@ class SetupWizard(QWizard):
         self.setButtonText(QWizard.WizardButton.CommitButton, "Download")
         self.currentIdChanged.connect(self._on_page)
 
+    # ------------------------------------------------------------------ closing
+    def reject(self) -> None:
+        """Cancel / the window's close button: stop a running download instead of leaving it."""
+        self._controller.cancel()
+        super().reject()
+
     # ------------------------------------------------------------------ flow control
     def _on_page(self, page_id: int) -> None:
         if self.page(page_id) is self.download:

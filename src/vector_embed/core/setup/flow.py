@@ -25,6 +25,8 @@ from vector_embed.core.models.hardware import Hardware
 from vector_embed.core.providers.base import ModelInfo, ProviderError, PullProgress
 from vector_embed.core.settings_io import set_setting
 from vector_embed.core.setup.ollama_install import (
+    INSTALLED_SIZE_MB,
+    INSTALLER_SIZE_MB,
     OllamaSetup,
     OllamaSetupError,
     OllamaState,
@@ -46,6 +48,10 @@ DOWNLOADS_DIRNAME = "downloads"
 
 class SetupError(RuntimeError):
     """Setup cannot continue; the message tells the user what to do."""
+
+
+class SetupCancelled(SetupError):  # noqa: N818  # not a failure: the user closed the wizard
+    """Raised inside the flow when the UI asked it to stop."""
 
 
 class Stage(StrEnum):
@@ -156,6 +162,8 @@ class SetupFlow:
         self._accept_downgrade = accept_downgrade
         self._clock = clock
         self._pulled: list[str] = []
+        # Set by the UI: True once the user closed the wizard. Checked between and during steps.
+        self.cancelled: Callable[[], bool] = lambda: False
 
     # ------------------------------------------------------------------ preview
     def _locked_embed(self) -> str | None:
@@ -193,7 +201,9 @@ class SetupFlow:
     # ------------------------------------------------------------------ run
     def run(self, options: SetupOptions) -> SetupResult:
         self._pulled = []
+        self._checkpoint()
         self._ensure_ollama(options)
+        self._checkpoint()
         installed = self._installed_names()
         plan = plan_setup(
             self._catalog, self._hardware, options.choices, locked_embed=self._locked_embed()
@@ -219,6 +229,11 @@ class SetupFlow:
 
     def _emit(self, stage: Stage, message: str, fraction: float | None = None) -> None:
         self._progress(SetupEvent(stage, message, fraction))
+        self._checkpoint()  # progress arrives often (every download chunk): a cheap place to stop
+
+    def _checkpoint(self) -> None:
+        if self.cancelled():
+            raise SetupCancelled("Setup was cancelled.")
 
     def _installed_names(self) -> list[str]:
         return [m.name for m in self._host.list_models()]
@@ -239,6 +254,7 @@ class SetupFlow:
                     "Ollama is not installed. Allow setup to install it, or install it from "
                     "https://ollama.com/download and run setup again."
                 )
+            self._check_install_disk()
             self._emit(Stage.OLLAMA, "downloading the Ollama installer")
             self._ollama.install(
                 self._data_dir / DOWNLOADS_DIRNAME,
@@ -246,9 +262,21 @@ class SetupFlow:
                     Stage.OLLAMA, "downloading Ollama", done / total if total else None
                 ),
                 consented=True,
+                checkpoint=self._checkpoint,
             )
         except OllamaSetupError as exc:
             raise SetupError(str(exc)) from exc
+
+    def _check_install_disk(self) -> None:
+        """Room for the installer and for the program it unpacks, before downloading a byte."""
+        downloads = self._data_dir / DOWNLOADS_DIRNAME
+        need = INSTALLER_SIZE_MB + INSTALLED_SIZE_MB + DISK_HEADROOM_MB
+        free = self._ollama.free_disk_mb_at(downloads)
+        if free < need:
+            raise SetupError(
+                f"Not enough disk space to install Ollama: need about {need} MB "
+                f"(the installer and the program), {free} MB free. Free some space and try again."
+            )
 
     def _check_disk(self, plan: SetupPlan, installed: list[str]) -> None:
         free = self._ollama.free_disk_mb()

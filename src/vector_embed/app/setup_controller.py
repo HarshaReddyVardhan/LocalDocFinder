@@ -13,6 +13,7 @@ from vector_embed.core.providers.base import ProviderError
 from vector_embed.core.settings import Settings
 from vector_embed.core.setup.flow import (
     EnvironmentProbe,
+    SetupCancelled,
     SetupError,
     SetupFlow,
     SetupOptions,
@@ -36,6 +37,7 @@ class SetupController(QObject):
     failed = Signal(str)
     downgrade_offered = Signal(object)  # SlowOffer
     probed = Signal(object)  # EnvironmentProbe
+    cancelled = Signal()  # the user closed the wizard and the flow stopped
 
     def __init__(
         self,
@@ -49,6 +51,9 @@ class SetupController(QObject):
         self._answered = threading.Event()
         self._accepted = False
         self._flow: SetupFlow = build(settings, state, self.progressed.emit, self._ask_downgrade)
+        self._cancel = threading.Event()
+        self._flow.cancelled = self._cancel.is_set
+        self._lock = threading.Lock()  # start() may be called from two places: one run only
         self.running = False
         self._probe: EnvironmentProbe | None = None
 
@@ -81,10 +86,18 @@ class SetupController(QObject):
         return self._flow.preview_from(self._probe, SetupOptions(choices))
 
     def start(self, options: SetupOptions) -> None:
-        if self.running:
-            return
-        self.running = True
+        with self._lock:
+            if self.running:
+                return
+            self.running = True
+            self._cancel.clear()
         self._pool.start(_FlowJob(self, options))
+
+    def cancel(self) -> None:
+        """Stop a running setup (between steps and mid-download). Safe to call when idle."""
+        self._cancel.set()
+        self._accepted = False
+        self._answered.set()  # a pending "switch to a smaller model?" question gets a "no"
 
     def answer_downgrade(self, accepted: bool) -> None:
         self._accepted = accepted
@@ -100,6 +113,11 @@ class SetupController(QObject):
     def run_flow(self, options: SetupOptions) -> None:
         try:
             result = self._flow.run(options)
+        except SetupCancelled:
+            logger.info("setup cancelled by the user")
+            self.running = False
+            self.cancelled.emit()
+            return
         except _KNOWN_ERRORS as exc:
             self.failed.emit(str(exc))
         except Exception as exc:  # worker boundary: surface anything unexpected, never die silently

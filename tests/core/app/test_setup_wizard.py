@@ -1,3 +1,4 @@
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -454,3 +455,110 @@ def test_a_failed_probe_degrades_to_ollama_missing(qapp: QApplication, harness: 
     wait_for(qapp, lambda: bool(probes))
     assert controller.environment is not None
     assert controller.environment.ollama.value == "missing"
+
+
+# ---------------------------------------------------------- cancelling, one run at a time
+def slowed_pulls(harness: Harness) -> threading.Event:
+    """Make model downloads wait until the returned event is set."""
+    gate = threading.Event()
+    original = harness.host.pull
+
+    def slow_pull(model: str) -> object:
+        gate.wait(5)
+        return original(model)
+
+    harness.host.pull = slow_pull  # type: ignore[method-assign,assignment]
+    return gate
+
+
+def test_closing_the_wizard_stops_a_running_setup(qapp: QApplication, harness: Harness) -> None:
+    gate = slowed_pulls(harness)
+    controller = controller_for(harness)
+    cancelled: list[int] = []
+    results: list[SetupResult] = []
+    controller.cancelled.connect(lambda: cancelled.append(1))
+    controller.finished.connect(results.append)
+    controller.start(SetupOptions())
+    wait_for(qapp, lambda: controller.running)
+    controller.cancel()
+    gate.set()
+    wait_for(qapp, lambda: bool(cancelled))
+    assert cancelled == [1]
+    assert results == []  # it did not carry on and finish
+    assert "qwen3.5:9b" not in harness.host.pulled  # nothing after the cancel was started
+    assert not controller.running
+    assert harness.state.get_meta(SETUP_COMPLETED_KEY) is None
+
+
+def test_cancelling_answers_a_pending_downgrade_question_with_no(
+    qapp: QApplication, harness: Harness
+) -> None:
+    harness.model_rates = {"qwen3.5:9b": 2.0, "qwen3:8b": 25.0}
+    controller = controller_for(harness)
+    asked: list[SlowOffer] = []
+    cancelled: list[int] = []
+    results: list[SetupResult] = []
+    controller.cancelled.connect(lambda: cancelled.append(1))
+    controller.finished.connect(results.append)
+
+    def question(offer: SlowOffer) -> None:
+        asked.append(offer)
+        controller.cancel()  # the user closes the wizard instead of answering
+
+    controller.downgrade_offered.connect(question)
+    controller.start(SetupOptions())
+    wait_for(qapp, lambda: bool(cancelled) or bool(results))
+    assert asked
+    assert "qwen3:8b" not in harness.host.pulled  # the smaller model was not downloaded
+
+
+def test_rejecting_the_wizard_cancels_the_controller(qapp: QApplication, harness: Harness) -> None:
+    wizard = wizard_for(harness)
+    stopped: list[int] = []
+    wizard._controller.cancel = lambda: stopped.append(1)  # type: ignore[method-assign]
+    wizard.reject()
+    assert stopped == [1]
+
+
+def test_a_second_start_while_running_is_refused(qapp: QApplication, harness: Harness) -> None:
+    gate = slowed_pulls(harness)
+    controller = controller_for(harness)
+    results: list[SetupResult] = []
+    controller.finished.connect(results.append)
+    controller.start(SetupOptions())
+    controller.start(SetupOptions())  # e.g. a retry click while the first run is still going
+    gate.set()
+    wait_for(qapp, lambda: bool(results))
+    qapp.processEvents()
+    assert len(results) == 1
+    assert harness.host.pulled.count("qwen3-embedding:0.6b") == 1
+
+
+def test_run_setup_wizard_opens_only_one_window(
+    qapp: QApplication, harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[str] = []
+
+    class FakeWizard:
+        def __init__(self, *_a: object, **_k: object) -> None:
+            seen.append("created")
+
+        def exec(self) -> int:
+            # while the first wizard is open, the tray item is chosen again
+            app_main.run_setup_wizard(Settings(), harness.state)
+            return 0
+
+        def raise_(self) -> None:
+            seen.append("raised")
+
+        def activateWindow(self) -> None:  # noqa: N802
+            seen.append("activated")
+
+    monkeypatch.setattr(app_main, "SetupWizard", FakeWizard)
+    monkeypatch.setattr(app_main, "SetupController", lambda *_a, **_k: object())
+    monkeypatch.setattr(app_main, "make_settings_controller", lambda *_a, **_k: object())
+    monkeypatch.setattr(app_main, "load_catalog", lambda *_a: object())
+    monkeypatch.setattr(app_main, "probe_hardware", object)
+    app_main.run_setup_wizard(Settings(), harness.state)
+    assert seen == ["created", "raised", "activated"]  # one window; the second call fronted it
+    assert not app_main._open_wizards  # and the guard resets afterwards

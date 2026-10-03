@@ -12,6 +12,7 @@ from vector_embed.core.models.catalog import ROLE_EMBED
 from vector_embed.core.providers.base import ProviderError
 from vector_embed.core.setup.flow import (
     SETUP_COMPLETED_KEY,
+    SetupCancelled,
     SetupError,
     SetupOptions,
     Stage,
@@ -175,3 +176,64 @@ def test_preview_lists_what_is_still_missing(harness: Harness) -> None:
     assert preview.to_download == ("qwen3-embedding:0.6b",)
     assert preview.download_mb == 640
     assert ROLE_EMBED in {m.role for m in preview.plan.models}
+
+
+class TestDiskBeforeInstallingOllama:
+    def test_too_little_room_stops_before_downloading_the_installer(self, tmp_path: Path) -> None:
+        harness = Harness(tmp_path, up=False)
+        harness.system.free_mb = 2000  # the installer plus the program need far more
+        with pytest.raises(SetupError, match="Not enough disk space to install Ollama"):
+            harness.flow().run(SetupOptions(install_ollama=True))
+        assert harness.system.calls == []  # nothing was downloaded
+        assert tmp_path / "data" / "downloads" in harness.system.queried
+
+    def test_enough_room_installs_as_before(self, tmp_path: Path) -> None:
+        harness = Harness(tmp_path, up=False)
+        harness.system.free_mb = 50_000
+        harness.flow().run(SetupOptions(install_ollama=True))
+        assert harness.system.up
+
+
+class TestCancellation:
+    def test_cancelling_before_the_run_does_nothing(self, harness: Harness) -> None:
+        flow = harness.flow()
+        flow.cancelled = lambda: True
+        with pytest.raises(SetupCancelled):
+            flow.run(SetupOptions())
+        assert harness.host.pulled == []
+        assert harness.state.get_meta(SETUP_COMPLETED_KEY) is None
+
+    def test_cancelling_between_model_downloads_stops_the_next_one(self, harness: Harness) -> None:
+        stop = False
+
+        def progress(event: object) -> None:
+            nonlocal stop
+            if harness.host.pulled:  # the first model finished: the user closes the wizard
+                stop = True
+
+        flow = harness.flow(progress=progress)
+        flow.cancelled = lambda: stop
+        with pytest.raises(SetupCancelled):
+            flow.run(SetupOptions())
+        assert harness.host.pulled == ["qwen3-embedding:0.6b"]  # not the second
+        assert harness.state.get_meta(SETUP_COMPLETED_KEY) is None  # and it is not "complete"
+
+    def test_cancelling_during_the_installer_download_abandons_the_install(
+        self, tmp_path: Path
+    ) -> None:
+        harness = Harness(tmp_path, up=False)
+        flow = harness.flow()
+        flow.cancelled = lambda: any(c.startswith("download") for c in harness.system.calls)
+        with pytest.raises(SetupCancelled):
+            flow.run(SetupOptions(install_ollama=True))
+        assert "signature" not in harness.system.calls  # never verified, never run
+        assert not any(call.startswith("run") for call in harness.system.calls)
+        assert not (tmp_path / "data" / "downloads" / "OllamaSetup.exe").exists()  # cleaned up
+
+    def test_a_cancelled_run_can_be_started_again(self, harness: Harness) -> None:
+        flow = harness.flow()
+        flow.cancelled = lambda: True
+        with pytest.raises(SetupCancelled):
+            flow.run(SetupOptions())
+        flow.cancelled = lambda: False
+        assert flow.run(SetupOptions()).chat_model == "qwen3.5:9b"

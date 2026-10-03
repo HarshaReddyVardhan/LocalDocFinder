@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
 INSTALLER_NAME = "OllamaSetup.exe"
 INSTALLER_SIZE_MB = 1200  # approximate; shown to the user before they consent
+INSTALLED_SIZE_MB = 4500  # approximate: the unpacked program with its GPU runtimes
 EXPECTED_SIGNER = "Ollama Inc."
 INSTALLER_ARGS = ("/CURRENTUSER", "/SP-", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
 SERVER_WAIT_SECONDS = 60.0
@@ -83,6 +84,10 @@ class OllamaSetup:
         """Free space on the drive that holds (or will hold) the Ollama model store."""
         return self._system.free_disk_mb(self._system.models_dir())
 
+    def free_disk_mb_at(self, path: Path) -> int:
+        """Free space on the drive that holds ``path`` (or its nearest existing parent)."""
+        return self._system.free_disk_mb(path)
+
     def download_installer(self, directory: Path, progress: ProgressCallback) -> Path:
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / INSTALLER_NAME
@@ -116,13 +121,27 @@ class OllamaSetup:
         self._system.spawn_server(executable)
         self._wait_until_up()
 
-    def install(self, directory: Path, progress: ProgressCallback, *, consented: bool) -> None:
-        """Download, verify and run the official installer. Requires explicit consent."""
+    def install(
+        self,
+        directory: Path,
+        progress: ProgressCallback,
+        *,
+        consented: bool,
+        checkpoint: Callable[[], None] = lambda: None,
+    ) -> None:
+        """Download, verify and run the official installer. Requires explicit consent.
+
+        ``checkpoint`` is called between the phases; it may raise to abandon the install (the
+        user closed the wizard). A running installer itself cannot be interrupted.
+        """
         if not consented:
             raise OllamaSetupError("Installing Ollama needs the user's consent.")
-        installer = self.download_installer(directory, progress)
-        try:
+        installer = directory / INSTALLER_NAME
+        try:  # also covers the download: an interrupted or failed one must not leave a file behind
+            self.download_installer(directory, progress)
+            checkpoint()
             self.verify_signature(installer)
+            checkpoint()
             self.run_installer(installer)
         finally:
             installer.unlink(missing_ok=True)

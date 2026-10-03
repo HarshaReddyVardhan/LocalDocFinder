@@ -49,6 +49,8 @@ from vector_embed.core.updates import Updater, resolve_source
 
 logger = logging.getLogger("app")
 
+_open_wizards: list[SetupWizard] = []  # at most one: see run_setup_wizard
+
 EXIT_OK = 0
 EXIT_BAD_SETTINGS = 2
 
@@ -198,7 +200,15 @@ def run_setup_wizard(
     updater: Updater | None = None,
     on_changed: Callable[[], None] = lambda: None,
 ) -> None:
-    """Show the first-run wizard (also reachable from the tray); returns when it closes."""
+    """Show the first-run wizard (also reachable from the tray); returns when it closes.
+
+    Only one wizard exists at a time: choosing "Run setup again" while one is open brings it to
+    the front instead of starting a second download behind it.
+    """
+    if _open_wizards:
+        _open_wizards[0].raise_()
+        _open_wizards[0].activateWindow()
+        return
     path = settings.storage.data_dir / SETTINGS_FILENAME
     wizard = SetupWizard(
         SetupController(build, settings, state),
@@ -206,7 +216,11 @@ def run_setup_wizard(
         load_catalog(settings.storage.data_dir),
         probe_hardware(),
     )
-    wizard.exec()
+    _open_wizards.append(wizard)
+    try:
+        wizard.exec()
+    finally:
+        _open_wizards.remove(wizard)
 
 
 def hotkey_applier(hotkey: HotkeyFilter, tray: QSystemTrayIcon) -> Callable[[str], None]:
