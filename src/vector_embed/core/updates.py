@@ -6,6 +6,7 @@ network and a dev checkout (not installed by Velopack) reports "not installed" i
 """
 
 import logging
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -96,6 +97,7 @@ class Updater:
         self._clock = clock
         self._manager: UpdateManagerLike | None = None
         self._pending: UpdateInfoLike | None = None
+        self._lock = threading.Lock()
         self.outcome: UpdateOutcome | None = None
 
     def due(self) -> bool:
@@ -104,7 +106,21 @@ class Updater:
         return last is None or self._clock() - float(last) >= CHECK_INTERVAL_SECONDS
 
     def check(self, progress: Callable[[int], None] | None = None) -> UpdateOutcome:
-        """Look for a newer release and download it. Never raises: the result says what happened."""
+        """Look for a newer release and download it. Never raises: the result says what happened.
+
+        One check at a time: the daily scheduler and the "Check now" button may overlap, and two
+        downloads of the same release would only fight over the same files.
+        """
+        with self._lock:
+            try:
+                return self._check(progress)
+            except Exception as exc:  # the updater's boundary: the native layer raises anything
+                logger.exception("updates: unexpected failure")
+                return self._finish(
+                    UpdateOutcome(UpdateKind.FAILED, f"Could not check for updates: {exc}")
+                )
+
+    def _check(self, progress: Callable[[int], None] | None) -> UpdateOutcome:
         if not self._repo_url:
             return self._finish(
                 UpdateOutcome(UpdateKind.NOT_CONFIGURED, "No update source is set.")

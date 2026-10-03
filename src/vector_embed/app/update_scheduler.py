@@ -28,7 +28,12 @@ class _CheckJob(QRunnable):
         self._signals = signals
 
     def run(self) -> None:
-        self._signals.done.emit(self._updater.check())
+        try:
+            outcome = self._updater.check()
+        except Exception as exc:  # worker boundary: whatever happens, the scheduler must hear back
+            logger.exception("updates: the check crashed")
+            outcome = UpdateOutcome(UpdateKind.FAILED, f"Could not check for updates: {exc}")
+        self._signals.done.emit(outcome)
 
 
 class UpdateScheduler(QObject):

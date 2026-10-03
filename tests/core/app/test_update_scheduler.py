@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -114,3 +115,22 @@ def test_auto_check_setting_is_read_fresh(tmp_path: Path) -> None:
     assert not enabled()
     path.write_text("not = [valid", encoding="utf-8")
     assert enabled()  # an unreadable file must not silently turn updates off
+
+
+def test_a_crashing_check_still_clears_the_busy_flag(qapp: QApplication) -> None:
+    class Exploding:
+        def due(self) -> bool:
+            return True
+
+        def check(self) -> object:
+            raise MemoryError("native layer blew up")
+
+    scheduler = UpdateScheduler(Exploding(), lambda: True, startup_delay_ms=10**9)  # type: ignore[arg-type]
+    scheduler.tick()
+    deadline = time.time() + 5
+    while scheduler._busy and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert not scheduler._busy  # without this, no update check would ever run again
+    scheduler.tick()
+    assert scheduler._busy  # and the next hourly tick can start one

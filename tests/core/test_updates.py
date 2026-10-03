@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -156,3 +157,48 @@ def test_velopack_manager_builds_a_github_source(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(velopack, "UpdateManager", lambda source: ("manager", source))
     assert updates.velopack_manager(REPO) == ("manager", "source")
     assert seen == [REPO]
+
+
+class TestOneCheckAtATime:
+    def test_overlapping_checks_do_not_run_together(self) -> None:
+        import threading
+
+        release_first = threading.Event()
+        inside: list[int] = []
+        peak = [0]
+        running = [0]
+
+        class Slow(FakeManager):
+            def check_for_updates(self) -> object | None:
+                running[0] += 1
+                peak[0] = max(peak[0], running[0])
+                inside.append(1)
+                release_first.wait(5)
+                running[0] -= 1
+                return None
+
+        updater = Updater(REPO, factory=lambda _url: Slow())
+        results: list[object] = []
+        threads = [
+            threading.Thread(target=lambda: results.append(updater.check())) for _ in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        deadline = time.time() + 2
+        while not inside and time.time() < deadline:
+            time.sleep(0.01)
+        release_first.set()
+        for thread in threads:
+            thread.join(timeout=5)
+        assert len(results) == 2
+        assert peak[0] == 1  # never two native checks at once
+
+    def test_an_unexpected_native_error_is_a_failed_outcome_not_an_exception(self) -> None:
+        manager = FakeManager("2.0.0")
+        manager.fail = KeyError("something nobody listed")  # not RuntimeError, OSError, ValueError
+        outcome = Updater(REPO, factory=lambda _url: manager).check()
+        assert outcome.kind is UpdateKind.FAILED
+        assert "something nobody listed" in outcome.message
+        # and the lock was released: the next check works
+        manager.fail = None
+        assert Updater(REPO, factory=lambda _url: manager).check().kind is UpdateKind.READY
