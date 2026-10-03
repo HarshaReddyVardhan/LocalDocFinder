@@ -223,6 +223,116 @@ class TestChecklistAndScoring:
         assert panel.verdict.toPlainText() == ""
 
 
+class TestRunControl:
+    def test_a_double_click_on_score_runs_one_scoring(
+        self, qapp: QApplication, panel: MatchPanel, controller: MatchController
+    ) -> None:
+        recall(qapp, panel)
+        panel.buttons["all"].click()
+        scored: list[int] = []
+        original = controller.score
+
+        def counting(progress: object = None) -> object:
+            scored.append(1)
+            return original(progress)  # type: ignore[arg-type]
+
+        controller.score = counting  # type: ignore[method-assign]
+        panel.request_score()
+        panel.request_score()  # a second click before the first finished
+        wait_for(qapp, lambda: panel.pages.currentIndex() == PAGE_RESULTS)
+        assert scored == [1]
+
+    def test_buttons_are_off_while_a_step_runs_and_back_afterwards(
+        self, qapp: QApplication, panel: MatchPanel
+    ) -> None:
+        recall(qapp, panel)
+        panel.buttons["all"].click()
+        panel.request_checklist()
+        for name in ("score", "checklist", "chat", "add", "all", "none", "top3", "back"):
+            assert not panel.buttons[name].isEnabled(), name
+        assert not panel.doc_type.isEnabled()
+        wait_for(qapp, lambda: panel.pages.currentIndex() == PAGE_CHECKLIST)
+        assert panel.buttons["score"].isEnabled()
+        assert panel.buttons["back"].isEnabled()
+        assert panel.doc_type.isEnabled()
+
+    def test_a_second_recall_is_ignored_while_one_runs(
+        self, qapp: QApplication, panel: MatchPanel, controller: MatchController
+    ) -> None:
+        starts: list[str] = []
+        original = controller.start
+
+        def counting(jd: str, doc_type: str | None = None, all_versions: bool = False) -> object:
+            starts.append(jd)
+            return original(jd, doc_type, all_versions)
+
+        controller.start = counting  # type: ignore[method-assign]
+        panel.begin(JD)
+        panel.begin(JD + " again")
+        wait_for(qapp, lambda: panel.candidates.rowCount() > 0)
+        assert starts == [JD]
+
+    def test_a_new_run_starts_with_a_clean_verdict_and_no_old_scores(
+        self, qapp: QApplication, panel: MatchPanel
+    ) -> None:
+        recall(qapp, panel)
+        panel.buttons["all"].click()
+        panel.buttons["score"].click()
+        wait_for(qapp, lambda: "best fit" in panel.verdict.toPlainText())
+        assert panel.results.rowCount() > 0
+        panel.begin(JD)  # the next job description
+        assert panel.verdict.toPlainText() == ""  # the old verdict is gone at once
+        assert panel.results.rowCount() == 0
+        wait_for(qapp, lambda: panel.candidates.rowCount() > 0)
+
+    def test_scoring_again_clears_the_previous_verdict_first(
+        self, qapp: QApplication, panel: MatchPanel
+    ) -> None:
+        recall(qapp, panel)
+        panel.buttons["all"].click()
+        panel.buttons["score"].click()
+        wait_for(qapp, lambda: "best fit" in panel.verdict.toPlainText())
+        panel._show_page(PAGE_CANDIDATES)
+        panel.verdict.setPlainText("STALE VERDICT")
+        panel._verdict = "STALE VERDICT"
+        panel.request_score()
+        wait_for(qapp, lambda: "best fit" in panel.verdict.toPlainText())
+        assert (
+            "STALE" not in panel.verdict.toPlainText()
+        )  # the new verdict replaced it, not joined it
+        wait_for(qapp, lambda: panel.pages.currentIndex() == PAGE_RESULTS)
+
+    def test_chat_pins_every_ticked_document_not_just_the_top_three(
+        self, qapp: QApplication, panel: MatchPanel
+    ) -> None:
+        recall(qapp, panel)
+        panel.add_file()  # a fourth candidate
+        wait_for(
+            qapp, lambda: panel.candidates.rowCount() == 4 and panel.buttons["all"].isEnabled()
+        )
+        panel.buttons["all"].click()
+        panel.buttons["score"].click()
+        wait_for(qapp, lambda: panel.pages.currentIndex() == PAGE_RESULTS)
+        states: list[ChatState] = []
+        panel.chat_requested.connect(states.append)
+        panel.buttons["chat"].click()
+        (state,) = states
+        assert len(state.pinned) == 4  # all four were ticked and scored
+
+    def test_chat_only_pins_what_was_ticked(self, qapp: QApplication, panel: MatchPanel) -> None:
+        recall(qapp, panel)
+        panel.buttons["none"].click()
+        panel.candidates.item(0, 0).setCheckState(Qt.CheckState.Checked)
+        panel.candidates.item(1, 0).setCheckState(Qt.CheckState.Checked)
+        panel.buttons["score"].click()
+        wait_for(qapp, lambda: panel.pages.currentIndex() == PAGE_RESULTS)
+        states: list[ChatState] = []
+        panel.chat_requested.connect(states.append)
+        panel.buttons["chat"].click()
+        (state,) = states
+        assert len(state.pinned) == 2
+
+
 class TestInsideTheWindow:
     @pytest.fixture
     def window(

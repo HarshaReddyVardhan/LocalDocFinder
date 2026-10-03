@@ -150,7 +150,10 @@ class MatchController:
         select_top(self._require().candidates, n)
 
     def chat_state(self, top: int | None = None) -> ChatState:
-        """Pinned resumes and scratch text (JD + step-3 results) for the follow-up chat."""
+        """Pinned resumes and scratch text (JD + step-3 results) for the follow-up chat.
+
+        By default every document that was ticked and scored is pinned; ``top`` limits it to the
+        best few."""
         pinned, scratch = self.pipeline.chat_context(self._require(), top)
         return ChatState(pinned=pinned, scratch=scratch)
 

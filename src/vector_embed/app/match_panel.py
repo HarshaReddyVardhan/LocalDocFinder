@@ -87,6 +87,7 @@ class MatchPanel(QWidget):
         self._verdict = ""
         self._updating = False
         self._after_confirm: Callable[[], None] = lambda: None
+        self._busy = False  # a background step is running
         self._build()
 
     # ------------------------------------------------------------------ layout
@@ -150,14 +151,36 @@ class MatchPanel(QWidget):
     def _show_page(self, page: int) -> None:
         self.pages.setCurrentIndex(page)
         on_candidates = page == PAGE_CANDIDATES
-        has_run = self._controller.run is not None
         for name in ("all", "none", "top3", "add", "checklist"):
             self.buttons[name].setVisible(on_candidates)
         self.buttons["back"].setVisible(page != PAGE_CANDIDATES)
         self.buttons["score"].setVisible(page != PAGE_RESULTS)
         self.buttons["chat"].setVisible(page == PAGE_RESULTS)
+        self._sync_buttons()
+
+    def _sync_buttons(self) -> None:
+        """Enable what makes sense: nothing at all while a step is running."""
+        idle = not self._busy
+        has_run = self._controller.run is not None
         for name in ("score", "checklist", "chat", "add"):
-            self.buttons[name].setEnabled(has_run)
+            self.buttons[name].setEnabled(idle and has_run)
+        for name in ("all", "none", "top3", "back"):
+            self.buttons[name].setEnabled(idle)
+        self.doc_type.setEnabled(idle)
+
+    def _begin_task(self, name: str, work: Callable[[], object]) -> bool:
+        """Start one background step; refused while another is running (a double click, or a
+        second Score while the first is still judging, would race on the same run)."""
+        if self._busy:
+            return False
+        self._busy = True
+        self._sync_buttons()
+        self._pool.start(_Task(name, work, self._signals))
+        return True
+
+    def _task_ended(self) -> None:
+        self._busy = False
+        self._sync_buttons()
 
     def _say(self, text: str) -> None:
         self.footer.setText(text)
@@ -166,11 +189,12 @@ class MatchPanel(QWidget):
     # ------------------------------------------------------------------ step 1: recall
     def begin(self, jd_text: str) -> None:
         """Recall candidate documents for the pasted text (local embeddings only)."""
+        if self._busy:
+            return
         self._say("finding candidates…")
+        self._clear_results()  # the previous run's scores and verdict must not linger
         doc_type = self.doc_type.currentText()
-        self._pool.start(
-            _Task("recall", lambda: self._controller.start(jd_text, doc_type), self._signals)
-        )
+        self._begin_task("recall", lambda: self._controller.start(jd_text, doc_type))
 
     def _fill_candidates(self, run: MatchRun) -> None:
         self._updating = True
@@ -223,7 +247,7 @@ class MatchPanel(QWidget):
         if not path or self._controller.run is None:
             return
         self._say(f"reading {Path(path).name}…")
-        self._pool.start(_Task("add_file", lambda: self._controller.add_file(path), self._signals))
+        self._begin_task("add_file", lambda: self._controller.add_file(path))
 
     # ------------------------------------------------------------------ step 2: checklist
     def request_checklist(self) -> None:
@@ -231,7 +255,7 @@ class MatchPanel(QWidget):
 
     def _begin_checklist(self) -> None:
         self._say("reading the job description…")
-        self._pool.start(_Task("checklist", self._controller.checklist, self._signals))
+        self._begin_task("checklist", self._controller.checklist)
 
     def _fill_checklist(self, requirements: list[Requirement]) -> None:
         self._updating = True
@@ -279,13 +303,12 @@ class MatchPanel(QWidget):
         """Run ``proceed`` now if the step is local; else after the user approves the preview."""
         self._after_confirm = proceed
         self._say("preparing what will be sent…")
-        self._pool.start(
-            _Task("preview", lambda: self._controller.cloud_preview(step), self._signals)
-        )
+        self._begin_task("preview", lambda: self._controller.cloud_preview(step))
 
     def _begin_score(self) -> None:
         self._say(self._controller.footer() + " — scoring…")
-        self._pool.start(_Task("score", self._score, self._signals))
+        self._clear_verdict()
+        self._begin_task("score", self._score)
 
     def _after_preview(self, preview: CloudPreview | None) -> None:
         """Local scoring starts at once; a cloud one waits for the user's explicit Send."""
@@ -327,7 +350,7 @@ class MatchPanel(QWidget):
     def request_chat(self) -> None:
         """Hand the JD, the best documents and their results to a follow-up chat."""
         try:
-            state = self._controller.chat_state(top=3)
+            state = self._controller.chat_state()  # every document that was ticked and scored
         except _KNOWN_ERRORS as exc:
             self._say(str(exc))
             return
@@ -335,6 +358,7 @@ class MatchPanel(QWidget):
 
     # ------------------------------------------------------------------ task results
     def _on_done(self, name: str, result: object) -> None:
+        self._task_ended()  # first: a follow-up step (preview -> checklist/score) may start now
         run = self._controller.run
         if name == "recall" and run is not None:
             self._fill_candidates(run)
@@ -356,12 +380,20 @@ class MatchPanel(QWidget):
         self.verdict.setMarkdown(self._verdict)
 
     def _on_failed(self, name: str, message: str) -> None:
+        self._task_ended()
         if name in ("preview", "score"):
             self._controller.revoke_cloud_consent()
         self._say(f"{name} failed: {message}")
 
-    def reset(self) -> None:
+    def _clear_verdict(self) -> None:
         self._verdict = ""
         self.verdict.clear()
+
+    def _clear_results(self) -> None:
+        self._clear_verdict()
+        self.results.setRowCount(0)
+
+    def reset(self) -> None:
+        self._clear_results()
         self.candidates.setRowCount(0)
         self._show_page(PAGE_CANDIDATES)
