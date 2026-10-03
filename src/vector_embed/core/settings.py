@@ -407,6 +407,7 @@ class CloudSettings(_Section):
     active: str | None = None  # key of the provider used for cloud calls
     routing: dict[str, Literal["local", "cloud", "auto"]] = Field(default_factory=dict)
     monthly_budget_usd: float | None = Field(default=None, gt=0)
+    max_output_tokens: int = Field(default=2048, gt=0)  # cap on every cloud reply: it is billed
 
     def policy(self, role: str) -> str:
         """``local`` unless the user chose otherwise; the safe default."""

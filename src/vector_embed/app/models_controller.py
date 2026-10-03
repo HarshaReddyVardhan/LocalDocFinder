@@ -42,7 +42,13 @@ class ModelsController:
         ctx = self._factory()
         provider = ctx.extras["provider"]
         assert isinstance(provider, OllamaProvider)
-        return collect_health(ctx.state, ctx.store, self.registry, provider.loaded_models)
+        return collect_health(
+            ctx.state,
+            ctx.store,
+            self.registry,
+            provider.loaded_models,
+            budget_usd=ctx.settings.cloud.monthly_budget_usd,
+        )
 
     def health_text(self) -> str:
         return format_health(self.health())

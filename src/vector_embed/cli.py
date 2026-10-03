@@ -211,7 +211,9 @@ def cmd_health(settings: Settings) -> int:
         registry = runtime.build_model_registry(settings, state, provider)
         registry.refresh()
         store = runtime.open_read_only_store(settings, state)
-        out(format_health(collect_health(state, store, registry, provider.loaded_models)))
+        budget = settings.cloud.monthly_budget_usd
+        snapshot = collect_health(state, store, registry, provider.loaded_models, budget_usd=budget)
+        out(format_health(snapshot))
     return EXIT_OK
 
 

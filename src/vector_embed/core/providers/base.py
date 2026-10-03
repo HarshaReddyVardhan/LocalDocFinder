@@ -45,6 +45,7 @@ class ChatOptions:
     temperature: float = 0.2
     keep_alive: str | int = "10m"
     cpu: bool = False  # run on CPU (num_gpu=0) so the GPU stays free
+    max_tokens: int | None = None  # cap on the reply length (a cloud reply is billed per token)
 
 
 @dataclass(frozen=True)

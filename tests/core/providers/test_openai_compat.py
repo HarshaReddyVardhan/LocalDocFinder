@@ -226,3 +226,50 @@ class TestDiscoveryAndCost:
 
     def test_capabilities(self, provider: OpenAICompatibleProvider) -> None:
         assert provider.capabilities("anything") == {"completion"}
+
+
+class TestReplyLengthCap:
+    def test_no_cap_means_no_parameter(
+        self, client: FakeClient, provider: OpenAICompatibleProvider
+    ) -> None:
+        provider.chat_json([Message("user", "hi")], "m", {}, ChatOptions())
+        sent = client.completions.calls[0]
+        assert "max_tokens" not in sent
+        assert "max_completion_tokens" not in sent
+
+    def test_the_cap_is_sent_as_max_tokens(
+        self, client: FakeClient, provider: OpenAICompatibleProvider
+    ) -> None:
+        client.completions.stream_events = [
+            event("hi"),
+            event(usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1), choices=False),
+        ]
+        list(provider.stream_chat([Message("user", "hi")], "m", ChatOptions(max_tokens=300)))
+        assert client.completions.calls[0]["max_tokens"] == 300
+
+    def test_models_that_insist_on_the_newer_name_get_it(
+        self, client: FakeClient, provider: OpenAICompatibleProvider
+    ) -> None:
+        client.completions.errors = [
+            api_error(
+                openai.BadRequestError,
+                400,
+                "Unsupported parameter: 'max_tokens' is not supported; use 'max_completion_tokens'",
+            )
+        ]
+        result = provider.chat_json([Message("user", "hi")], "m", {}, ChatOptions(max_tokens=300))
+        assert result.data == {"ok": True}
+        retry = client.completions.calls[1]
+        assert retry["max_completion_tokens"] == 300
+        assert "max_tokens" not in retry
+
+    def test_an_unrelated_bad_request_is_not_mistaken_for_the_name_problem(
+        self, client: FakeClient, provider: OpenAICompatibleProvider
+    ) -> None:
+        client.completions.errors = [
+            api_error(openai.BadRequestError, 400, "model does not support images"),
+            api_error(openai.BadRequestError, 400, "model does not support images"),
+        ]
+        with pytest.raises(ProviderError):
+            provider.chat_json([Message("user", "hi")], "m", {}, ChatOptions(max_tokens=300))
+        assert all("max_completion_tokens" not in call for call in client.completions.calls)

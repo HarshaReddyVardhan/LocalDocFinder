@@ -74,13 +74,31 @@ class OpenAICompatibleProvider:
             return Usage()
         return Usage(int(raw.prompt_tokens or 0), int(raw.completion_tokens or 0))
 
+    def _create(self, opts: ChatOptions, **request: Any) -> Any:  # noqa: ANN401
+        """``chat.completions.create`` with the reply-length cap in the spelling the API wants.
+
+        Most endpoints take ``max_tokens``; OpenAI's newer models insist on
+        ``max_completion_tokens`` and answer 400 to the old name, so that is tried next.
+        """
+        if opts.max_tokens is None:
+            return self._client.chat.completions.create(**request)
+        try:
+            return self._client.chat.completions.create(max_tokens=opts.max_tokens, **request)
+        except openai.BadRequestError as exc:
+            if "max_tokens" not in str(exc) and "max_completion_tokens" not in str(exc):
+                raise
+            return self._client.chat.completions.create(
+                max_completion_tokens=opts.max_tokens, **request
+            )
+
     # ------------------------------------------------------------------ chat
     def stream_chat(
         self, messages: list[Message], model: str, options: ChatOptions | None = None
     ) -> Iterator[ChatChunk]:
         opts = options or ChatOptions()
         try:
-            stream = self._client.chat.completions.create(
+            stream = self._create(
+                opts,
                 model=model,
                 messages=self._wire(messages),
                 temperature=opts.temperature,
@@ -121,7 +139,8 @@ class OpenAICompatibleProvider:
                     {"role": "user", "content": "Reply with JSON matching: " + json.dumps(schema)},
                 ]
             try:
-                response = self._client.chat.completions.create(
+                response = self._create(
+                    opts,
                     model=model,
                     messages=payload,
                     temperature=opts.temperature,

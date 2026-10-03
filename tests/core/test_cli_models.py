@@ -91,3 +91,30 @@ def test_health_prints_the_dashboard(
     assert "queue           : 1 total, 1 due" in out
     assert "cloud spend" in out
     assert "loaded models" in out
+
+
+def test_health_shows_the_configured_monthly_budget(
+    env: Env,
+    wired: FakeOllamaClient,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vector_embed.core.settings import CloudSettings
+
+    capped = env.settings.model_copy(update={"cloud": CloudSettings(monthly_budget_usd=5.0)})
+    monkeypatch.setattr(cli, "load_settings", lambda: capped)
+    env.state.record_usage("openrouter", "m", 10, 10, 1.25)
+    assert cli.main(["health"]) == 0
+    assert "$1.2500 of $5.00 this month" in capsys.readouterr().out
+    env.state.record_usage("openrouter", "m", 10, 10, 4.0)  # now over it
+    assert cli.main(["health"]) == 0
+    assert "budget reached: cloud calls are paused" in capsys.readouterr().out
+
+
+def test_health_without_a_budget_shows_only_the_spend(
+    env: Env, wired: FakeOllamaClient, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["health"]) == 0
+    out = capsys.readouterr().out
+    assert "cloud spend     : $0.0000 this month" in out
+    assert " of $" not in out

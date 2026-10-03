@@ -1,3 +1,5 @@
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +17,10 @@ from vector_embed.core.cloud import (
 from vector_embed.core.llm import ChatBlockedError
 from vector_embed.core.privacy.policy import PrivacyFilter
 from vector_embed.core.providers.base import (
+    ChatChunk,
     Message,
+    ModelInfo,
+    ProviderUnavailableError,
     Usage,
 )
 from vector_embed.core.settings import (
@@ -37,10 +42,18 @@ class Clock:
 RESUME = "Jane Doe\njane@example.com\n" + KEY_TEXT + "\nBuilt systems in Python."
 
 
-def make(env: Env, *, budget: float | None = None, redact: bool = False, consent: bool = True):  # type: ignore[no-untyped-def]
-    inner = FakeCloudInner()
+def make(  # type: ignore[no-untyped-def]
+    env: Env,
+    *,
+    budget: float | None = None,
+    redact: bool = False,
+    consent: bool = True,
+    max_output: int = 100,
+    inner: FakeCloudInner | None = None,
+):
+    inner = inner or FakeCloudInner()
     privacy = PrivacyFilter(PrivacySettings(redact_personal=redact), env.scope)
-    settings = CloudSettings(monthly_budget_usd=budget)
+    settings = CloudSettings(monthly_budget_usd=budget, max_output_tokens=max_output)
     gate = CloudConsent()
     if consent:
         gate.grant()
@@ -248,3 +261,147 @@ def test_cloud_settings_defaults_are_safe() -> None:
 
 def test_state_paths_are_not_needed(tmp_path: Path) -> None:
     assert tmp_path.exists()
+
+
+class PricedInner(FakeCloudInner):
+    """A provider with a price list that is only learned by listing its models."""
+
+    def __init__(self, learnable: dict[str, float] | None = None) -> None:
+        super().__init__()
+        self.prices: dict[str, float] = {}  # USD per 1k tokens, in and out alike
+        self.learnable = learnable or {}
+        self.listed = 0
+        self.options_seen: list[object] = []
+        self.gate: threading.Event | None = None
+        self.fail_after: int | None = None
+
+    def has_price(self, model: str) -> bool:
+        return model in self.prices
+
+    def list_models(self) -> list[ModelInfo]:
+        self.listed += 1
+        self.prices.update(self.learnable)
+        return super().list_models()
+
+    def estimate_cost(self, model: str, usage: Usage) -> float:
+        rate = self.prices.get(model, 0.0)
+        return (usage.prompt_tokens + usage.completion_tokens) * rate / 1000.0
+
+    def stream_chat(self, messages, model, options=None):  # type: ignore[no-untyped-def]
+        self.options_seen.append(options)
+        if self.gate is not None:
+            self.gate.wait(5)
+        for index, piece in enumerate(self.reply):
+            if self.fail_after is not None and index >= self.fail_after:
+                raise ProviderUnavailableError("connection dropped")
+            yield ChatChunk(piece)
+        yield ChatChunk("", self.usage)
+
+    def chat_json(self, messages, model, schema, options=None):  # type: ignore[no-untyped-def]
+        self.options_seen.append(options)
+        if self.fail_after is not None:
+            raise ProviderUnavailableError("connection dropped")
+        return super().chat_json(messages, model, schema, options)
+
+
+class TestBudgetAndPrices:
+    def test_every_cloud_reply_is_capped_in_length(self, env: Env) -> None:
+        inner = PricedInner()
+        inner.prices["m"] = 0.001
+        provider, _, _, _ = make(env, max_output=321, inner=inner)
+        list(provider.stream_chat(MESSAGES, "m"))
+        provider.chat_json(MESSAGES, "m", {})
+        assert [o.max_tokens for o in inner.options_seen] == [321, 321]  # type: ignore[attr-defined]
+
+    def test_the_price_list_is_fetched_when_a_model_has_no_price(self, env: Env) -> None:
+        inner = PricedInner(learnable={"m": 0.001})
+        provider, _, _, _ = make(env, budget=5.0, inner=inner)
+        list(provider.stream_chat(MESSAGES, "m"))  # learns the price, then the budget applies
+        assert inner.listed == 1
+        (total,) = env.state.usage_totals()
+        assert total.cost_usd > 0  # priced, not "$0"
+
+    def test_an_unknown_price_with_a_budget_is_refused(self, env: Env) -> None:
+        inner = PricedInner()  # lists no price for this model
+        provider, _, _, _ = make(env, budget=5.0, inner=inner)
+        with pytest.raises(ChatBlockedError, match="price of m is unknown"):
+            list(provider.stream_chat(MESSAGES, "m"))
+        assert inner.sent == []
+
+    def test_an_unknown_price_without_a_budget_still_works(self, env: Env) -> None:
+        inner = PricedInner()
+        provider, _, _, _ = make(env, budget=None, inner=inner)
+        assert "".join(c.text for c in provider.stream_chat(MESSAGES, "m"))
+
+    def test_the_price_list_is_asked_for_at_most_once_an_hour(self, env: Env) -> None:
+        inner = PricedInner()  # never learns anything
+        provider, _, _, clock = make(env, budget=5.0, inner=inner)
+        for _ in range(5):
+            with pytest.raises(ChatBlockedError):
+                list(provider.stream_chat(MESSAGES, "m"))
+        assert inner.listed == 1
+        clock.now += 3601
+        with pytest.raises(ChatBlockedError):
+            list(provider.stream_chat(MESSAGES, "m"))
+        assert inner.listed == 2
+
+    def test_parallel_calls_cannot_overspend_together(self, env: Env) -> None:
+        inner = PricedInner()
+        inner.prices["m"] = 2.0  # $2 per 1k tokens: about $0.3 worst case for each call here
+        inner.gate = threading.Event()
+        provider, _, _, _ = make(env, budget=0.7, max_output=100, inner=inner)
+        outcomes: list[str] = []
+
+        def call() -> None:
+            try:
+                list(provider.stream_chat(MESSAGES, "m"))
+                outcomes.append("ok")
+            except ChatBlockedError:
+                outcomes.append("blocked")
+
+        threads = [threading.Thread(target=call) for _ in range(3)]
+        for thread in threads:
+            thread.start()
+        time.sleep(0.3)  # all three have passed through the guard (or been refused) by now
+        inner.gate.set()
+        for thread in threads:
+            thread.join(timeout=10)
+        assert outcomes.count("ok") < 3  # without the reservation, all three would have passed
+        assert "blocked" in outcomes
+        assert provider._reserved == 0.0  # everything reserved was given back
+
+    def test_an_abandoned_stream_is_still_recorded_and_frees_its_reservation(
+        self, env: Env
+    ) -> None:
+        inner = PricedInner()
+        inner.prices["m"] = 0.001
+        inner.reply = ["a fairly long piece of reply text " * 5, "more"]
+        provider, _, _, _ = make(env, budget=5.0, inner=inner)
+        stream = provider.stream_chat(MESSAGES, "m")
+        next(stream)
+        stream.close()  # the user closed the window mid-answer
+        (total,) = env.state.usage_totals()
+        assert total.completion_tokens > 0  # estimated from what was streamed
+        assert provider._reserved == 0.0
+
+    def test_a_stream_that_fails_midway_is_recorded_and_frees_its_reservation(
+        self, env: Env
+    ) -> None:
+        inner = PricedInner()
+        inner.prices["m"] = 0.001
+        inner.reply = ["first part of the reply ", "second"]
+        inner.fail_after = 1
+        provider, _, _, _ = make(env, budget=5.0, inner=inner)
+        with pytest.raises(ProviderUnavailableError):
+            list(provider.stream_chat(MESSAGES, "m"))
+        assert env.state.usage_totals()  # what was received is accounted for
+        assert provider._reserved == 0.0
+
+    def test_a_failed_json_call_frees_its_reservation(self, env: Env) -> None:
+        inner = PricedInner()
+        inner.prices["m"] = 0.001
+        inner.fail_after = 0
+        provider, _, _, _ = make(env, budget=5.0, inner=inner)
+        with pytest.raises(ProviderUnavailableError):
+            provider.chat_json(MESSAGES, "m", {})
+        assert provider._reserved == 0.0

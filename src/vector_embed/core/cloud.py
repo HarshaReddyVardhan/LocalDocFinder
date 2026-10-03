@@ -9,9 +9,10 @@
 """
 
 import logging
+import threading
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from vector_embed.core.health import month_start
@@ -27,14 +28,18 @@ from vector_embed.core.providers.base import (
     JsonResult,
     Message,
     ModelInfo,
+    ProviderError,
     Usage,
 )
 from vector_embed.core.settings import CloudSettings
 from vector_embed.core.store.sqlite import StateDb
+from vector_embed.core.tokens import estimate_tokens
 
 logger = logging.getLogger(__name__)
 
 _PLACEHOLDER_MAX = 24  # longest placeholder, e.g. "[ADDRESS_12]", plus slack
+_PRICE_REFRESH_SECONDS = 3600  # how often an unpriced model prompts a look at the price list
+_CHARS_PER_TOKEN = 4  # rough size of a streamed reply when the provider reports no usage
 
 
 class CloudConsent:
@@ -105,6 +110,9 @@ class CloudChatProvider:
         self.name = inner.name
         self.label: str = getattr(inner, "label", inner.name)
         self.last_outbound: Outbound | None = None
+        self._budget_lock = threading.Lock()
+        self._reserved = 0.0  # worst-case cost of the calls in flight
+        self._prices_asked: float = -_PRICE_REFRESH_SECONDS  # so the first need asks at once
 
     # ------------------------------------------------------------------ guards
     def _guard(self) -> None:
@@ -112,13 +120,74 @@ class CloudChatProvider:
             raise ChatBlockedError(
                 "cloud requests need your consent for this session (command line: pass --cloud-ok)"
             )
+
+    def _has_price(self, model: str) -> bool:
+        """Whether ``model``'s cost is known (a provider with no price list counts as priced)."""
+        has_price = getattr(self._inner, "has_price", None)
+        return True if has_price is None else bool(has_price(model))
+
+    def _learn_prices(self, model: str) -> None:
+        """Ask the provider for its price list when ``model`` has no price: at first use, then at
+        most hourly. Without prices every call costs "$0" and no budget could ever be reached."""
+        if self._has_price(model):
+            return
+        now = self._clock()
+        if now - self._prices_asked < _PRICE_REFRESH_SECONDS:
+            return
+        self._prices_asked = now
+        try:
+            self._inner.list_models()
+        except ProviderError:
+            logger.info("cloud: could not fetch %s's price list", self.name)
+
+    def _reserve(self, model: str, messages: list[Message], options: ChatOptions) -> float:
+        """Consent, price and budget checks, then set aside the worst-case cost of this call.
+
+        Reserved money counts against the budget immediately, so scoring several documents at the
+        same time cannot each pass the check and together overspend.
+        """
+        self._guard()
+        self._learn_prices(model)
         budget = self._settings.monthly_budget_usd
-        if budget is not None and self._state.spend_since(month_start(self._clock())) >= budget:
-            raise ChatBlockedError(f"the monthly cloud budget (${budget:.2f}) is used up")
+        if budget is None:
+            if not self._has_price(model):
+                logger.warning("cloud: no price known for %s; its cost is not tracked", model)
+            return 0.0
+        if not self._has_price(model):
+            raise ChatBlockedError(
+                f"the price of {model} is unknown, so the monthly budget cannot be enforced; set "
+                f"it under cloud.providers.{self.name}.pricing or turn the budget off"
+            )
+        prompt = sum(estimate_tokens(m.content) for m in messages)
+        worst = self._inner.estimate_cost(model, Usage(prompt, options.max_tokens or 0))
+        with self._budget_lock:
+            spent = self._state.spend_since(month_start(self._clock()))
+            if spent + self._reserved + worst > budget:
+                raise ChatBlockedError(
+                    f"the monthly cloud budget (${budget:.2f}) would be exceeded "
+                    f"(${spent:.2f} spent, this request could cost up to ${worst:.2f})"
+                )
+            self._reserved += worst
+        return worst
+
+    def _release(self, amount: float) -> None:
+        with self._budget_lock:
+            self._reserved = max(0.0, self._reserved - amount)
+
+    def _capped(self, options: ChatOptions | None) -> ChatOptions:
+        return replace(options or ChatOptions(), max_tokens=self._settings.max_output_tokens)
 
     def prepare(self, messages: list[Message]) -> Outbound:
         """What would be sent (after masking). Used for the badge and 'view what will be sent'."""
         return self._privacy.prepare(messages)
+
+    def _settle(self, model: str, usage: Usage, reserved: float) -> None:
+        """Record what was used and free the reservation. Called from ``finally``: a failed or
+        abandoned call may still have been billed, and the reservation must never leak."""
+        try:
+            self._record(model, usage)
+        finally:
+            self._release(reserved)
 
     def _record(self, model: str, usage: Usage) -> None:
         cost = self._inner.estimate_cost(model, usage)
@@ -130,20 +199,29 @@ class CloudChatProvider:
     def stream_chat(
         self, messages: list[Message], model: str, options: ChatOptions | None = None
     ) -> Iterator[ChatChunk]:
-        self._guard()
         outbound = self.prepare(messages)
         self.last_outbound = outbound
+        capped = self._capped(options)
+        reserved = self._reserve(model, outbound.messages, capped)
         restorer = _Restorer(outbound)
-        usage = Usage()
-        for chunk in self._inner.stream_chat(outbound.messages, model, options):
-            if chunk.usage is not None:
-                usage = chunk.usage
-            text = restorer.feed(chunk.text) if chunk.text else ""
-            if text:
-                yield ChatChunk(text)
-        tail = restorer.flush()
-        self._record(model, usage)
-        yield ChatChunk(tail, usage)
+        reported = Usage()
+        streamed_chars = 0
+        try:
+            for chunk in self._inner.stream_chat(outbound.messages, model, capped):
+                if chunk.usage is not None:
+                    reported = chunk.usage
+                streamed_chars += len(chunk.text)
+                text = restorer.feed(chunk.text) if chunk.text else ""
+                if text:
+                    yield ChatChunk(text)
+            tail = restorer.flush()
+            yield ChatChunk(tail, reported)
+        finally:
+            used = reported
+            if used.prompt_tokens + used.completion_tokens == 0:  # usage never reported
+                prompt = sum(estimate_tokens(m.content) for m in outbound.messages)
+                used = Usage(prompt, max(1, streamed_chars // _CHARS_PER_TOKEN))
+            self._settle(model, used, reserved)
 
     def chat_json(
         self,
@@ -152,11 +230,16 @@ class CloudChatProvider:
         schema: dict[str, Any],
         options: ChatOptions | None = None,
     ) -> JsonResult:
-        self._guard()
         outbound = self.prepare(messages)
         self.last_outbound = outbound
-        result = self._inner.chat_json(outbound.messages, model, schema, options)
-        self._record(model, result.usage)
+        capped = self._capped(options)
+        reserved = self._reserve(model, outbound.messages, capped)
+        usage = Usage()
+        try:
+            result = self._inner.chat_json(outbound.messages, model, schema, capped)
+            usage = result.usage
+        finally:
+            self._settle(model, usage, reserved)
         return JsonResult(_restore_strings(result.data, outbound.restore), result.usage)
 
     def list_models(self) -> list[ModelInfo]:
