@@ -12,7 +12,7 @@ from pathlib import Path
 from vector_embed.core.health import month_start
 from vector_embed.core.models.catalog import ROLES
 from vector_embed.core.secrets import KeyStore
-from vector_embed.core.settings import SETTINGS_FILENAME, Settings
+from vector_embed.core.settings import Settings
 from vector_embed.core.settings_io import set_setting
 from vector_embed.core.store.sqlite import StateDb
 
@@ -85,7 +85,7 @@ def run_keys(
 
 
 def run_cloud(args: argparse.Namespace, settings: Settings, store: KeyStore, out: Printer) -> int:
-    path = settings.storage.data_dir / SETTINGS_FILENAME
+    path = settings.settings_path()
     command: str = args.cloud_command
     if command == "add":
         _add(args, path, out)

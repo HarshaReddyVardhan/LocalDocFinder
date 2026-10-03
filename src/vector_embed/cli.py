@@ -37,7 +37,7 @@ from vector_embed.core.models.report import format_report
 from vector_embed.core.providers.base import ProviderError
 from vector_embed.core.providers.ollama import OllamaProvider
 from vector_embed.core.secrets import KeyringStore, KeyStoreError
-from vector_embed.core.settings import SETTINGS_FILENAME, Settings, SettingsError, load_settings
+from vector_embed.core.settings import Settings, SettingsError, load_settings
 from vector_embed.core.setup.flow import SetupError
 from vector_embed.core.setup.plan import SetupPlanError
 from vector_embed.core.skills.base import Skill, load_skills
@@ -136,7 +136,7 @@ def build_manager(settings: Settings, state: StateDb) -> ModelManager:
         registry,
         provider,
         state,
-        settings.storage.data_dir / SETTINGS_FILENAME,
+        settings.settings_path(),
         indexed_files=state.manifest_count,
     )
 
@@ -303,7 +303,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings = load_settings()
         if args.data_dir:
             storage = settings.storage.model_copy(update={"data_dir": Path(args.data_dir)})
-            settings = settings.model_copy(update={"storage": storage})
+            # A different data folder carries its own settings file.
+            settings = settings.model_copy(update={"storage": storage, "settings_file": None})
         configure_logging("cli", None, "WARNING")
         return _dispatch(args, settings)
     except tuple(kind for kind, _, _ in _ERRORS) as exc:

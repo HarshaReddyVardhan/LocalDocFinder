@@ -11,7 +11,7 @@ from vector_embed.core.models.benchmark import BenchResult, bench_chat, bench_em
 from vector_embed.core.models.catalog import load_catalog
 from vector_embed.core.models.hardware import probe_hardware
 from vector_embed.core.providers.ollama import OllamaProvider
-from vector_embed.core.settings import SETTINGS_FILENAME, Settings
+from vector_embed.core.settings import Settings
 from vector_embed.core.setup.flow import SetupEvent, SetupFlow, SlowOffer
 from vector_embed.core.setup.ollama_install import OllamaSetup
 from vector_embed.core.setup.windows_ollama import WindowsOllamaSystem
@@ -46,7 +46,7 @@ def build_flow(
         catalog=load_catalog(settings.storage.data_dir),
         hardware=probe_hardware(),
         state=state,
-        settings_path=settings.storage.data_dir / SETTINGS_FILENAME,
+        settings_path=settings.settings_path(),
         data_dir=settings.storage.data_dir,
         current_embed=settings.embedding.model,
         bench_chat=lambda model: bench_chat(provider, model),

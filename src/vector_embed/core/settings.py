@@ -468,6 +468,16 @@ class Settings(BaseSettings):
     app: AppSettings = Field(default_factory=AppSettings)
     updates: UpdateSettings = Field(default_factory=UpdateSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
+    # Where these settings were read from; not a user setting (``load_settings`` fills it in).
+    settings_file: Path | None = Field(default=None, exclude=True, repr=False)
+
+    def settings_path(self) -> Path:
+        """The file settings are saved to: the one they were loaded from.
+
+        Never ``storage.data_dir / settings.toml`` for a loaded configuration: a ``[storage]
+        data_dir`` entry moves the index, but ``settings.toml`` itself stays where it is read.
+        """
+        return self.settings_file or self.storage.data_dir / SETTINGS_FILENAME
 
     @classmethod
     def settings_customise_sources(
@@ -525,7 +535,10 @@ def load_settings(path: Path | None = None) -> Settings:
         # A repo's own .env must not steer the app (an Ollama host or cloud URL, for instance),
         # so only the .env beside settings.toml counts.
         # ``_env_file`` is a runtime option of pydantic-settings that its stubs do not declare.
-        return Settings(**{**data, "_env_file": toml_path.parent / ".env"})
+        data.pop("settings_file", None)  # the file cannot name itself; it is recorded below
+        return Settings(
+            **{**data, "_env_file": toml_path.parent / ".env", "settings_file": toml_path}
+        )
     except ValueError as exc:  # pydantic.ValidationError subclasses ValueError
         if isinstance(exc, SettingsError):
             raise

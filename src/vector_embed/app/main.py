@@ -36,7 +36,6 @@ from vector_embed.core.models.hardware import probe_hardware
 from vector_embed.core.process import is_frozen, single_instance
 from vector_embed.core.secrets import KeyringStore
 from vector_embed.core.settings import (
-    SETTINGS_FILENAME,
     Settings,
     SettingsError,
     default_data_dir,
@@ -172,7 +171,7 @@ def build_settings_window(
     *,
     on_changed: Callable[[], None] = lambda: None,
 ) -> SettingsWindow:
-    path = settings.storage.data_dir / SETTINGS_FILENAME
+    path = settings.settings_path()
     window = SettingsWindow(
         make_settings_controller(path, state, updater, on_changed), ModelsController(context, path)
     )
@@ -210,7 +209,7 @@ def run_setup_wizard(
         _open_wizards[0].raise_()
         _open_wizards[0].activateWindow()
         return
-    path = settings.storage.data_dir / SETTINGS_FILENAME
+    path = settings.settings_path()
     wizard = SetupWizard(
         SetupController(build, settings, state),
         make_settings_controller(path, state, updater, on_changed),
@@ -280,7 +279,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> int:
     with StateDb(settings.storage.data_dir) as state:
-        settings_path = settings.storage.data_dir / SETTINGS_FILENAME
+        settings_path = settings.settings_path()
         context = make_context_factory(settings, state, lambda: load_settings(settings_path))
         updater = Updater(resolve_source(settings.updates.repo_url), state=state)
         window = build_window(settings, state, context)
@@ -342,9 +341,7 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
                 QSystemTrayIcon.MessageIcon.Warning,
                 5000,
             )
-        scheduler = UpdateScheduler(
-            updater, auto_check_enabled(settings.storage.data_dir / SETTINGS_FILENAME)
-        )
+        scheduler = UpdateScheduler(updater, auto_check_enabled(settings.settings_path()))
         scheduler.ready.connect(lambda version: announce_update(tray, restart_action, version))
         scheduler.start()
         if is_frozen():
