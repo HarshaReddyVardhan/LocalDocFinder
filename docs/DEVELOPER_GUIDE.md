@@ -67,15 +67,54 @@ Search filters: `type:img|code|doc|plan|memory|note|pdf`, `ext:py`, `proj:name`,
 
 Global flags: `--data-dir <dir>` (override the data folder), `--cloud-ok` (allow this command to send *masked* text to the configured cloud provider).
 
-### 5b. Desktop app (tray + hotkey popup)
+### 5b. Desktop app in dev mode (UI)
+
+Run these from the repo root, with Ollama running (section 3). No build or install is needed; the app runs straight from `src/` in `.venv`.
 
 ```powershell
-.venv\Scripts\python -m vector_embed app         # same as: python -m vector_embed.app
+# Start the UI and open the search window immediately (recommended while developing)
+.venv\Scripts\python -m vector_embed app --show
+
+# Other ways to start it
+.venv\Scripts\python -m vector_embed app           # tray icon only; press the hotkey to open the popup
+.venv\Scripts\python -m vector_embed.app --show    # equivalent module form
+.venv\Scripts\python -m vector_embed setup         # open the first-run setup wizard now
+.venv\Scripts\python -m vector_embed app --setup   # same as above
+.venv\Scripts\pythonw -m vector_embed app          # no console window (like a real launch)
 ```
 
-- **Ctrl+Alt+Space** opens the popup. Enter opens a file, Ctrl+Enter reveals it in Explorer, Shift+Enter opens it in VS Code, `?`/Tab switch to Ask/Chat/Match, Esc hides.
-- The tray icon opens **Settings** (models, health, cloud, updates, Advanced).
-- First launch with no settings runs the **setup wizard**; force it with `python -m vector_embed setup`.
+Flags of the app entry: `--show` (show the window at start), `--setup` (run the wizard at start).
+
+What you get:
+- **Tray icon** (blue "S"): left-click opens the search popup; right-click menu has Search, Settings…, Run setup again…, Restart to update, Quit.
+- **Ctrl+Alt+Space** opens the popup from anywhere. If another app owns that key the tray tooltip says "hotkey unavailable"; use the tray icon or change the key in Settings.
+- **Popup keys:** type to search; Enter opens the file; Ctrl+Enter reveals it in Explorer; Shift+Enter opens it in VS Code; `?` or Tab switch to Ask / Chat / Match; Esc hides.
+- **Settings window** (tray > Settings…): general settings, Models & Health, cloud and privacy, Updates, a generated Advanced tab for every setting.
+- **First launch** (no completed setup recorded in the data folder) runs the setup wizard automatically.
+
+Dev-mode things to know:
+1. **Quit with the tray menu, not Ctrl+C.** Closing the window only hides it (`setQuitOnLastWindowClosed(False)`); Quit unloads the models. Use `Stop-Process -Name pythonw,python` only as a last resort.
+2. **Only one copy runs per data folder** (file lock `app.lock`). A second launch logs "another copy of the app is already running" and exits silently. Quit the tray copy first, including an installed `VectorEmbed.exe` that uses the same data folder.
+3. **Python changes need a restart.** There is no hot reload: quit from the tray and start it again. Settings changes made in the Settings window apply without restart.
+4. **The watcher is not started for you from source.** The app only auto-starts the watcher in the packaged build. To index files while the UI runs, start it yourself (5c), or index on demand with `ve index --now --path <folder>`.
+5. **Use a scratch data folder to avoid touching your real index and settings:**
+   ```powershell
+   $env:VE_STORAGE__DATA_DIR = "D:\scratch\ve-data"
+   .venv\Scripts\python -m vector_embed app --show
+   ```
+   Set the same variable in every terminal that runs `ve`, the watcher or the worker so they share that folder (or pass `ve --data-dir D:\scratch\ve-data ...` for CLI commands).
+6. **Debug output:** run with `python` (not `pythonw`) to see logs in the console, set `VE_LOG_LEVEL=DEBUG`, and read the JSON log files in `<data folder>\logs` (default `%LOCALAPPDATA%\VectorEmbedData\logs`; `app` writes the app's log). Unhandled exceptions are logged by `install_excepthooks`.
+7. **Invalid settings:** the app shows an error dialog and exits with code 2. Fix `settings.toml` in the data folder or the `VE_*` variable named in the message.
+8. **Qt needs a desktop session.** It cannot run over SSH or in a headless service.
+
+### 5b-1. Full dev stack, step by step
+
+1. Start Ollama (tray app or `ollama serve`) and confirm: `ve doctor`.
+2. Terminal 1, UI: `.venv\Scripts\python -m vector_embed app --show`.
+3. Terminal 2, background indexing: `.venv\Scripts\python -m vector_embed watcher` (starts the worker on AC power when idle).
+4. Terminal 3, tools: `ve status`, `ve health`, `ve search "..."`, and `pytest`.
+5. In the popup, search; open Settings from the tray to add folders to index and check models.
+6. Edit code, quit from the tray, restart step 2. Run the four checks (section 8) before committing.
 
 ### 5c. Background processes
 
