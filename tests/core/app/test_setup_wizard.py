@@ -206,7 +206,7 @@ def test_models_page_is_prefilled_with_the_auto_picks(qapp: QApplication, harnes
     load_models_page(qapp, page)
     assert page.embed.currentData() == "qwen3-embedding:0.6b"
     assert page.chat.currentData() == "qwen3.5:9b"
-    assert page.chat.currentText() == "qwen3.5:9b (6100 MB)"
+    assert page.chat.currentText() == "qwen3.5:9b - needs download, 6100 MB"
     assert page.choices() == SetupChoices("qwen3-embedding:0.6b", "qwen3.5:9b", ())
     assert "To download: 6740 MB" in page.disk.text()
     assert page.isComplete()
@@ -220,7 +220,7 @@ def test_models_page_lists_every_catalog_model_and_flags_misfits(
     load_models_page(qapp, page)
     names = [page.chat.itemText(i) for i in range(page.chat.count())]
     assert len(names) == len(load_catalog().preferences("chat"))
-    assert "qwen3.5:9b (6100 MB) - won't fit" in names
+    assert "qwen3.5:9b - needs download, 6100 MB - won't fit" in names
     assert page.chat.currentData() == "llama3.2"
 
 
@@ -645,3 +645,40 @@ def test_the_context_factory_makes_sure_ollama_is_up_before_building(
     factory()
     factory()  # cached: no second check
     assert hosts == [env.settings.ollama_host]
+
+
+def test_models_page_marks_installed_models_and_offers_the_users_own(
+    qapp: QApplication, tmp_path: Path
+) -> None:
+    harness = Harness(tmp_path, installed=["qwen3.5:9b", "my-own-chat:latest"])
+    wizard = wizard_for(harness)
+    page = wizard.models
+    load_models_page(qapp, page)
+    chat_items = [page.chat.itemText(i) for i in range(page.chat.count())]
+    assert "qwen3.5:9b - already installed" in chat_items
+    assert "my-own-chat:latest - already installed (your own model)" in chat_items
+    assert any("needs download" in text for text in chat_items)  # the rest still say so
+    assert "qwen3.5:9b" in page.installed_note.text()
+    assert "my-own-chat" not in " ".join(page.embed.itemText(i) for i in range(page.embed.count()))
+    assert "Needs download: qwen3-embedding:0.6b" in page.disk.text()
+    assert "qwen3.5:9b" not in page.disk.text().split("To download")[0]
+
+
+def test_models_page_says_when_nothing_needs_downloading(
+    qapp: QApplication, tmp_path: Path
+) -> None:
+    harness = Harness(tmp_path, installed=["qwen3-embedding:0.6b", "qwen3.5:9b"])
+    wizard = wizard_for(harness)
+    page = wizard.models
+    load_models_page(qapp, page)
+    assert "Nothing to download" in page.disk.text()
+    assert page.isComplete()
+
+
+def test_models_page_without_models_says_everything_is_downloaded(
+    qapp: QApplication, harness: Harness
+) -> None:
+    wizard = wizard_for(harness)
+    page = wizard.models
+    load_models_page(qapp, page)
+    assert "No models are installed yet" in page.installed_note.text()

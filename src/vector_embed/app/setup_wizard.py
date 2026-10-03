@@ -29,6 +29,7 @@ from vector_embed.core.models.benchmark import Verdict, judge
 from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_EMBED, Catalog
 from vector_embed.core.models.fit import budget_mb, fits
 from vector_embed.core.models.hardware import Hardware
+from vector_embed.core.providers.base import ModelInfo
 from vector_embed.core.settings import SettingsError
 from vector_embed.core.setup.flow import (
     EnvironmentProbe,
@@ -208,7 +209,9 @@ class ModelsPage(QWizardPage):
             for role in EXTRA_ROLES
         }
         self.disk = _label()
+        self.installed_note = _label()
         layout = QVBoxLayout(self)
+        layout.addWidget(self.installed_note)
         layout.addWidget(QLabel("Embedding model (finds your files)"))
         layout.addWidget(self.embed)
         layout.addWidget(QLabel("Chat model (answers questions)"))
@@ -224,18 +227,51 @@ class ModelsPage(QWizardPage):
             box.toggled.connect(self._update_disk)
         self._controller.probed.connect(self._on_probed)
 
+    def _installed(self) -> set[str]:
+        probe = self._controller.environment
+        return {n.removesuffix(":latest") for n in probe.installed} if probe else set()
+
     def _fill(self, combo: QComboBox, role: str, selected: str | None) -> None:
+        """Every catalog model, each marked installed or needs-download, then the user's own."""
         combo.clear()
         budget = budget_mb(self._hardware, total=True)
+        installed = self._installed()
+        listed: set[str] = set()
         for name in self._catalog.preferences(role):
             entry = self._catalog.entry(name)
             if entry is None:
                 continue
-            note = "" if fits(entry, entry.vram_mb, self._hardware, budget) else " - won't fit"
+            listed.add(name.removesuffix(":latest"))
             size = f"{entry.download_mb} MB" if entry.download_mb else "size unknown"
-            combo.addItem(f"{name} ({size}){note}", name)
+            state = (
+                "already installed"
+                if name.removesuffix(":latest") in installed
+                else (f"needs download, {size}")
+            )
+            note = "" if fits(entry, entry.vram_mb, self._hardware, budget) else " - won't fit"
+            combo.addItem(f"{name} - {state}{note}", name)
+        for info in self._own_models(role):
+            if info.name.removesuffix(":latest") not in listed:
+                combo.addItem(f"{info.name} - already installed (your own model)", info.name)
         index = combo.findData(selected)
         combo.setCurrentIndex(max(index, 0))
+
+    def _own_models(self, role: str) -> list[ModelInfo]:
+        """Installed models that are not in the catalog and suit ``role``."""
+        probe = self._controller.environment
+        if probe is None:
+            return []
+        wanted_embedding = role == ROLE_EMBED
+        return [m for m in probe.models if m.is_embedding == wanted_embedding]
+
+    def _describe_installed(self) -> None:
+        probe = self._controller.environment
+        names = sorted(probe.installed) if probe else []
+        self.installed_note.setText(
+            "Already on this PC (no download needed): " + ", ".join(names)
+            if names
+            else "No models are installed yet, so the models you pick will be downloaded."
+        )
 
     def initializePage(self) -> None:  # noqa: N802
         self._preview = None
@@ -255,6 +291,7 @@ class ModelsPage(QWizardPage):
         if preview is None:
             return
         self._filling = True
+        self._describe_installed()
         plan = preview.plan
         embed, chat = plan.model_for(ROLE_EMBED), plan.model_for(ROLE_CHAT)
         self._fill(self.embed, ROLE_EMBED, embed.model if embed else None)
@@ -279,7 +316,13 @@ class ModelsPage(QWizardPage):
             self.disk.setText("Checking free disk space…")
             self.completeChanged.emit()
             return
-        text = f"To download: {preview.download_mb} MB. Free disk space: {preview.free_disk_mb} MB."
+        if preview.to_download:
+            text = (
+                f"Needs download: {', '.join(preview.to_download)}. To download: "
+                f"{preview.download_mb} MB. Free disk space: {preview.free_disk_mb} MB."
+            )
+        else:
+            text = "Nothing to download: the chosen models are already installed."
         if not preview.enough_disk:
             text += " Not enough free space; choose smaller models or free some space."
         text += "".join(f"\n{warning}" for warning in preview.plan.warnings)

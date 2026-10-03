@@ -107,6 +107,7 @@ class EnvironmentProbe:
     ollama: OllamaState
     installed: tuple[str, ...]
     free_disk_mb: int
+    models: tuple[ModelInfo, ...] = ()  # the installed models in full, to offer the user's own
 
 
 @dataclass(frozen=True)
@@ -177,8 +178,10 @@ class SetupFlow:
         in the background, and then previews every choice against the same answer.
         """
         state = self._ollama.detect()
-        installed = tuple(self._installed_names()) if state is OllamaState.RUNNING else ()
-        return EnvironmentProbe(state, installed, self._ollama.free_disk_mb())
+        models = tuple(self._host.list_models()) if state is OllamaState.RUNNING else ()
+        return EnvironmentProbe(
+            state, tuple(m.name for m in models), self._ollama.free_disk_mb(), models
+        )
 
     def preview_from(self, probe: EnvironmentProbe, options: SetupOptions) -> SetupPreview:
         """What ``run`` would do given ``probe`` and the choices: pure arithmetic, instant."""
