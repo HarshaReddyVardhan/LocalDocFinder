@@ -13,6 +13,7 @@ from vector_embed.core.providers.base import (
     ChatOptions,
     ChatProvider,
     EmbedProvider,
+    InvalidJsonError,
     Message,
     ModelNotFoundError,
     ProviderError,
@@ -271,8 +272,38 @@ class TestChat:
     def test_chat_json_rejects_invalid_json(self) -> None:
         client = FakeOllamaClient()
         client.chat_json_reply = "not json"
-        with pytest.raises(ProviderError, match="invalid JSON"):
+        with pytest.raises(InvalidJsonError, match="invalid JSON"):
             make(client).chat_json(self.messages, "m", {})
+
+    @pytest.mark.parametrize(
+        ("status", "error"), [(400, ProviderError), (500, ProviderUnavailableError)]
+    )
+    def test_an_error_inside_the_stream_is_a_provider_error(
+        self, status: int, error: type[ProviderError]
+    ) -> None:
+        client = FakeOllamaClient()
+
+        def failing() -> object:
+            yield ollama.ChatResponse(message=ollama.Message(role="assistant", content="a"))
+            raise ollama.ResponseError("runner terminated", status)
+
+        client.chat = lambda **_kw: failing()  # type: ignore[method-assign]
+        with pytest.raises(error, match="runner terminated"):
+            list(make(client).stream_chat(self.messages, "m"))
+
+    def test_a_prompt_that_fills_the_context_window_is_flagged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = FakeOllamaClient()
+        client.chat_json_reply = json.dumps({"a": 1})
+        provider = make(client)
+        with caplog.at_level("DEBUG", logger=om.__name__):
+            provider.chat_json(self.messages, "m", {}, ChatOptions(num_ctx=7))  # 7 prompt tokens
+            provider.chat_json(self.messages, "m", {}, ChatOptions(num_ctx=8192))
+        cut, fine = caplog.records
+        assert cut.levelname == "WARNING" and "cut" in cut.getMessage()
+        assert fine.levelname == "DEBUG"
+        assert (cut.prompt_tokens, cut.num_ctx) == (7, 7)  # type: ignore[attr-defined]
 
     def test_prewarm_and_unload(self) -> None:
         client = FakeOllamaClient()

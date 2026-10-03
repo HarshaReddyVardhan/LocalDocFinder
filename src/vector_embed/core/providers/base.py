@@ -27,6 +27,10 @@ class ModelNotFoundError(ProviderError):
     """The requested model is not installed or not offered by the provider."""
 
 
+class InvalidJsonError(ProviderError):
+    """The model answered, but not with parseable JSON (worth one more try)."""
+
+
 @dataclass(frozen=True)
 class Message:
     role: Literal["system", "user", "assistant"]

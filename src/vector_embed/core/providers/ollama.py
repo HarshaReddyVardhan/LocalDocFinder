@@ -22,6 +22,7 @@ from vector_embed.core.providers.base import (
     ChatChunk,
     ChatOptions,
     EmbedKind,
+    InvalidJsonError,
     JsonResult,
     Message,
     ModelInfo,
@@ -47,8 +48,24 @@ _CONNECT_ATTEMPTS = (
 )
 _CONNECT_RETRY_SECONDS = 0.5
 _CONNECT_TIMEOUT_SECONDS = 3.0
+_FULL_CONTEXT_SHARE = 0.95  # a prompt this close to num_ctx was most likely cut by Ollama
 _READ_TIMEOUT_SECONDS = 600.0  # loading a big model or embedding a big batch can take minutes
 _TRANSIENT = (ConnectionError, TimeoutError, httpx.TransportError)
+
+
+def _check_context(model: str, usage: Usage, options: ChatOptions) -> None:
+    """Log the prompt size against the context window, and warn when it looks cut.
+
+    Ollama silently drops the start of a prompt longer than ``num_ctx``; the only trace is a
+    ``prompt_eval_count`` that fills the window.
+    """
+    extra = {"model": model, "prompt_tokens": usage.prompt_tokens, "num_ctx": options.num_ctx}
+    if usage.prompt_tokens >= options.num_ctx * _FULL_CONTEXT_SHARE:
+        logger.warning(
+            "ollama: the prompt filled the context window and was likely cut", extra=extra
+        )
+    else:
+        logger.debug("ollama: prompt size", extra=extra)
 
 
 class Interrupted(Exception):  # noqa: N818  # control-flow signal, not an error
@@ -248,9 +265,15 @@ class OllamaProvider:
             for part in stream:
                 text = part["message"]["content"] or ""
                 if part.get("done"):
-                    yield ChatChunk(text, self._usage(part))
+                    usage = self._usage(part)
+                    _check_context(model, usage, opts)
+                    yield ChatChunk(text, usage)
                 elif text:
                     yield ChatChunk(text)
+        except ollama.ResponseError as exc:  # e.g. the runner died part-way through the reply
+            if _is_transient(exc):
+                raise ProviderUnavailableError(f"ollama stream interrupted: {exc}") from exc
+            raise ProviderError(f"ollama stream failed: {exc}") from exc
         except _TRANSIENT as exc:
             raise ProviderUnavailableError(f"ollama stream interrupted: {exc}") from exc
         finally:
@@ -282,8 +305,10 @@ class OllamaProvider:
         try:
             data = json.loads(content)
         except (TypeError, json.JSONDecodeError) as exc:
-            raise ProviderError(f"model returned invalid JSON: {exc}") from exc
-        return JsonResult(data, self._usage(response))
+            raise InvalidJsonError(f"model returned invalid JSON: {exc}") from exc
+        usage = self._usage(response)
+        _check_context(model, usage, opts)
+        return JsonResult(data, usage)
 
     def prewarm(self, model: str, options: ChatOptions | None = None) -> None:
         """Start loading ``model`` (empty request) so the first answer has no load delay."""

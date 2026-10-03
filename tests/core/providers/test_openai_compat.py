@@ -10,6 +10,7 @@ from vector_embed.core.providers.base import (
     ChatChunk,
     ChatOptions,
     ChatProvider,
+    InvalidJsonError,
     Message,
     ModelNotFoundError,
     ProviderError,
@@ -167,7 +168,9 @@ class TestJson:
     def test_falls_back_to_json_object_mode(
         self, provider: OpenAICompatibleProvider, client: FakeClient
     ) -> None:
-        client.completions.errors = [api_error(openai.BadRequestError, 400, "unsupported")]
+        client.completions.errors = [
+            api_error(openai.BadRequestError, 400, "response_format json_schema is not supported")
+        ]
         assert provider.chat_json(MESSAGES, "m", {"type": "object"}).data == {"ok": True}
         retry = client.completions.calls[1]
         assert retry["response_format"] == {"type": "json_object"}
@@ -176,15 +179,27 @@ class TestJson:
     def test_both_modes_rejected_is_an_error(
         self, provider: OpenAICompatibleProvider, client: FakeClient
     ) -> None:
-        client.completions.errors = [api_error(openai.BadRequestError, 400, "no")] * 2
+        client.completions.errors = [
+            api_error(openai.BadRequestError, 400, "unknown response_format")
+        ] * 2
         with pytest.raises(ProviderError):
             provider.chat_json(MESSAGES, "m", {})
+
+    def test_other_bad_requests_do_not_fall_back(
+        self, provider: OpenAICompatibleProvider, client: FakeClient
+    ) -> None:
+        client.completions.errors = [
+            api_error(openai.BadRequestError, 400, "prompt is too long: 210000 tokens")
+        ]
+        with pytest.raises(ProviderError, match="too long"):
+            provider.chat_json(MESSAGES, "m", {})
+        assert len(client.completions.calls) == 1  # no second, doomed call in json_object mode
 
     def test_invalid_json_and_transport_errors(
         self, provider: OpenAICompatibleProvider, client: FakeClient
     ) -> None:
         client.completions.json_reply = "not json"
-        with pytest.raises(ProviderError, match="invalid JSON"):
+        with pytest.raises(InvalidJsonError, match="invalid JSON"):
             provider.chat_json(MESSAGES, "m", {})
         client.completions.errors = [openai.APIConnectionError(request=REQUEST)]
         with pytest.raises(ProviderUnavailableError):

@@ -16,6 +16,7 @@ from vector_embed.core.providers.base import (
     CAP_COMPLETION,
     ChatChunk,
     ChatOptions,
+    InvalidJsonError,
     JsonResult,
     Message,
     ModelInfo,
@@ -31,6 +32,16 @@ logger = logging.getLogger(__name__)
 
 ClientLike: TypeAlias = Any  # openai.OpenAI or a test double
 _PER_MILLION = 1_000_000
+
+
+_RESPONSE_FORMAT_WORDS = ("response_format", "json_schema", "json_object", "structured output")
+
+
+def _rejects_response_format(exc: openai.BadRequestError) -> bool:
+    """Whether a 400 is the endpoint refusing the requested JSON mode, the one case where the
+    next, plainer JSON mode is worth trying. Any other 400 (bad model, prompt too long) is not."""
+    message = str(exc).lower()
+    return any(word in message for word in _RESPONSE_FORMAT_WORDS)
 
 
 class OpenAICompatibleProvider:
@@ -146,7 +157,9 @@ class OpenAICompatibleProvider:
                     temperature=opts.temperature,
                     response_format=response_format,
                 )
-            except openai.BadRequestError as exc:  # this model/endpoint lacks json_schema
+            except openai.BadRequestError as exc:
+                if not _rejects_response_format(exc):  # a real error, not a missing JSON mode
+                    raise self._translate(exc) from exc
                 last = exc
                 continue
             except (openai.OpenAIError, OSError) as exc:
@@ -154,7 +167,7 @@ class OpenAICompatibleProvider:
             try:
                 data = json.loads(response.choices[0].message.content)
             except (TypeError, json.JSONDecodeError) as exc:
-                raise ProviderError(f"{self.label}: model returned invalid JSON: {exc}") from exc
+                raise InvalidJsonError(f"{self.label}: model returned invalid JSON: {exc}") from exc
             return JsonResult(data, self._usage(response.usage))
         raise self._translate(last or RuntimeError("no JSON mode accepted"))
 
