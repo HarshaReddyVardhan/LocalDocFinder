@@ -132,7 +132,7 @@ class GeneralTab(SettingsTab):
             return
         added = self._guard(
             lambda: self._controller.set_roots([*self._roots(), folder]),
-            "folder added; it is scanned on the next idle pass",
+            "folder added; the watcher starts on it within a minute and scans it when idle",
         )
         if added:
             self.refresh()

@@ -238,7 +238,9 @@ class Watcher:
         scope: ScopePolicy,
         clock: Callable[[], float] = time.time,
         roots: Sequence[str] | None = None,
+        reload_settings: Callable[[], Settings] | None = None,
     ) -> None:
+        self._reload_settings = reload_settings
         self.settings = settings
         self.state = state
         self.gate = gate
@@ -371,7 +373,36 @@ class Watcher:
             logger.warning("watcher: events were dropped under load; scheduling a reconcile")
             self.state.set_meta("last_reconcile", "0")
         if self._ticks % _WATCH_REFRESH_TICKS == 0:
+            self.reload_roots()
             self.refresh_watches()
+
+    def reload_roots(self) -> bool:
+        """Pick up folders added or removed in Settings; True if the roots changed.
+
+        The scope, the project finder and the event handler were built from the old roots, so they
+        are rebuilt, and a reconcile is scheduled: a folder that was just added is scanned, not
+        waited on for events that will never come for files already there.
+        """
+        if self._reload_settings is None:
+            return False
+        try:
+            fresh = self._reload_settings()
+        except SettingsError:
+            logger.warning("watcher: settings are unreadable; keeping the current folders")
+            return False
+        roots = [r for r in fresh.scope.roots if Path(r).is_dir()]
+        if roots == self.roots:
+            return False
+        logger.info("watcher: folders changed", extra={"roots": roots})
+        self.settings = fresh
+        self.roots = roots
+        self.scope = build_scope(fresh)
+        self.projects = build_projects(fresh, self.scope)
+        self.handler = ChangeHandler(self.state, self.projects, self.scope, fresh)
+        self.observer.unschedule_all()  # the old handler is gone: every watch is re-created
+        self._watches.clear()
+        self.state.set_meta("last_reconcile", "0")
+        return True
 
     def tick(self) -> None:
         if stop_requested(self.settings.storage.data_dir):
@@ -434,6 +465,7 @@ def build_watcher(settings: Settings, state: StateDb) -> Watcher:
         lambda: unload_model(settings.ollama_host, _current_embed_model(settings)),
         projects=build_projects(settings, scope),
         scope=scope,
+        reload_settings=lambda: load_settings(settings.settings_path()),
     )
 
 

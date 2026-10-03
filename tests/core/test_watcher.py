@@ -767,3 +767,105 @@ class TestHelpers:
         factory: Callable[..., object] = watcher.main
         assert factory([]) == 0
         assert ran == ["run"]
+
+
+class TestRootReload:
+    @staticmethod
+    def with_roots(env: Env, *roots: Path) -> object:
+        return env.settings.model_copy(
+            update={
+                "scope": env.settings.scope.model_copy(update={"roots": tuple(map(str, roots))})
+            }
+        )
+
+    @pytest.fixture
+    def reloading(
+        self, env: Env, clock: Clock, tmp_path: Path
+    ) -> tuple[Watcher, list[object], Path]:
+        added = tmp_path / "second-root"
+        added.mkdir()
+        write_to = added / "x.py"
+        write_to.write_text("value = 1" + chr(10), encoding="utf-8")
+        current: list[object] = [self.with_roots(env, env.root)]
+        w = Watcher(
+            env.settings,
+            env.state,
+            FakeGate(),
+            FakeLauncher(),
+            lambda: None,
+            projects=env.projects,
+            scope=env.scope,
+            clock=clock,
+            roots=[str(env.root)],
+            reload_settings=lambda: current[0],  # type: ignore[arg-type,return-value]
+        )
+        env.state.set_meta("last_reconcile", str(clock.now))
+        return w, current, added
+
+    def test_an_unchanged_configuration_changes_nothing(
+        self, reloading: tuple[Watcher, list[object], Path], env: Env
+    ) -> None:
+        w, _, _ = reloading
+        assert w.reload_roots() is False
+        assert not w.reconcile_due()
+
+    def test_a_folder_added_in_settings_is_watched_and_scanned(
+        self, reloading: tuple[Watcher, list[object], Path], env: Env
+    ) -> None:
+        w, current, added = reloading
+        scheduled: list[str] = []
+
+        class FakeObserver:
+            def schedule(self, _handler: object, path: str, recursive: bool) -> str:
+                scheduled.append(path)
+                return path
+
+            def unschedule_all(self) -> None:
+                scheduled.append("unschedule_all")
+
+            def unschedule(self, watch: str) -> None:
+                scheduled.append(f"unschedule {watch}")
+
+        w.observer = FakeObserver()  # type: ignore[assignment]
+        old_handler = w.handler
+        current[0] = self.with_roots(env, env.root, added)
+        assert w.reload_roots() is True
+        assert w.roots == [str(env.root), str(added)]
+        assert w.handler is not old_handler  # rebuilt from the new settings
+        assert w.reconcile_due()  # the new folder's existing files get scanned
+        w.refresh_watches()
+        assert str(added) in scheduled  # and it is watched from now on
+        assert scheduled[0] == "unschedule_all"
+
+    def test_a_removed_or_missing_folder_is_dropped(
+        self, reloading: tuple[Watcher, list[object], Path], env: Env, tmp_path: Path
+    ) -> None:
+        w, current, _ = reloading
+        current[0] = self.with_roots(env, tmp_path / "does-not-exist")
+        assert w.reload_roots() is True
+        assert w.roots == []
+
+    def test_unreadable_settings_keep_what_works(
+        self, reloading: tuple[Watcher, list[object], Path], env: Env
+    ) -> None:
+        w, _, _ = reloading
+
+        def broken() -> object:
+            raise watcher.SettingsError("hand-edited and broken")
+
+        w._reload_settings = broken  # type: ignore[assignment]
+        assert w.reload_roots() is False
+        assert w.roots == [str(env.root)]
+
+    def test_the_tick_checks_for_new_folders_about_once_a_minute(
+        self,
+        reloading: tuple[Watcher, list[object], Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        w, _, _ = reloading
+        reloads: list[int] = []
+        monkeypatch.setattr(w, "reload_roots", lambda: reloads.append(1) or False)
+        monkeypatch.setattr(w, "refresh_watches", lambda: None)
+        for _ in range(12):
+            w.tick()
+        assert len(reloads) == 2
