@@ -12,6 +12,7 @@ import enum
 import threading
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 
@@ -54,6 +55,7 @@ from vector_embed.app.match_controller import MatchController
 from vector_embed.app.match_panel import MatchPanel
 from vector_embed.app.result_delegate import ROW_ROLE, ResultDelegate
 from vector_embed.core.rag import Source
+from vector_embed.core.skills.base import panel_skills
 from vector_embed.core.skills.search import SearchResult
 
 COMPACT_HEIGHT = 84  # just the search bar and the status line
@@ -89,6 +91,28 @@ class Mode(enum.Enum):
     ASK = "ask"
     CHAT = "chat"
     MATCH = "match"
+
+
+@dataclass(frozen=True)
+class SkillMode:
+    """A mode for any other panel skill in the registry: type, press Enter, read the answer."""
+
+    value: str  # the skill's registry name, like ``Mode.value``
+    title: str
+    hint: str
+
+
+AnyMode = Mode | SkillMode
+
+
+def skill_modes() -> list[SkillMode]:
+    """Registered panel skills that have no hand-built mode, in registration order."""
+    built_in = {mode.value for mode in Mode}
+    return [
+        SkillMode(skill.name, skill.title, f"{skill.description}  (Enter to run)")
+        for skill in panel_skills()
+        if skill.name not in built_in
+    ]
 
 
 class _Signals(QObject):
@@ -237,7 +261,8 @@ class SearchWindow(QWidget):
         self._results: list[SearchResult] = []
         self._sources: list[Source] = []
         self._project: str | None = None
-        self._mode = Mode.SEARCH
+        self._mode: AnyMode = Mode.SEARCH
+        self._skill_modes = skill_modes() if assistant is not None else []
         self._chat = ChatState()
         self._answer_text = ""
         self._pool = QThreadPool.globalInstance()
@@ -248,7 +273,7 @@ class SearchWindow(QWidget):
         self._signals.cloud_checked.connect(self._on_cloud_checked)
         self._signals.preview_ready.connect(self._on_preview)
         self._mode_token = 0  # which mode switch a cloud probe answers
-        self._pending_cloud: tuple[Mode, str] | None = None
+        self._pending_cloud: tuple[AnyMode, str] | None = None
         self._last_render = 0.0
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
@@ -335,22 +360,22 @@ class SearchWindow(QWidget):
 
     # ------------------------------------------------------------------ modes
     @property
-    def mode(self) -> Mode:
+    def mode(self) -> AnyMode:
         return self._mode
 
-    def available_modes(self) -> list[Mode]:
-        modes = [Mode.SEARCH]
+    def available_modes(self) -> list[AnyMode]:
+        modes: list[AnyMode] = [Mode.SEARCH]
         if self._assistant is not None:
             modes += [Mode.ASK, Mode.CHAT]
         if self.panel is not None:
             modes.append(Mode.MATCH)
-        return modes
+        return modes + list(self._skill_modes)
 
-    def _next_mode(self) -> Mode:
+    def _next_mode(self) -> AnyMode:
         modes = self.available_modes()
         return modes[(modes.index(self._mode) + 1) % len(modes)]
 
-    def set_mode(self, mode: Mode) -> None:
+    def set_mode(self, mode: AnyMode) -> None:
         if mode is self._mode:
             return
         if mode not in self.available_modes():
@@ -374,7 +399,9 @@ class SearchWindow(QWidget):
         searching = self._mode is Mode.SEARCH
         self.mode_label.setText(self._mode.value.upper())
         self.mode_label.setVisible(not searching)
-        self.input.setPlaceholderText(PLACEHOLDERS[self._mode.value])
+        mode = self._mode
+        hint = mode.hint if isinstance(mode, SkillMode) else PLACEHOLDERS[mode.value]
+        self.input.setPlaceholderText(hint)
         self.body.setCurrentIndex(self._body_index())
         self._check_cloud_async()
         self.answer.setVisible(not searching)
@@ -554,6 +581,8 @@ class SearchWindow(QWidget):
         self.status.setText("thinking…")
         if self._mode is Mode.ASK:
             events = self._assistant.ask(text)
+        elif isinstance(self._mode, SkillMode):
+            events = self._assistant.run_skill(self._mode.value, text)
         else:
             self.answer.setMarkdown(f"**You:** {text}\n\n")
             self._answer_text = f"**You:** {text}\n\n"

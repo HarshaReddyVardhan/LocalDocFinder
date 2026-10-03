@@ -87,6 +87,11 @@ def load_skills() -> list[type[Skill]]:
     return list(SKILLS)
 
 
+def panel_skills() -> list[type[Skill]]:
+    """Skills any front-end can run without special UI: one text input, a text answer."""
+    return [s for s in load_skills() if s.ui_hint == UI_PANEL and s.cli_positional]
+
+
 def create_skill(name: str, ctx: SkillContext) -> Skill:
     load_skills()
     return SKILLS.get(name)(ctx)

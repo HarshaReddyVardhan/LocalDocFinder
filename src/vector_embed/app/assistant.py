@@ -4,14 +4,17 @@ import logging
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
+from pydantic import ValidationError
+
 from vector_embed.core.documents import DocumentError
 from vector_embed.core.llm import ChatBlockedError, LlmGateway, NoChatModelError
 from vector_embed.core.models.catalog import ROLE_CHAT
 from vector_embed.core.providers.base import Message, ProviderError
 from vector_embed.core.rag import Source
+from vector_embed.core.registry import RegistryError
 from vector_embed.core.runtime import CloudContext
 from vector_embed.core.skills.ask import AskRun, AskSkill, gateway_of, privacy_of
-from vector_embed.core.skills.base import SkillContext
+from vector_embed.core.skills.base import SkillContext, create_skill
 from vector_embed.core.skills.chat import ChatInput, ChatSkill, PreparedTurn
 
 logger = logging.getLogger(__name__)
@@ -283,6 +286,28 @@ class AssistantService:
             yield Failed(str(exc))
             return
         yield from self._turn_events(prepared, state)
+
+    def run_skill(self, name: str, text: str) -> Iterator[Event]:
+        """Run any panel skill from the registry with ``text`` as its main input (a skill added
+        as one file gets a window mode without UI code)."""
+        try:
+            skill = create_skill(name, self.ctx)
+            if skill.cli_positional is None:
+                raise RuntimeError(f"the {name} skill takes no text input")
+            params = skill.Input(**{skill.cli_positional: text})
+            deltas = skill.stream(params)
+            if deltas is None:
+                yield Delta(skill.render(skill.run(params)))
+            else:
+                for delta in deltas:
+                    yield Delta(delta)
+            yield Finished()
+        except ValidationError as exc:
+            yield Failed(f"{name}: {exc.errors(include_input=False)[0]['msg']}")
+        except RegistryError as exc:
+            yield Failed(str(exc.args[0]))
+        except _KNOWN_ERRORS as exc:
+            yield Failed(str(exc))
 
     def _turn_events(self, prepared: PreparedTurn, state: ChatState) -> Iterator[Event]:
         try:
