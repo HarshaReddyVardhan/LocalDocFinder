@@ -3,6 +3,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QWizard
 from tests.core.app.test_models_panel import wait_for
 from tests.core.app.test_settings_window import FakeKeys
@@ -12,7 +13,7 @@ from tests.core.setup.fakes import GPU8, Harness
 from vector_embed.app import main as app_main
 from vector_embed.app.settings_controller import SettingsController
 from vector_embed.app.setup_controller import SetupController
-from vector_embed.app.setup_wizard import ModelsPage, SetupWizard
+from vector_embed.app.setup_wizard import ModelsPage, SetupWizard, TermsPage
 from vector_embed.core.models.benchmark import BenchKind
 from vector_embed.core.models.catalog import load_catalog
 from vector_embed.core.models.hardware import Hardware
@@ -26,7 +27,9 @@ from vector_embed.core.setup.flow import (
     SlowOffer,
     Stage,
 )
+from vector_embed.core.setup.ollama_install import OllamaState
 from vector_embed.core.setup.plan import SetupChoices
+from vector_embed.core.terms import accept_terms, terms_accepted
 
 GPU4 = Hardware("GTX 1650", 4096, 3500, 16000, 8000, 8, True)
 NO_GPU = Hardware(None, 0, 0, 16000, 8000, 8, True)
@@ -63,6 +66,7 @@ def wizard_for(
         load_catalog(),
         hardware,
         ask_downgrade=ask or (lambda offer: True),
+        record_terms=lambda: accept_terms(harness.state),
     )
 
 
@@ -249,6 +253,9 @@ def test_wizard_runs_the_whole_setup(qapp: QApplication, harness: Harness) -> No
     wizard = wizard_for(harness)
     wizard.restart()
     assert wizard.currentPage() is wizard.welcome
+    wizard.next()  # -> Terms
+    assert wizard.currentPage() is wizard.terms
+    wizard.terms.accept_box.setChecked(True)
     wizard.next()  # -> Ollama
     wizard.next()  # -> Models
     assert wizard.currentPage() is wizard.models
@@ -276,6 +283,8 @@ def test_wizard_asks_before_swapping_a_slow_model(qapp: QApplication, harness: H
     wizard = wizard_for(harness, ask=ask)
     wizard.restart()
     wizard.next()
+    wizard.terms.accept_box.setChecked(True)
+    wizard.next()
     wizard.next()
     wizard.next()
     wait_for(qapp, wizard.speed.isComplete)
@@ -288,6 +297,8 @@ def test_wizard_shows_a_failure_and_retries(qapp: QApplication, harness: Harness
     harness.host.fail_on = "qwen3.5:9b"
     wizard = wizard_for(harness)
     wizard.restart()
+    wizard.next()
+    wizard.terms.accept_box.setChecked(True)
     wizard.next()
     wizard.next()
     wizard.next()
@@ -313,6 +324,8 @@ def test_wizard_button_is_labelled_download(qapp: QApplication, harness: Harness
 def test_setup_needed_follows_the_completion_marker(harness: Harness) -> None:
     assert app_main.setup_needed(harness.state)
     harness.state.set_meta(SETUP_COMPLETED_KEY, "1.0")
+    assert app_main.setup_needed(harness.state)  # the terms are still unaccepted
+    accept_terms(harness.state)
     assert not app_main.setup_needed(harness.state)
 
 
@@ -337,6 +350,7 @@ def test_main_runs_the_wizard_only_when_setup_is_incomplete(
 ) -> None:
     if not needed:
         env.state.set_meta(SETUP_COMPLETED_KEY, "1.0")
+        accept_terms(env.state)
     calls: list[int] = []
     monkeypatch.setattr(app_main, "load_settings", lambda: env.settings)
     monkeypatch.setattr(app_main, "configure_logging", lambda *_a, **_k: None)
@@ -354,6 +368,7 @@ def test_main_setup_flag_forces_the_wizard(
     qapp: QApplication, env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     env.state.set_meta(SETUP_COMPLETED_KEY, "1.0")
+    accept_terms(env.state)
     calls: list[int] = []
     monkeypatch.setattr(app_main, "load_settings", lambda: env.settings)
     monkeypatch.setattr(app_main, "configure_logging", lambda *_a, **_k: None)
@@ -382,6 +397,7 @@ def test_a_frozen_app_starts_the_watcher_and_the_update_scheduler(
     qapp: QApplication, env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     env.state.set_meta(SETUP_COMPLETED_KEY, "1.0")
+    accept_terms(env.state)
     started: list[str] = []
     monkeypatch.setattr(app_main, "load_settings", lambda: env.settings)
     monkeypatch.setattr(app_main, "configure_logging", lambda *_a, **_k: None)
@@ -562,3 +578,66 @@ def test_run_setup_wizard_opens_only_one_window(
     app_main.run_setup_wizard(Settings(), harness.state)
     assert seen == ["created", "raised", "activated"]  # one window; the second call fronted it
     assert not app_main._open_wizards  # and the guard resets afterwards
+
+
+# ------------------------------------------------------------------ terms, theme, Ollama at launch
+def test_terms_page_blocks_next_until_accepted_and_records_it(
+    qapp: QApplication, harness: Harness
+) -> None:
+    recorded: list[int] = []
+    page = TermsPage(lambda: recorded.append(1))
+    assert "Terms and Conditions" in page.text.toPlainText()
+    assert not page.isComplete()
+    page.accept_box.setChecked(True)
+    assert page.isComplete()
+    assert page.validatePage()
+    assert recorded == [1]
+
+
+def test_wizard_records_acceptance_when_leaving_the_terms(
+    qapp: QApplication, harness: Harness
+) -> None:
+    wizard = wizard_for(harness)
+    wizard.restart()
+    wizard.next()
+    wizard.terms.accept_box.setChecked(True)
+    wizard.next()
+    assert terms_accepted(harness.state)
+
+
+def test_wizard_text_is_readable_in_a_dark_windows_theme(
+    qapp: QApplication, harness: Harness
+) -> None:
+    wizard = wizard_for(harness)
+    page_background = wizard.palette().color(QPalette.ColorRole.Window)
+    text = wizard.welcome.summary.palette().color(QPalette.ColorRole.WindowText)
+    assert page_background.lightness() > 200
+    assert text.lightness() < 80
+    assert wizard.wizardStyle() is QWizard.WizardStyle.ModernStyle
+
+
+def test_ollama_startup_warns_only_when_it_cannot_be_started(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tray = QSystemTrayIcon()
+    shown: list[str] = []
+    monkeypatch.setattr(tray, "showMessage", lambda _t, message, *_a: shown.append(message))
+    ok = app_main.OllamaStartup("h", tray, lambda _host: OllamaState.RUNNING)
+    ok.start()
+    qapp.processEvents()
+    missing = app_main.OllamaStartup("h", tray, lambda _host: OllamaState.MISSING)
+    missing.start()
+    wait_for(qapp, lambda: bool(shown))
+    assert len(shown) == 1
+    assert "not installed" in shown[0]
+
+
+def test_the_context_factory_makes_sure_ollama_is_up_before_building(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hosts: list[str] = []
+    monkeypatch.setattr(app_main.runtime, "build_skill_context", lambda *_a, **_k: object())
+    factory = app_main.ContextFactory(env.settings, env.state, ensure_server=hosts.append)
+    factory()
+    factory()  # cached: no second check
+    assert hosts == [env.settings.ollama_host]

@@ -10,6 +10,7 @@ import sys
 import types
 import typing
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -35,11 +36,13 @@ from vector_embed.core.logging_setup import configure_logging
 from vector_embed.core.models.hardware import probe_hardware
 from vector_embed.core.models.manager import ModelChangeError, ModelManager
 from vector_embed.core.models.report import format_report
+from vector_embed.core.ollama_service import ensure_ollama_running
 from vector_embed.core.providers.base import ProviderError
 from vector_embed.core.providers.ollama import OllamaProvider
 from vector_embed.core.secrets import KeyringStore, KeyStoreError
 from vector_embed.core.settings import Settings, SettingsError, load_settings
 from vector_embed.core.setup.flow import SetupError
+from vector_embed.core.setup.ollama_install import OllamaState
 from vector_embed.core.setup.plan import SetupPlanError
 from vector_embed.core.skills.base import Skill, load_skills
 from vector_embed.core.store.sqlite import StateDb
@@ -49,6 +52,7 @@ logger = logging.getLogger("cli")
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_USAGE = 2
+DOCS_LIMIT = 50
 
 
 def out(text: str = "") -> None:
@@ -276,6 +280,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("mcp", help="serve search, ask and match to MCP clients over stdio")
     sub.add_parser("doctor", help="check the environment and explain any problem")
     sub.add_parser("status", help="index and queue state")
+    docs = sub.add_parser("docs", help="list the files that are indexed (searchable)")
+    docs.add_argument("contains", nargs="?", default="", help="only paths containing this text")
+    docs.add_argument("--failed", action="store_true", help="only files that could not be indexed")
+    docs.add_argument("--limit", type=int, default=DOCS_LIMIT, help="how many to show")
     return parser
 
 
@@ -319,12 +327,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _report(exc)
 
 
+def cmd_docs(settings: Settings, args: argparse.Namespace) -> int:
+    """Which files are in the index: newest first, with a count of the rest."""
+    with StateDb(settings.storage.data_dir) as state:
+        files = state.manifest_list(args.contains, failed_only=args.failed, limit=args.limit)
+        total, queued = state.manifest_count(), state.queue_size()
+    for entry in files:
+        stamp = datetime.fromtimestamp(entry.indexed_at).strftime("%Y-%m-%d %H:%M")
+        mark = "FAILED " if entry.failed else ""
+        out(f"{stamp}  {entry.size // 1024:>8} KB  {mark}{entry.path}")
+    out("")
+    out(f"shown: {len(files)}; indexed in total: {total}; waiting in the queue: {queued}")
+    return EXIT_OK
+
+
 def _status(settings: Settings) -> int:
     out(watcher.status(settings))
     return EXIT_OK
 
 
+_NO_MODEL_SERVER = frozenset({"keys", "cloud", "autostart", "doctor", "status", "docs", "setup"})
+
+
+def _ensure_model_server(args: argparse.Namespace, settings: Settings) -> None:
+    """Start Ollama when a command needs models and it is installed but stopped."""
+    if args.command in _NO_MODEL_SERVER:
+        return
+    if ensure_ollama_running(settings.ollama_host) is not OllamaState.RUNNING:
+        err("warning: Ollama is not running and could not be started; model calls will fail.")
+
+
 def _dispatch(args: argparse.Namespace, settings: Settings) -> int:
+    _ensure_model_server(args, settings)
     handlers: dict[str, Callable[[], int]] = {
         "index": lambda: worker.main([]),  # reached only through ``ve --data-dir X index``
         "models": lambda: cmd_models(settings, args),
@@ -337,6 +371,7 @@ def _dispatch(args: argparse.Namespace, settings: Settings) -> int:
         "autostart": lambda: cmd_autostart(args),
         "doctor": lambda: cmd_doctor(settings),
         "status": lambda: _status(settings),
+        "docs": lambda: cmd_docs(settings, args),
     }
     handler = handlers.get(args.command)
     return handler() if handler else run_skill(args.skill, args, settings)

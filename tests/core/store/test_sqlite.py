@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from vector_embed.core.store import sqlite as sq
-from vector_embed.core.store.sqlite import ManifestEntry, StateDb
+from vector_embed.core.store.sqlite import FAILED_HASH, ManifestEntry, StateDb
 
 
 class FakeClock:
@@ -364,3 +364,14 @@ class TestChatHistoryCap:
         kept = [m.content for m in db.messages(session)]
         assert kept == [f"message {i}" for i in range(7, 12)]  # the newest five, in order
         assert [m.content for m in db.messages(other)] == ["untouched"]  # others are not trimmed
+
+
+def test_manifest_list_filters_and_marks_failures(tmp_path: Path) -> None:
+    with StateDb(tmp_path) as db:
+        db.manifest_set("D:/Work/Plan.md", 1, 2048, "h")
+        db.manifest_set("D:/Work/Broken.pdf", 1, 10, FAILED_HASH)
+        assert {f.path for f in db.manifest_list()} == {"D:/Work/Plan.md", "D:/Work/Broken.pdf"}
+        assert [f.path for f in db.manifest_list("plan")] == ["D:/Work/Plan.md"]
+        failed = db.manifest_list(failed_only=True)
+        assert [(f.path, f.failed) for f in failed] == [("D:/Work/Broken.pdf", True)]
+        assert len(db.manifest_list(limit=1)) == 1

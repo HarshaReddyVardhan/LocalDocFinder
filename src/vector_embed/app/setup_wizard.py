@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QTabWidget,
+    QTextBrowser,
     QVBoxLayout,
     QWizard,
     QWizardPage,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
 from vector_embed.app.settings_controller import SettingsController
 from vector_embed.app.settings_tabs import CloudTab, GeneralTab, UpdatesTab
 from vector_embed.app.setup_controller import SetupController
+from vector_embed.app.theme import apply_light_theme
 from vector_embed.core.models.benchmark import Verdict, judge
 from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_EMBED, Catalog
 from vector_embed.core.models.fit import budget_mb, fits
@@ -37,6 +39,7 @@ from vector_embed.core.setup.flow import (
 )
 from vector_embed.core.setup.ollama_install import INSTALLER_SIZE_MB, OllamaState
 from vector_embed.core.setup.plan import EXTRA_ROLES, SetupChoices
+from vector_embed.core.terms import TERMS_TEXT, TERMS_TITLE
 
 WIZARD_TITLE = "Set up Vector Embed"
 WIZARD_SIZE = (680, 520)
@@ -78,6 +81,29 @@ class WelcomePage(QWizardPage):
         )
         layout = QVBoxLayout(self)
         layout.addWidget(self.summary)
+
+
+class TermsPage(QWizardPage):
+    """The Terms and Conditions; Next stays off until they are accepted, and the choice is saved."""
+
+    def __init__(self, record_acceptance: Callable[[], None]) -> None:
+        super().__init__()
+        self.setTitle(TERMS_TITLE)
+        self._record = record_acceptance
+        self.text = QTextBrowser()
+        self.text.setPlainText(TERMS_TEXT)
+        self.accept_box = QCheckBox("I have read and accept the Terms and Conditions")
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.text)
+        layout.addWidget(self.accept_box)
+        self.accept_box.toggled.connect(lambda _on: self.completeChanged.emit())
+
+    def isComplete(self) -> bool:  # noqa: N802
+        return self.accept_box.isChecked()
+
+    def validatePage(self) -> bool:  # noqa: N802
+        self._record()
+        return True
 
 
 class OllamaPage(QWizardPage):
@@ -338,14 +364,17 @@ class SetupWizard(QWizard):
         hardware: Hardware,
         *,
         ask_downgrade: Callable[[SlowOffer], bool] = ask_downgrade_with_dialog,
+        record_terms: Callable[[], None] = lambda: None,
     ) -> None:
         super().__init__()
+        self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
         self.setWindowTitle(WIZARD_TITLE)
         self.resize(*WIZARD_SIZE)
         self._controller = controller
         self._settings = settings_controller
         self._ask_downgrade = ask_downgrade
         self.welcome = WelcomePage(hardware)
+        self.terms = TermsPage(record_terms)
         self.ollama = OllamaPage(controller)
         self.models = ModelsPage(controller, catalog, hardware)
         self.download = DownloadPage()
@@ -354,6 +383,7 @@ class SetupWizard(QWizard):
         self.done_page = DonePage(lambda: settings_controller.settings().search.hotkey)
         self._pages = (
             self.welcome,
+            self.terms,
             self.ollama,
             self.models,
             self.download,
@@ -371,6 +401,7 @@ class SetupWizard(QWizard):
         self.speed.retry.clicked.connect(self._start)
         self.setButtonText(QWizard.WizardButton.CommitButton, "Download")
         self.currentIdChanged.connect(self._on_page)
+        apply_light_theme(self)  # last: it only reaches the widgets that exist by now
 
     # ------------------------------------------------------------------ closing
     def reject(self) -> None:

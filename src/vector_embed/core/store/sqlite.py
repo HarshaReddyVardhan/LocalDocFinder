@@ -123,6 +123,16 @@ class ManifestEntry(NamedTuple):
 
 
 @dataclass(frozen=True)
+class IndexedFile:
+    """One manifest row for display: a file the index knows, or gave up on (``failed``)."""
+
+    path: str
+    size: int
+    indexed_at: float
+    failed: bool
+
+
+@dataclass(frozen=True)
 class ChatMessage:
     role: str
     content: str
@@ -307,6 +317,18 @@ class StateDb:
             (len(prefix), prefix),
         )
         return [r[0] for r in rows]
+
+    def manifest_list(
+        self, contains: str = "", *, failed_only: bool = False, limit: int = 50
+    ) -> list[IndexedFile]:
+        """Indexed files, newest first; ``contains`` filters the path (case-insensitive)."""
+        rows = self._all(
+            "SELECT path,size,indexed_at,content_hash FROM manifest "
+            "WHERE instr(lower(path), lower(?)) > 0 AND (? = 0 OR content_hash = ?) "
+            "ORDER BY indexed_at DESC LIMIT ?",
+            (contains, int(failed_only), FAILED_HASH, limit),
+        )
+        return [IndexedFile(p, int(s), float(t), h == FAILED_HASH) for p, s, t, h in rows]
 
     def manifest_count(self) -> int:
         return int(self._one("SELECT COUNT(*) FROM manifest")[0])  # type: ignore[index]

@@ -17,6 +17,7 @@ from vector_embed.app.result_delegate import ROW_ROLE
 from vector_embed.app.window import COMPACT_HEIGHT, EXPANDED_HEIGHT, Mode, SearchWindow
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.skills.search import SearchResult
+from vector_embed.core.terms import accept_terms
 
 
 def result(**kw: object) -> SearchResult:
@@ -467,6 +468,7 @@ def test_main_runs_the_event_loop(
     monkeypatch.setattr(QSystemTrayIcon, "show", lambda _self: None)
     monkeypatch.setattr(QSystemTrayIcon, "showMessage", lambda *_a: None)
     monkeypatch.setattr(app_main.UpdateScheduler, "start", lambda _self: None)
+    accept_terms(env.state)
     monkeypatch.setattr(app_main, "run_setup_wizard", lambda *_a, **_k: None)
     summoned: list[int] = []
     monkeypatch.setattr(app_main.SearchWindow, "summon", lambda _self: summoned.append(1))
@@ -488,6 +490,7 @@ def test_main_survives_an_invalid_hotkey(
     monkeypatch.setattr(QSystemTrayIcon, "show", lambda _self: None)
     monkeypatch.setattr(QSystemTrayIcon, "showMessage", lambda *_a: None)
     monkeypatch.setattr(app_main.UpdateScheduler, "start", lambda _self: None)
+    accept_terms(env.state)
     monkeypatch.setattr(app_main, "run_setup_wizard", lambda *_a, **_k: None)
     assert app_main.main([]) == 0
 
@@ -652,6 +655,7 @@ def test_quitting_from_the_tray_unloads_the_models(
     monkeypatch.setattr(QSystemTrayIcon, "show", lambda _self: None)
     monkeypatch.setattr(QSystemTrayIcon, "showMessage", lambda *_a: None)
     monkeypatch.setattr(app_main.UpdateScheduler, "start", lambda _self: None)
+    accept_terms(env.state)
     monkeypatch.setattr(app_main, "run_setup_wizard", lambda *_a, **_k: None)
     monkeypatch.setattr(app_main.SearchWindow, "shutdown", lambda _self: shutdowns.append(1))
     assert app_main.main([]) == 0

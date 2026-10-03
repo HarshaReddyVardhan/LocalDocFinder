@@ -21,6 +21,7 @@ from vector_embed.core.extractors.base import ExtractorSet
 from vector_embed.core.idle import IdleGate
 from vector_embed.core.indexer import BatchEmbedder, Indexer
 from vector_embed.core.logging_setup import configure_logging
+from vector_embed.core.ollama_service import ensure_ollama_running
 from vector_embed.core.power import PowerGate
 from vector_embed.core.process import single_instance, stop_requested
 from vector_embed.core.projects import Projects
@@ -263,6 +264,7 @@ def _run(settings: Settings, state: StateDb, args: argparse.Namespace) -> int:
     if not ok:  # decided before the model server is touched, so a refusal never loads the GPU
         logger.info("not starting: %s", why)
         return EXIT_OK
+    ensure_ollama_running(settings.ollama_host)  # starts it when installed but stopped
     try:
         parts = build_parts(settings, state, gate)
     except ProviderError:

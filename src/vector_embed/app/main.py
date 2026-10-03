@@ -11,7 +11,7 @@ from collections.abc import Callable, Sequence
 from contextlib import suppress
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QSystemTrayIcon
 
@@ -33,6 +33,7 @@ from vector_embed.core.lifecycle import start_watcher
 from vector_embed.core.logging_setup import configure_logging, install_excepthooks
 from vector_embed.core.models.catalog import load_catalog
 from vector_embed.core.models.hardware import probe_hardware
+from vector_embed.core.ollama_service import ensure_ollama_running
 from vector_embed.core.process import is_frozen, single_instance
 from vector_embed.core.secrets import KeyringStore
 from vector_embed.core.settings import (
@@ -42,9 +43,11 @@ from vector_embed.core.settings import (
     load_settings,
 )
 from vector_embed.core.setup.flow import SETUP_COMPLETED_KEY
+from vector_embed.core.setup.ollama_install import OllamaState
 from vector_embed.core.setup.wiring import FlowBuilder, build_flow
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.store.sqlite import StateDb
+from vector_embed.core.terms import accept_terms, terms_accepted
 from vector_embed.core.updates import Updater, resolve_source
 
 logger = logging.getLogger("app")
@@ -88,10 +91,12 @@ class ContextFactory:
         settings: Settings,
         state: StateDb,
         reload: Callable[[], Settings] | None = None,
+        ensure_server: Callable[[str], object] = lambda _host: None,
     ) -> None:
         self._settings = settings
         self._state = state
         self._reload = reload
+        self._ensure_server = ensure_server
         self._cache: SkillContext | None = None
         self._lock = threading.Lock()  # built on a worker thread; two must not race
         self._activity = SystemActivity()
@@ -99,6 +104,7 @@ class ContextFactory:
     def __call__(self) -> SkillContext:
         with self._lock:
             if self._cache is None:
+                self._ensure_server(self._settings.ollama_host)  # start Ollama if it is stopped
                 self._cache = runtime.build_skill_context(
                     self._settings, self._state, fullscreen=self._activity.fullscreen_app_active
                 )
@@ -117,7 +123,7 @@ class ContextFactory:
 def make_context_factory(
     settings: Settings, state: StateDb, reload: Callable[[], Settings] | None = None
 ) -> ContextFactory:
-    return ContextFactory(settings, state, reload)
+    return ContextFactory(settings, state, reload, ensure_ollama_running)
 
 
 def build_window(
@@ -189,8 +195,47 @@ def announce_update(tray: QSystemTrayIcon, restart_action: QAction, version: str
     )
 
 
+class OllamaStartup(QObject):
+    """Starts Ollama in the background at launch (it may take seconds); warns if it cannot.
+
+    The check runs on a thread; the warning is a signal to this object's own slot, so the tray
+    is only touched from the GUI thread.
+    """
+
+    unavailable = Signal(object)  # OllamaState: MISSING or INSTALLED_NOT_RUNNING
+
+    def __init__(
+        self,
+        host: str,
+        tray: QSystemTrayIcon,
+        ensure: Callable[[str], OllamaState] = ensure_ollama_running,
+    ) -> None:
+        super().__init__(tray)  # owned by the tray, so it lives as long as the app
+        self._host = host
+        self._tray = tray
+        self._ensure = ensure
+        self.unavailable.connect(self._announce)
+
+    def start(self) -> None:
+        threading.Thread(target=self._run, name="ollama-startup", daemon=True).start()
+
+    def _run(self) -> None:
+        state = self._ensure(self._host)
+        if state is not OllamaState.RUNNING:
+            self.unavailable.emit(state)
+
+    def _announce(self, state: OllamaState) -> None:
+        reason = (
+            "Ollama is not installed. Choose Run setup again in the tray menu to install it."
+            if state is OllamaState.MISSING
+            else "Ollama is installed but could not be started. Start it, then search again."
+        )
+        self._tray.showMessage("Vector Embed", reason, QSystemTrayIcon.MessageIcon.Warning, 8000)
+
+
 def setup_needed(state: StateDb) -> bool:
-    return state.get_meta(SETUP_COMPLETED_KEY) is None
+    """Setup has not finished, or the current Terms and Conditions have not been accepted."""
+    return state.get_meta(SETUP_COMPLETED_KEY) is None or not terms_accepted(state)
 
 
 def run_setup_wizard(
@@ -215,6 +260,7 @@ def run_setup_wizard(
         make_settings_controller(path, state, updater, on_changed),
         load_catalog(settings.storage.data_dir),
         probe_hardware(),
+        record_terms=lambda: accept_terms(state),
     )
     _open_wizards.append(wizard)
     try:
@@ -277,6 +323,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_app(app, settings, args)
 
 
+def register_hotkey(hotkey: HotkeyFilter, spec: str) -> bool:
+    try:
+        return hotkey.register(spec)
+    except ValueError:
+        logger.exception("invalid hotkey %r", spec)
+        return False
+
+
+def leave_without_terms(hotkey: HotkeyFilter, tray: QSystemTrayIcon) -> None:
+    logger.info("the terms were not accepted; exiting")
+    hotkey.unregister()
+    tray.hide()
+
+
+def warn_hotkey_unavailable(tray: QSystemTrayIcon, spec: str) -> None:
+    tray.showMessage(
+        "Vector Embed",
+        f"Could not register {spec}; use the tray icon.",
+        QSystemTrayIcon.MessageIcon.Warning,
+        5000,
+    )
+
+
 def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> int:
     with StateDb(settings.storage.data_dir) as state:
         settings_path = settings.settings_path()
@@ -291,11 +360,7 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
 
         hotkey = HotkeyFilter(window.summon)
         app.installNativeEventFilter(hotkey)
-        registered = False
-        try:
-            registered = hotkey.register(settings.search.hotkey)
-        except ValueError:
-            logger.exception("invalid hotkey %r", settings.search.hotkey)
+        registered = register_hotkey(hotkey, settings.search.hotkey)
 
         tray = QSystemTrayIcon(tray_icon(), app)
         menu = QMenu()
@@ -335,19 +400,18 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
         )
         tray.show()
         if not registered:
-            tray.showMessage(
-                "Vector Embed",
-                f"Could not register {settings.search.hotkey}; use the tray icon.",
-                QSystemTrayIcon.MessageIcon.Warning,
-                5000,
-            )
+            warn_hotkey_unavailable(tray, settings.search.hotkey)
+        if args.setup or setup_needed(state):
+            run_setup_wizard(settings, state, updater=updater, on_changed=settings_changed)
+        if not terms_accepted(state):  # declined or closed: nothing may index or update
+            leave_without_terms(hotkey, tray)
+            return EXIT_OK
+        OllamaStartup(settings.ollama_host, tray).start()
         scheduler = UpdateScheduler(updater, auto_check_enabled(settings.settings_path()))
         scheduler.ready.connect(lambda version: announce_update(tray, restart_action, version))
         scheduler.start()
         if is_frozen():
             start_watcher()  # a fresh install has had no logon yet; a no-op if one is running
-        if args.setup or setup_needed(state):
-            run_setup_wizard(settings, state, updater=updater, on_changed=settings_changed)
         if args.show:
             window.summon()
         code = app.exec()  # ``aboutToQuit`` fires inside this call, before it returns

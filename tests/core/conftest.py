@@ -35,6 +35,12 @@ from vector_embed.core.store.lance import LanceStore
 from vector_embed.core.store.sqlite import StateDb
 
 
+@pytest.fixture(autouse=True)
+def _no_real_ollama_autostart(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests must never start (or even ping) a real Ollama on the developer's machine."""
+    monkeypatch.setenv("VE_NO_OLLAMA_AUTOSTART", "1")
+
+
 @pytest.fixture
 def scope_settings() -> ScopeSettings:
     """Defaults, minus ``appdata``: pytest's tmp dirs live under AppData on Windows."""

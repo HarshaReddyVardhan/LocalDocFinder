@@ -13,6 +13,7 @@ from vector_embed.core.models.hardware import Hardware
 from vector_embed.core.providers.base import ModelInfo, ProviderError
 from vector_embed.core.providers.ollama import OllamaProvider
 from vector_embed.core.settings import SettingsError
+from vector_embed.core.setup.ollama_install import OllamaState
 from vector_embed.core.skills.base import (
     SKILLS,
     Skill,
@@ -98,6 +99,33 @@ class TestOtherCommands:
         monkeypatch.setattr(cli, "load_settings", lambda: env.settings)
         assert cli.main(["status"]) == 0
         assert "indexed files" in capsys.readouterr().out
+
+    def test_docs_lists_the_indexed_files(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(cli, "load_settings", lambda: env.settings)
+        env.state.manifest_set("D:/Work/Plan.md", 1, 4096, "h")
+        env.state.manifest_set("D:/Work/Other.txt", 1, 10, "h2")
+        assert cli.main(["docs", "plan"]) == 0
+        out = capsys.readouterr().out
+        assert "Plan.md" in out
+        assert "Other.txt" not in out
+        assert "indexed in total: 2" in out
+
+    def test_model_commands_start_ollama_first(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(cli, "load_settings", lambda: env.settings)
+        asked: list[str] = []
+        monkeypatch.setattr(
+            cli, "ensure_ollama_running", lambda host: asked.append(host) or OllamaState.MISSING
+        )
+        monkeypatch.setattr(cli, "cmd_health", lambda _s: 0)
+        assert cli.main(["health"]) == 0
+        assert asked == [env.settings.ollama_host]
+        assert "Ollama is not running" in capsys.readouterr().err
+        assert cli.main(["status"]) == 0  # no model needed: no check
+        assert len(asked) == 1
 
     def test_index_delegates_to_the_worker(self, monkeypatch: pytest.MonkeyPatch) -> None:
         seen: list[list[str]] = []
