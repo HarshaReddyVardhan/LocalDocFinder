@@ -3,10 +3,10 @@ from pathlib import Path
 from PySide6.QtWidgets import QApplication
 from tests.core.setup.fakes import Harness
 
-from vector_embed.app.scope_editor import ScopeEditor
-from vector_embed.core.file_kinds import FileKind
-from vector_embed.core.protection import SystemProtection
-from vector_embed.core.settings import ScopeSettings
+from localdoc_finder.app.scope_editor import ScopeEditor
+from localdoc_finder.core.file_kinds import FileKind
+from localdoc_finder.core.protection import SystemProtection
+from localdoc_finder.core.settings import ScopeSettings
 
 ENV = {"SystemRoot": r"C:\Windows", "SystemDrive": "C:"}
 PROTECTION = SystemProtection(ENV, Path("C:/Users/me"))

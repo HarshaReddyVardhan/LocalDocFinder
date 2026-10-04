@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from vector_embed.core.extractors.base import Captioner, ExtractContext, ExtractorSet, OcrEngine
-from vector_embed.core.scope import ScopePolicy
-from vector_embed.core.settings import ChunkingSettings, ImageSettings, ScopeSettings
+from localdoc_finder.core.extractors.base import Captioner, ExtractContext, ExtractorSet, OcrEngine
+from localdoc_finder.core.scope import ScopePolicy
+from localdoc_finder.core.settings import ChunkingSettings, ImageSettings, ScopeSettings
 
 Writer = Callable[[str, str | bytes], Path]
 

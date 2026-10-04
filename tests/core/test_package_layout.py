@@ -1,8 +1,8 @@
 from pathlib import Path
 
-import vector_embed
+import localdoc_finder
 
-PACKAGE_ROOT = Path(vector_embed.__file__).parent
+PACKAGE_ROOT = Path(localdoc_finder.__file__).parent
 
 
 def test_every_package_directory_has_an_init_file() -> None:

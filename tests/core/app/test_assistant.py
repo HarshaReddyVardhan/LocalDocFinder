@@ -4,15 +4,15 @@ from pathlib import Path
 import pytest
 from tests.core.conftest import Chat, CloudRig, Env, Power
 
-from vector_embed.app.assistant import (
+from localdoc_finder.app.assistant import (
     AssistantService,
     ChatState,
     Delta,
     Failed,
     Finished,
 )
-from vector_embed.core.privacy.policy import Outbound
-from vector_embed.core.skills.base import SkillContext
+from localdoc_finder.core.privacy.policy import Outbound
+from localdoc_finder.core.skills.base import SkillContext
 
 NOTES = "# Decisions\n\nWe retry failed payments with exponential backoff.\n"
 

@@ -1,9 +1,9 @@
 import pytest
 
-from vector_embed.core import idle
-from vector_embed.core.idle import IdleGate, SystemActivity
-from vector_embed.core.power import PowerGate
-from vector_embed.core.settings import IdleSettings, PowerSettings
+from localdoc_finder.core import idle
+from localdoc_finder.core.idle import IdleGate, SystemActivity
+from localdoc_finder.core.power import PowerGate
+from localdoc_finder.core.settings import IdleSettings, PowerSettings
 
 
 class Clock:

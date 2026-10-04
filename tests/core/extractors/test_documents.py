@@ -6,8 +6,8 @@ import pymupdf
 import pytest
 from tests.core.extractors.conftest import FakeOcr, Writer, png_bytes
 
-from vector_embed.core.extractors.base import ExtractError, ExtractorSet
-from vector_embed.core.settings import ChunkingSettings, ImageSettings
+from localdoc_finder.core.extractors.base import ExtractError, ExtractorSet
+from localdoc_finder.core.settings import ChunkingSettings, ImageSettings
 
 Build = Callable[..., ExtractorSet]
 
@@ -133,7 +133,7 @@ class TestPdf:
     ) -> None:
         from PIL import Image
 
-        from vector_embed.core.extractors import pdf as pdf_module
+        from localdoc_finder.core.extractors import pdf as pdf_module
 
         def bomb(*_args: object, **_kwargs: object) -> None:
             raise Image.DecompressionBombError("too many pixels")

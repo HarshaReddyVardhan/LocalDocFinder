@@ -3,15 +3,15 @@ from pathlib import Path
 
 import pytest
 
-from vector_embed.core import settings as s
+from localdoc_finder.core import settings as s
 
 
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """No stray .env in the cwd, no VE_* leakage from the developer's shell."""
+    """No stray .env in the cwd, no LDF_* leakage from the developer's shell."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
-    for key in [k for k in os.environ if k.startswith("VE_")]:
+    for key in [k for k in os.environ if k.startswith("LDF_")]:
         monkeypatch.delenv(key)
 
 
@@ -44,8 +44,8 @@ def test_toml_overrides_defaults(tmp_path: Path) -> None:
 
 def test_env_beats_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = write_toml(tmp_path, "[power]\nrequire_ac_power = true\n")
-    monkeypatch.setenv("VE_POWER__REQUIRE_AC_POWER", "false")
-    monkeypatch.setenv("VE_LOG_LEVEL", "DEBUG")
+    monkeypatch.setenv("LDF_POWER__REQUIRE_AC_POWER", "false")
+    monkeypatch.setenv("LDF_LOG_LEVEL", "DEBUG")
     cfg = s.load_settings(path)
     assert cfg.power.require_ac_power is False
     assert cfg.log_level == "DEBUG"
@@ -53,7 +53,7 @@ def test_env_beats_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
 
 def test_dotenv_file_is_read(tmp_path: Path) -> None:
     (tmp_path / ".env").write_text(
-        "VE_OLLAMA_HOST=http://example:1\nUNRELATED=1\n", encoding="utf-8"
+        "LDF_OLLAMA_HOST=http://example:1\nUNRELATED=1\n", encoding="utf-8"
     )
     assert s.load_settings(tmp_path / "nope.toml").ollama_host == "http://example:1"
 
@@ -135,7 +135,7 @@ def test_missing_schema_version_means_current() -> None:
 def test_default_settings_path_honours_data_dir_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("VE_STORAGE__DATA_DIR", str(tmp_path / "custom"))
+    monkeypatch.setenv("LDF_STORAGE__DATA_DIR", str(tmp_path / "custom"))
     (tmp_path / "custom").mkdir()
     (tmp_path / "custom" / s.SETTINGS_FILENAME).write_text("[power]\npoll_seconds = 9\n")
     assert s.load_settings().power.poll_seconds == 9
@@ -151,7 +151,7 @@ def test_a_dotenv_in_the_working_folder_is_ignored(
 ) -> None:
     repo = tmp_path / "some-repo"
     repo.mkdir()
-    (repo / ".env").write_text("VE_OLLAMA_HOST=http://evil.example:1\n", encoding="utf-8")
+    (repo / ".env").write_text("LDF_OLLAMA_HOST=http://evil.example:1\n", encoding="utf-8")
     monkeypatch.chdir(repo)
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -167,5 +167,5 @@ def test_the_dotenv_beside_settings_toml_is_read(
     monkeypatch.chdir(elsewhere)
     data_dir = tmp_path / "data"
     data_dir.mkdir()
-    (data_dir / ".env").write_text("VE_OLLAMA_HOST=http://example:2\n", encoding="utf-8")
+    (data_dir / ".env").write_text("LDF_OLLAMA_HOST=http://example:2\n", encoding="utf-8")
     assert s.load_settings(data_dir / "settings.toml").ollama_host == "http://example:2"

@@ -34,6 +34,6 @@ htmlcov/
 # Installer build output (scripts/build.ps1)
 Releases/
 packaging/*.ico
-src/vector_embed/update_source.txt
+src/localdoc_finder/update_source.txt
 .tools/
 scripts/sandbox/result.txt

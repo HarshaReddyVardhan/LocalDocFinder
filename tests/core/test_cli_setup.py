@@ -6,10 +6,10 @@ import pytest
 from tests.core.conftest import Env
 from tests.core.setup.fakes import Harness
 
-from vector_embed import cli, cli_setup
-from vector_embed.core.features import FEATURES
-from vector_embed.core.models.benchmark import BenchKind
-from vector_embed.core.setup.flow import (
+from localdoc_finder import cli, cli_setup
+from localdoc_finder.core.features import FEATURES
+from localdoc_finder.core.models.benchmark import BenchKind
+from localdoc_finder.core.setup.flow import (
     SETUP_COMPLETED_KEY,
     SetupError,
     SetupEvent,

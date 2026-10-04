@@ -10,14 +10,14 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 from tests.core.conftest import Env
 
-from vector_embed.app import controller, hotkey
-from vector_embed.app import main as app_main
-from vector_embed.app.controller import Launcher, SearchOutcome, SearchService
-from vector_embed.app.result_delegate import ROW_ROLE
-from vector_embed.app.window import EXPANDED_HEIGHT, Mode, SearchWindow
-from vector_embed.core.skills.base import SkillContext
-from vector_embed.core.skills.search import SearchResult
-from vector_embed.core.terms import accept_terms
+from localdoc_finder.app import controller, hotkey
+from localdoc_finder.app import main as app_main
+from localdoc_finder.app.controller import Launcher, SearchOutcome, SearchService
+from localdoc_finder.app.result_delegate import ROW_ROLE
+from localdoc_finder.app.window import EXPANDED_HEIGHT, Mode, SearchWindow
+from localdoc_finder.core.skills.base import SkillContext
+from localdoc_finder.core.skills.search import SearchResult
+from localdoc_finder.core.terms import accept_terms
 
 
 def result(**kw: object) -> SearchResult:
@@ -409,7 +409,7 @@ class TestWindow:
         win, service, _ = window
         monkeypatch.setattr(controller, "foreground_title", lambda: "a.py - proj - Cursor")
         monkeypatch.setattr(
-            "vector_embed.app.window.foreground_title", lambda: "a.py - proj - Cursor"
+            "localdoc_finder.app.window.foreground_title", lambda: "a.py - proj - Cursor"
         )
         service.battery = True
         win.summon()
@@ -645,10 +645,10 @@ class TestChangingTheHotkey:
 
         apply = app_main.hotkey_applier(flt, Tray())  # type: ignore[arg-type]
         apply("ctrl+alt+f8")
-        assert tips[-1] == "Vector Embed (ctrl+alt+f8)"
+        assert tips[-1] == "LocalDoc Finder (ctrl+alt+f8)"
         user32.taken.add(hotkey.parse_hotkey("ctrl+alt+f7"))
         apply("ctrl+alt+f7")
-        assert tips[-1] == "Vector Embed (ctrl+alt+f8) - ctrl+alt+f7 is unavailable"
+        assert tips[-1] == "LocalDoc Finder (ctrl+alt+f8) - ctrl+alt+f7 is unavailable"
         apply("ctrl+nonsense")
         assert "unavailable" in tips[-1]
         assert flt.spec == "ctrl+alt+f8"

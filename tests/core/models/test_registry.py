@@ -2,22 +2,22 @@ from pathlib import Path
 
 import pytest
 
-from vector_embed.core.models import catalog as cat
-from vector_embed.core.models.hardware import Hardware
-from vector_embed.core.models.registry import (
+from localdoc_finder.core.models import catalog as cat
+from localdoc_finder.core.models.hardware import Hardware
+from localdoc_finder.core.models.registry import (
     FLAG_OK,
     FLAG_UNUSED,
     FLAG_WARNING,
     ModelRegistry,
 )
-from vector_embed.core.providers.base import (
+from localdoc_finder.core.providers.base import (
     CAP_COMPLETION,
     CAP_EMBEDDING,
     CAP_VISION,
     ModelInfo,
     ProviderError,
 )
-from vector_embed.core.store.sqlite import StateDb
+from localdoc_finder.core.store.sqlite import StateDb
 
 GB = 1024**3
 

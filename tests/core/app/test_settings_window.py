@@ -8,23 +8,29 @@ from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLineEdit, QMe
 from tests.core.app.test_models_panel import GPU, wait_for
 from tests.core.conftest import Chat, Env
 
-from vector_embed.app import main as app_main
-from vector_embed.app.models_controller import ModelsController
-from vector_embed.app.settings_controller import NO_UPDATES, SettingsController, app_version
-from vector_embed.app.settings_tabs import AboutTab, CloudTab, GeneralTab, IndexingTab
-from vector_embed.app.settings_window import MIN_WINDOW_SIZE, SettingsWindow
-from vector_embed.app.theme import Scheme, apply_theme, palette_for, scheme_in_use, secondary_text
-from vector_embed.core.indexing_control import IndexingStatus, StartResult
-from vector_embed.core.models.benchmark import BenchKind, BenchResult, record_result
-from vector_embed.core.settings import (
+from localdoc_finder.app import main as app_main
+from localdoc_finder.app.models_controller import ModelsController
+from localdoc_finder.app.settings_controller import NO_UPDATES, SettingsController, app_version
+from localdoc_finder.app.settings_tabs import AboutTab, CloudTab, GeneralTab, IndexingTab
+from localdoc_finder.app.settings_window import MIN_WINDOW_SIZE, SettingsWindow
+from localdoc_finder.app.theme import (
+    Scheme,
+    apply_theme,
+    palette_for,
+    scheme_in_use,
+    secondary_text,
+)
+from localdoc_finder.core.indexing_control import IndexingStatus, StartResult
+from localdoc_finder.core.models.benchmark import BenchKind, BenchResult, record_result
+from localdoc_finder.core.settings import (
     CloudProviderSettings,
     Settings,
     SettingsError,
     load_settings,
 )
-from vector_embed.core.settings_io import set_setting
-from vector_embed.core.skills.base import SkillContext
-from vector_embed.core.updates import UpdateKind, Updater
+from localdoc_finder.core.settings_io import set_setting
+from localdoc_finder.core.skills.base import SkillContext
+from localdoc_finder.core.updates import UpdateKind, Updater
 
 SETTINGS_MIN_WIDTH, SETTINGS_MIN_HEIGHT = MIN_WINDOW_SIZE
 
@@ -177,7 +183,7 @@ def test_speed_tests_and_update_check(env: Env, controller: SettingsController) 
 def models(
     chat: Chat, skill_ctx: SkillContext, env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> ModelsController:
-    monkeypatch.setattr("vector_embed.core.models.registry.probe_hardware", lambda: GPU)
+    monkeypatch.setattr("localdoc_finder.core.models.registry.probe_hardware", lambda: GPU)
     chat.gateway._registry._probe = lambda: GPU
     return ModelsController(lambda: skill_ctx, env.data_dir / "settings.toml")
 
@@ -399,7 +405,7 @@ def test_restart_without_an_updater_is_refused(
 
 def test_about_tab_shows_the_data_folder(window: SettingsWindow, env: Env) -> None:
     assert window.about.data_folder.text() == str(env.data_dir)
-    assert window.about.version.text().startswith("Vector Embed ")
+    assert window.about.version.text().startswith("LocalDoc Finder ")
 
 
 def deleting_window(
@@ -523,9 +529,9 @@ def test_hotkey_applier_reregisters_and_updates_the_tooltip(registers: bool) -> 
     apply("ctrl+alt+f6")
     assert calls == ["ctrl+alt+f6"]  # no separate unregister: register() swaps safely
     expected = (
-        "Vector Embed (ctrl+alt+f6)"
+        "LocalDoc Finder (ctrl+alt+f6)"
         if registers
-        else "Vector Embed (ctrl+alt+space) - ctrl+alt+f6 is unavailable"
+        else "LocalDoc Finder (ctrl+alt+space) - ctrl+alt+f6 is unavailable"
     )
     assert tray.tip == expected
     apply("bad")

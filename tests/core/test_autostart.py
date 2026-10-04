@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from vector_embed import cli
-from vector_embed.core import autostart
-from vector_embed.core.autostart import (
+from localdoc_finder import cli
+from localdoc_finder.core import autostart
+from localdoc_finder.core.autostart import (
     TASKS,
     Autostart,
     AutostartError,
@@ -17,7 +17,7 @@ from vector_embed.core.autostart import (
 
 
 def fake_command(entry: str) -> list[str]:
-    return [r"C:\Program Files\VE\VectorEmbed.exe", entry]
+    return [r"C:\Program Files\VE\LocalDocFinder.exe", entry]
 
 
 def test_register_script_creates_both_tasks_with_the_battery_flags() -> None:
@@ -28,9 +28,9 @@ def test_register_script_creates_both_tasks_with_the_battery_flags() -> None:
     assert "-AtLogOn" in script
     assert "-RunLevel Limited" in script
     assert script.count("Register-ScheduledTask") == 2
-    assert "-TaskName 'VectorEmbed Watcher'" in script
-    assert "-TaskName 'VectorEmbed Search'" in script
-    assert "-Execute 'C:\\Program Files\\VE\\VectorEmbed.exe' -Argument 'watcher'" in script
+    assert "-TaskName 'LocalDocFinder Watcher'" in script
+    assert "-TaskName 'LocalDocFinder Search'" in script
+    assert "-Execute 'C:\\Program Files\\VE\\LocalDocFinder.exe' -Argument 'watcher'" in script
     assert "-Argument 'app'" in script
 
 
@@ -47,7 +47,7 @@ def test_unregister_script_ignores_missing_tasks() -> None:
     script = unregister_script(TASKS)
     assert script.count("Unregister-ScheduledTask") == 2
     assert script.count("-ErrorAction SilentlyContinue") == 2
-    assert "'VectorEmbed Watcher'" in script
+    assert "'LocalDocFinder Watcher'" in script
 
 
 def test_apply_registers_or_removes() -> None:
@@ -62,6 +62,9 @@ def test_apply_registers_or_removes() -> None:
     tasks.apply(False)
     assert "Register-ScheduledTask" in scripts[0]
     assert "Unregister-ScheduledTask" in scripts[1]
+    for script in scripts:  # tasks left by releases named Vector Embed go either way
+        assert "Unregister-ScheduledTask -TaskName 'VectorEmbed Watcher'" in script
+        assert "'VectorEmbed Search'" in script
 
 
 def test_failed_registration_raises() -> None:
@@ -76,7 +79,7 @@ def test_removing_never_raises() -> None:
 def test_default_command_runs_from_source_without_a_console() -> None:
     scripts: list[str] = []
     Autostart(lambda script: scripts.append(script) or 0).register()
-    assert "-m vector_embed watcher" in scripts[0]
+    assert "-m localdoc_finder watcher" in scripts[0]
 
 
 def test_run_powershell_reports_exit_codes(monkeypatch: pytest.MonkeyPatch) -> None:

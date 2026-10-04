@@ -4,12 +4,12 @@ import numpy as np
 import pytest
 from tests.core.providers.fakes import FakeOllamaClient
 
-from vector_embed.core import runtime
-from vector_embed.core.doctypes.base import PROTOTYPE_TEXTS
-from vector_embed.core.providers.ollama import OllamaProvider
-from vector_embed.core.secrets import MemoryKeyStore
-from vector_embed.core.settings import ImageSettings, ScopeSettings, Settings, StorageSettings
-from vector_embed.core.store.sqlite import StateDb
+from localdoc_finder.core import runtime
+from localdoc_finder.core.doctypes.base import PROTOTYPE_TEXTS
+from localdoc_finder.core.providers.ollama import OllamaProvider
+from localdoc_finder.core.secrets import MemoryKeyStore
+from localdoc_finder.core.settings import ImageSettings, ScopeSettings, Settings, StorageSettings
+from localdoc_finder.core.store.sqlite import StateDb
 
 
 def make_settings(tmp_path: Path, **kw: object) -> Settings:
@@ -106,7 +106,7 @@ def test_provider_factory_uses_the_configured_host(tmp_path: Path) -> None:
 
 class TestCloudWiring:
     def cloud_settings(self, tmp_path: Path) -> Settings:
-        from vector_embed.core.settings import CloudProviderSettings, CloudSettings
+        from localdoc_finder.core.settings import CloudProviderSettings, CloudSettings
 
         cloud = CloudSettings(
             providers={
@@ -135,7 +135,7 @@ class TestCloudWiring:
     def test_a_stored_key_enables_the_cloud_provider_but_consent_is_still_needed(
         self, tmp_path: Path
     ) -> None:
-        from vector_embed.core.secrets import MemoryKeyStore
+        from localdoc_finder.core.secrets import MemoryKeyStore
 
         settings = self.cloud_settings(tmp_path)
         with StateDb(settings.storage.data_dir) as state:
@@ -151,7 +151,7 @@ class TestCloudWiring:
             assert not ctx.consent.granted
 
     def test_a_missing_or_unreadable_key_keeps_everything_local(self, tmp_path: Path) -> None:
-        from vector_embed.core.secrets import KeyStoreError, MemoryKeyStore
+        from localdoc_finder.core.secrets import KeyStoreError, MemoryKeyStore
 
         settings = self.cloud_settings(tmp_path)
 
@@ -168,9 +168,9 @@ class TestCloudWiring:
             assert broken.provider is None
 
     def test_the_skill_context_routes_through_the_cloud_router(self, tmp_path: Path) -> None:
-        from vector_embed.core.llm import LlmGateway
-        from vector_embed.core.privacy.policy import PrivacyFilter
-        from vector_embed.core.secrets import MemoryKeyStore
+        from localdoc_finder.core.llm import LlmGateway
+        from localdoc_finder.core.privacy.policy import PrivacyFilter
+        from localdoc_finder.core.secrets import MemoryKeyStore
 
         settings = self.cloud_settings(tmp_path)
         with StateDb(settings.storage.data_dir) as state:
@@ -184,7 +184,7 @@ class TestCloudWiring:
 
 
 def test_mask_ids_locally_installs_the_local_filter(tmp_path: Path) -> None:
-    from vector_embed.core.settings import PrivacySettings
+    from localdoc_finder.core.settings import PrivacySettings
 
     for enabled in (False, True):
         settings = make_settings(tmp_path, privacy=PrivacySettings(mask_ids_locally=enabled))
@@ -199,7 +199,7 @@ class TestOpenStoreApproval:
         return OllamaProvider(settings.embedding, client=FakeOllamaClient(), sleep=lambda _s: None)
 
     def test_an_unapproved_model_change_is_refused(self, tmp_path: Path) -> None:
-        from vector_embed.core.store.lance import ModelMismatchError
+        from localdoc_finder.core.store.lance import ModelMismatchError
 
         first = make_settings(tmp_path)
         with StateDb(first.storage.data_dir) as state:
@@ -213,7 +213,7 @@ class TestOpenStoreApproval:
     def test_an_approved_change_rebuilds_once_and_the_approval_is_spent(
         self, tmp_path: Path
     ) -> None:
-        from vector_embed.core.store.sqlite import EMBEDDER_APPROVED_KEY
+        from localdoc_finder.core.store.sqlite import EMBEDDER_APPROVED_KEY
 
         first = make_settings(tmp_path)
         with StateDb(first.storage.data_dir) as state:

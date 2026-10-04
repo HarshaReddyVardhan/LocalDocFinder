@@ -4,9 +4,9 @@ from pathlib import Path
 import psutil
 import pytest
 
-from vector_embed.core import lifecycle
-from vector_embed.core.autostart import Autostart
-from vector_embed.core.store.sqlite import STATE_FILENAME
+from localdoc_finder.core import lifecycle
+from localdoc_finder.core.autostart import Autostart
+from localdoc_finder.core.store.sqlite import STATE_FILENAME
 
 
 class FakeProcess:
@@ -44,8 +44,8 @@ def stop(procs: list[FakeProcess], current: int = 1) -> int:
 
 
 def test_stops_other_copies_but_not_itself_or_strangers() -> None:
-    me = FakeProcess(1, "VectorEmbed.exe")
-    watcher = FakeProcess(2, "vectorembed.EXE")
+    me = FakeProcess(1, "LocalDocFinder.exe")
+    watcher = FakeProcess(2, "localdocfinder.EXE")
     other = FakeProcess(3, "notepad.exe")
     assert stop([me, watcher, other]) == 1
     assert watcher.terminated
@@ -54,7 +54,7 @@ def test_stops_other_copies_but_not_itself_or_strangers() -> None:
 
 def test_graceful_stop_asks_first_and_unloads_last(tmp_path: Path) -> None:
     order: list[str] = []
-    worker = FakeProcess(2, "VectorEmbed.exe")
+    worker = FakeProcess(2, "LocalDocFinder.exe")
     worker.terminate = lambda: order.append("terminate")  # type: ignore[method-assign]
 
     def waits(
@@ -77,7 +77,7 @@ def test_graceful_stop_asks_first_and_unloads_last(tmp_path: Path) -> None:
 
 
 def test_graceful_stop_terminates_what_ignores_the_request(tmp_path: Path) -> None:
-    stubborn = FakeProcess(2, "VectorEmbed.exe", stubborn=True)
+    stubborn = FakeProcess(2, "LocalDocFinder.exe", stubborn=True)
     unloaded: list[int] = []
 
     def alive(
@@ -110,19 +110,19 @@ def test_nothing_to_stop_means_no_unload_request(tmp_path: Path) -> None:
 
 
 def test_stops_the_cli_too() -> None:
-    cli = FakeProcess(4, "ve.exe")
+    cli = FakeProcess(4, "ldf.exe")
     assert stop([cli]) == 1
     assert cli.terminated
 
 
 def test_stubborn_processes_are_killed() -> None:
-    stubborn = FakeProcess(2, "VectorEmbed.exe", stubborn=True)
+    stubborn = FakeProcess(2, "LocalDocFinder.exe", stubborn=True)
     assert stop([stubborn]) == 1
     assert stubborn.killed
 
 
 def test_processes_that_vanish_are_skipped() -> None:
-    assert stop([FakeProcess(2, "VectorEmbed.exe", fail=True)]) == 0
+    assert stop([FakeProcess(2, "LocalDocFinder.exe", fail=True)]) == 0
 
 
 def test_terminate_errors_are_tolerated() -> None:
@@ -133,7 +133,7 @@ def test_terminate_errors_are_tolerated() -> None:
         def kill(self) -> None:
             raise psutil.AccessDenied(self.pid)
 
-    assert stop([Unkillable(2, "VectorEmbed.exe", stubborn=True)]) == 1
+    assert stop([Unkillable(2, "LocalDocFinder.exe", stubborn=True)]) == 1
 
 
 def test_wait_for_exit_returns_the_survivors() -> None:

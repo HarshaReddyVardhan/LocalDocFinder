@@ -4,10 +4,10 @@ from pathlib import Path
 import pytest
 from tests.core.conftest import Env, Power
 
-from vector_embed.core.providers.base import ProviderError
-from vector_embed.core.skills import search as search_mod
-from vector_embed.core.skills.base import SKILLS, SkillContext, create_skill, load_skills
-from vector_embed.core.skills.search import (
+from localdoc_finder.core.providers.base import ProviderError
+from localdoc_finder.core.skills import search as search_mod
+from localdoc_finder.core.skills.base import SKILLS, SkillContext, create_skill, load_skills
+from localdoc_finder.core.skills.search import (
     SearchDisabledError,
     SearchInput,
     SearchSkill,
@@ -240,7 +240,7 @@ class TestSkillInterface:
         assert "query" in SearchSkill.Input.model_json_schema()["properties"]
 
     def test_a_new_skill_is_one_decorated_class(self, skill_ctx: SkillContext) -> None:
-        from vector_embed.core.skills.base import Skill, SkillInput, register_skill
+        from localdoc_finder.core.skills.base import Skill, SkillInput, register_skill
 
         @register_skill("hello")
         class Hello(Skill):

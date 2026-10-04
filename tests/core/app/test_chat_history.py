@@ -7,11 +7,11 @@ from tests.core.app.test_app import FakeService
 from tests.core.app.test_modes import FakeAssistant, wait_for
 from tests.core.conftest import Chat, Env
 
-from vector_embed.app.assistant import AssistantService, ChatState, Event
-from vector_embed.app.controller import Launcher
-from vector_embed.app.window import Mode, SearchWindow
-from vector_embed.core.skills.base import SkillContext
-from vector_embed.core.skills.chat import SessionSummary
+from localdoc_finder.app.assistant import AssistantService, ChatState, Event
+from localdoc_finder.app.controller import Launcher
+from localdoc_finder.app.window import Mode, SearchWindow
+from localdoc_finder.core.skills.base import SkillContext
+from localdoc_finder.core.skills.chat import SessionSummary
 
 
 def test_reopening_restores_the_pins_and_returns_the_conversation(

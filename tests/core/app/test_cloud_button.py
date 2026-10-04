@@ -7,9 +7,9 @@ from PySide6.QtWidgets import QApplication
 from tests.core.app.test_app import FakeService
 from tests.core.app.test_modes import FakeAssistant
 
-from vector_embed.app.assistant import ChatState, CloudPreview, Delta, Event, Failed, Finished
-from vector_embed.app.controller import Launcher
-from vector_embed.app.window import Mode, SearchWindow
+from localdoc_finder.app.assistant import ChatState, CloudPreview, Delta, Event, Failed, Finished
+from localdoc_finder.app.controller import Launcher
+from localdoc_finder.app.window import Mode, SearchWindow
 
 PREVIEW = CloudPreview(
     destination="OpenRouter / vendor/chat",

@@ -1,9 +1,9 @@
 import pytest
 
-from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_EMBED, load_catalog
-from vector_embed.core.models.fit import budget_mb, fits
-from vector_embed.core.models.hardware import Hardware
-from vector_embed.core.models.starter import pick_starter
+from localdoc_finder.core.models.catalog import ROLE_CHAT, ROLE_EMBED, load_catalog
+from localdoc_finder.core.models.fit import budget_mb, fits
+from localdoc_finder.core.models.hardware import Hardware
+from localdoc_finder.core.models.starter import pick_starter
 
 
 def machine(vram_mb: int = 0, ram_mb: int = 32000) -> Hardware:
@@ -79,7 +79,7 @@ def test_shared_model_is_counted_once() -> None:
 
 
 def test_models_missing_from_the_catalog_table_are_skipped() -> None:
-    from vector_embed.core.models.catalog import parse_catalog
+    from localdoc_finder.core.models.catalog import parse_catalog
 
     catalog = parse_catalog(
         '[roles]\nchat = ["ghost", "tiny"]\n[models.tiny]\nvram_mb = 100\ndownload_mb = 5\n'

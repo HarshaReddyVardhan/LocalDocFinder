@@ -2,10 +2,10 @@ import numpy as np
 import pytest
 from tests.core.conftest import Env, Power
 
-from vector_embed.core.providers.base import ProviderError
-from vector_embed.core.retrieval import fts_terms, hybrid_candidates
-from vector_embed.core.skills.base import SkillContext
-from vector_embed.core.store.lance import CHUNKS, DOCUMENTS
+from localdoc_finder.core.providers.base import ProviderError
+from localdoc_finder.core.retrieval import fts_terms, hybrid_candidates
+from localdoc_finder.core.skills.base import SkillContext
+from localdoc_finder.core.store.lance import CHUNKS, DOCUMENTS
 
 COLUMNS = ["path", "chunk_hash", "text"]
 

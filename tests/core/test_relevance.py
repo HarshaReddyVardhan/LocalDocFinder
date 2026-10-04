@@ -1,4 +1,4 @@
-from vector_embed.core.relevance import keywords, reduce_to_relevant
+from localdoc_finder.core.relevance import keywords, reduce_to_relevant
 
 
 def test_keywords_keep_technical_tokens() -> None:

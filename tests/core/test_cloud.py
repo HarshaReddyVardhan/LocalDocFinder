@@ -7,23 +7,23 @@ import pytest
 from tests.core.conftest import Chat, Env, Power
 from tests.core.fakes import FakeCloudInner
 
-from vector_embed.core.cloud import (
+from localdoc_finder.core.cloud import (
     CloudChatProvider,
     CloudConsent,
     CloudDestination,
     CloudRouter,
     _Restorer,
 )
-from vector_embed.core.llm import ChatBlockedError
-from vector_embed.core.privacy.policy import PrivacyFilter
-from vector_embed.core.providers.base import (
+from localdoc_finder.core.llm import ChatBlockedError
+from localdoc_finder.core.privacy.policy import PrivacyFilter
+from localdoc_finder.core.providers.base import (
     ChatChunk,
     Message,
     ModelInfo,
     ProviderUnavailableError,
     Usage,
 )
-from vector_embed.core.settings import (
+from localdoc_finder.core.settings import (
     CloudProviderSettings,
     CloudSettings,
     PrivacySettings,

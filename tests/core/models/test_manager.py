@@ -4,14 +4,14 @@ from pathlib import Path
 import pytest
 from tests.core.providers.fakes import FakeOllamaClient
 
-from vector_embed.core.models.catalog import load_catalog
-from vector_embed.core.models.hardware import Hardware
-from vector_embed.core.models.manager import ModelChangeError, ModelManager
-from vector_embed.core.models.registry import ModelRegistry
-from vector_embed.core.providers.base import PullProgress
-from vector_embed.core.providers.ollama import OllamaProvider
-from vector_embed.core.settings import EmbeddingSettings
-from vector_embed.core.store.sqlite import EMBEDDER_APPROVED_KEY, StateDb
+from localdoc_finder.core.models.catalog import load_catalog
+from localdoc_finder.core.models.hardware import Hardware
+from localdoc_finder.core.models.manager import ModelChangeError, ModelManager
+from localdoc_finder.core.models.registry import ModelRegistry
+from localdoc_finder.core.providers.base import PullProgress
+from localdoc_finder.core.providers.ollama import OllamaProvider
+from localdoc_finder.core.settings import EmbeddingSettings
+from localdoc_finder.core.store.sqlite import EMBEDDER_APPROVED_KEY, StateDb
 
 GPU = Hardware("RTX 2070", 8192, 7000, 32000, 16000, 8, True)
 

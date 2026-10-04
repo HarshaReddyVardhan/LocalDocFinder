@@ -2,12 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from vector_embed.core.models.benchmark import BenchKind, BenchResult
-from vector_embed.core.models.hardware import Hardware
-from vector_embed.core.settings import Settings
-from vector_embed.core.setup import wiring
-from vector_embed.core.setup.flow import SetupFlow
-from vector_embed.core.store.sqlite import StateDb
+from localdoc_finder.core.models.benchmark import BenchKind, BenchResult
+from localdoc_finder.core.models.hardware import Hardware
+from localdoc_finder.core.settings import Settings
+from localdoc_finder.core.setup import wiring
+from localdoc_finder.core.setup.flow import SetupFlow
+from localdoc_finder.core.store.sqlite import StateDb
 
 
 def test_build_flow_wires_the_real_collaborators_without_touching_the_network(

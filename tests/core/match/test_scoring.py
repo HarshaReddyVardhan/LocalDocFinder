@@ -2,7 +2,7 @@ import time
 
 import pytest
 
-from vector_embed.core.match.scoring import (
+from localdoc_finder.core.match.scoring import (
     Requirement,
     RowResult,
     compute_score,
@@ -11,7 +11,7 @@ from vector_embed.core.match.scoring import (
     quote_in_text,
     verify_rows,
 )
-from vector_embed.core.settings import MatchSettings
+from localdoc_finder.core.settings import MatchSettings
 
 SETTINGS = MatchSettings()
 RESUME = """

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from vector_embed.core.process import ENTRY_POINTS, self_command, single_instance
+from localdoc_finder.core.process import ENTRY_POINTS, self_command, single_instance
 
 
 def test_second_holder_is_refused_until_released(tmp_path: Path) -> None:
@@ -32,13 +32,13 @@ def test_creates_the_data_dir(tmp_path: Path) -> None:
 def test_self_command_from_source_runs_the_package() -> None:
     command = self_command("watcher")
     assert command[0] == sys.executable
-    assert command[1:] == ["-m", "vector_embed", "watcher"]
+    assert command[1:] == ["-m", "localdoc_finder", "watcher"]
 
 
 def test_self_command_frozen_runs_the_exe(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", r"C:\Apps\VectorEmbed\VectorEmbed.exe")
-    assert self_command("worker") == [r"C:\Apps\VectorEmbed\VectorEmbed.exe", "worker"]
+    monkeypatch.setattr(sys, "executable", r"C:\Apps\LocalDocFinder\LocalDocFinder.exe")
+    assert self_command("worker") == [r"C:\Apps\LocalDocFinder\LocalDocFinder.exe", "worker"]
     assert self_command("app", windowless=True)[1:] == ["app"]
 
 
@@ -61,7 +61,7 @@ def test_unknown_entry_point_is_rejected() -> None:
 
 
 def test_stop_request_round_trip_and_expiry(tmp_path: Path) -> None:
-    from vector_embed.core.process import clear_stop_request, request_stop, stop_requested
+    from localdoc_finder.core.process import clear_stop_request, request_stop, stop_requested
 
     assert not stop_requested(tmp_path)
     request_stop(tmp_path)

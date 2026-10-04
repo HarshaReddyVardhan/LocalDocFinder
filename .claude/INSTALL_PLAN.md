@@ -1,9 +1,9 @@
-# Plan: Installable Vector Embed (setup wizard, minimal popup, Setup.exe with auto-update)
+# Plan: Installable LocalDoc Finder (setup wizard, minimal popup, Setup.exe with auto-update)
 
 ## Context
-Today Vector Embed only runs from a dev checkout: you need Python and a `.venv`, Ollama installed and models pulled by hand, and `scripts/install_task.ps1` pointing at `.venv\Scripts\pythonw.exe`. Goals:
+Today LocalDoc Finder only runs from a dev checkout: you need Python and a `.venv`, Ollama installed and models pulled by hand, and `scripts/install_task.ps1` pointing at `.venv\Scripts\pythonw.exe`. Goals:
 1. **A Setup.exe for any Windows PC.** It bundles its own Python and libraries, never touches a global Python, needs no admin rights, and **updates itself**.
-2. **A first-run setup wizard.** It installs Ollama if missing (with consent), **auto-picks an embedder and a chat model that fit the hardware** (the user can change them), downloads them, **speed-tests them**, then shows all user settings once. Settings are saved per Windows user in `%LOCALAPPDATA%\VectorEmbed\settings.toml`.
+2. **A first-run setup wizard.** It installs Ollama if missing (with consent), **auto-picks an embedder and a chat model that fit the hardware** (the user can change them), downloads them, **speed-tests them**, then shows all user settings once. Settings are saved per Windows user in `%LOCALAPPDATA%\LocalDocFinder\settings.toml`.
 3. **A minimal hotkey popup.** Just a search bar and an Explorer-style result list (icon, file name, full path underneath). Ask/Chat/Match stay reachable (`?`/Tab) but hidden. Models, health and all settings move to a separate **Settings window** (opened from the tray).
 
 Decisions: Windows only · official OllamaSetup.exe downloaded on first run · NVIDIA or CPU-only tiers · PyInstaller one-folder build · **Velopack** for the installer and updates (it replaces Inno Setup; Inno Setup was only a "Setup.exe wizard maker" and cannot update) · updates published to **GitHub Releases**.
@@ -48,10 +48,10 @@ Before Step 1: commit or stash the uncommitted changes (`runtime.py`, `skills/as
 - Results are stored in `StateDb` meta and shown in the Settings → Models tab.
 - Tests: fake provider responses, judge thresholds, and unload on error.
 
-### 4. `feat(setup): resumable setup flow and ve setup`
+### 4. `feat(setup): resumable setup flow and ldf setup`
 - `core/setup/flow.py`, `SetupFlow`: *Ollama → pick → disk check → pull (skipping models already installed; Ollama resumes partial pulls) → speed test (with downgrade offer) → write settings → mark done*. The plan is pure; execution goes through adapters and reports progress through a callback.
 - It writes `embedding.model` and the chat override via `set_setting`, and stores `setup_completed_at` in the `StateDb` meta.
-- `ve setup [--yes] [--embed X] [--chat Y] [--extras ...] [--dry-run] [--no-install-ollama] [--skip-bench]`.
+- `ldf setup [--yes] [--embed X] [--chat Y] [--extras ...] [--dry-run] [--no-install-ollama] [--skip-bench]`.
 - Add a "setup not run" check to `doctor.py`.
 - Tests: `tests/core/setup/test_flow.py`, `tests/core/test_cli_setup.py`.
 
@@ -90,35 +90,35 @@ Before Step 1: commit or stash the uncommitted changes (`runtime.py`, `skills/as
 - `controller.result_label` turns into a small data object for the delegate; existing tests are updated.
 
 ### 8. `refactor: make entry points work when frozen`
-- `core/process.py` gets `self_command(entry)`: `[sys.executable, "-m", "vector_embed.<entry>"]` when unfrozen, `[...\VectorEmbed.exe, entry]` when frozen. `watcher.py` and `app/controller.py` use it.
-- `vector_embed/__main__.py` dispatches `app|watcher|worker|setup`, with `app` as the default.
+- `core/process.py` gets `self_command(entry)`: `[sys.executable, "-m", "localdoc_finder.<entry>"]` when unfrozen, `[...\LocalDocFinder.exe, entry]` when frozen. `watcher.py` and `app/controller.py` use it.
+- `localdoc_finder/__main__.py` dispatches `app|watcher|worker|setup`, with `app` as the default.
 - Move the logic in `install_task.ps1` into `core/autostart.py`, which registers the Task Scheduler tasks through `schtasks`/PowerShell with the same battery flags. The installer hooks and the "start with Windows" setting can then call it. The script stays as a thin wrapper.
 - Tests: `self_command` with `sys.frozen` patched, and the autostart command line it builds.
 
 ### 9. `build: PyInstaller build and Velopack installer with auto-update`
-- `packaging/vector_embed.spec`: one folder `dist\VectorEmbed\` containing `VectorEmbed.exe` (windowed) and `ve.exe` (console).
+- `packaging/localdoc_finder.spec`: one folder `dist\LocalDocFinder\` containing `LocalDocFinder.exe` (windowed) and `ldf.exe` (console).
   - Collect `models_catalog.toml`, `tree_sitter_language_pack`, `lancedb`, `pyarrow` and the `winrt.*` packages.
   - Exclude the dev packages.
-- `velopack` (PyPI) is a runtime dependency. `VectorEmbed.exe` runs `velopack.App()` first, with hooks:
+- `velopack` (PyPI) is a runtime dependency. `LocalDocFinder.exe` runs `velopack.App()` first, with hooks:
   - **after install**: register autostart;
   - **before uninstall**: remove the scheduled tasks and stop the processes;
   - **after update**: restart the watcher.
   - Confirm the exact Python hook API names against the Velopack docs during implementation.
-  - Uninstall keeps `%LOCALAPPDATA%\VectorEmbed` (index and settings) and Ollama; "Delete my data" in Settings removes the data.
+  - Uninstall keeps `%LOCALAPPDATA%\LocalDocFinder` (index and settings) and Ollama; "Delete my data" in Settings removes the data.
 - `core/updates.py`: checks GitHub Releases in the background at startup and then once a day (setting `updates.auto_check`). It downloads only the changed parts (delta updates), then a tray message offers "Restart to update". New model lists arrive with app updates.
 - `scripts/build.ps1`:
   1. `uv sync --group build`
-  2. `pyinstaller packaging\vector_embed.spec`
-  3. smoke test `ve.exe doctor`
-  4. `vpk pack --packId VectorEmbed --packVersion <pyproject version> --packDir dist\VectorEmbed --mainExe VectorEmbed.exe`
+  2. `pyinstaller packaging\localdoc_finder.spec`
+  3. smoke test `ldf.exe doctor`
+  4. `vpk pack --packId LocalDocFinder --packVersion <pyproject version> --packDir dist\LocalDocFinder --mainExe LocalDocFinder.exe`
   5. optional `vpk upload github`
 
-  Output: `VectorEmbed-win-Setup.exe` + update packages. The build machine needs the .NET SDK for `vpk`; end users don't.
+  Output: `LocalDocFinder-win-Setup.exe` + update packages. The build machine needs the .NET SDK for `vpk`; end users don't.
 - `.gitignore` gets `build/`, `dist/` and `Releases/`. Unsigned builds show a SmartScreen warning; code signing is optional later.
 
 ### 10. `docs: install, build and release instructions`
 - README: Install, first-run setup, choosing models manually, Settings window, building and releasing.
-- `.env.example`: `VE_UPDATES__AUTO_CHECK`.
+- `.env.example`: `LDF_UPDATES__AUTO_CHECK`.
 - `.claude/CLAUDE.md` status.
 
 ## Invariants kept
@@ -130,9 +130,9 @@ Before Step 1: commit or stash the uncommitted changes (`runtime.py`, `skills/as
 
 ## Verification
 - After each step: `ruff format`, `ruff check`, `mypy`, `pytest` (coverage ≥ 80%; setup, starter and benchmark modules close to 100%).
-- On this RTX 2070: `ve setup --dry-run` → `qwen3.5:9b` + `qwen3-embedding:0.6b` with the correct size. `ve setup --skip-bench=false` prints tok/s, and `ve health` shows VRAM back to 0 afterwards.
+- On this RTX 2070: `ldf setup --dry-run` → `qwen3.5:9b` + `qwen3-embedding:0.6b` with the correct size. `ldf setup --skip-bench=false` prints tok/s, and `ldf health` shows VRAM back to 0 afterwards.
 - Popup: the hotkey shows only the search bar; results show the icon, the name and the path underneath; `?` still asks; Models is gone from Tab and present in Settings.
-- Build: `scripts\build.ps1`; `dist\VectorEmbed\ve.exe doctor` passes.
+- Build: `scripts\build.ps1`; `dist\LocalDocFinder\ldf.exe doctor` passes.
 - Clean machine (**Windows Sandbox**, no Python, no Ollama):
   1. Run Setup.exe → wizard → Ollama installs → models download → speed test → settings page → hotkey search works.
   2. Bump the version, rebuild, `vpk upload` → the installed app finds the update, restarts and is on the new version.

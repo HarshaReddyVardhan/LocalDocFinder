@@ -10,11 +10,11 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton
 from tests.core.app.test_app import FakeService, result
 
-from vector_embed.app.assistant import ChatState, Delta, Event, Failed, Finished
-from vector_embed.app.controller import Launcher
-from vector_embed.app.theme import Scheme
-from vector_embed.app.window import EXPANDED_HEIGHT, Mode, SearchWindow, _Signals, _StreamJob
-from vector_embed.core.rag import Source
+from localdoc_finder.app.assistant import ChatState, Delta, Event, Failed, Finished
+from localdoc_finder.app.controller import Launcher
+from localdoc_finder.app.theme import Scheme
+from localdoc_finder.app.window import EXPANDED_HEIGHT, Mode, SearchWindow, _Signals, _StreamJob
+from localdoc_finder.core.rag import Source
 
 
 def source(n: int = 1, path: str = r"D:\p\a.py", line: int = 7) -> Source:
@@ -317,7 +317,7 @@ class TestAsk:
     ) -> None:
         window, _, _ = parts
         window.set_mode(Mode.ASK)
-        from vector_embed.app.controller import SearchOutcome
+        from localdoc_finder.app.controller import SearchOutcome
 
         window._on_outcome(window._generation, SearchOutcome([result()], 1.0))
         assert window.list.count() == 0
@@ -346,7 +346,7 @@ class TestChat:
     ) -> None:
         window, assistant, _ = parts
         window.show_results(
-            __import__("vector_embed.app.controller", fromlist=["SearchOutcome"]).SearchOutcome(
+            __import__("localdoc_finder.app.controller", fromlist=["SearchOutcome"]).SearchOutcome(
                 [result(path=r"D:\p\resume.pdf")], 1.0
             )
         )

@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from vector_embed.core import logging_setup
-from vector_embed.core.logging_setup import (
+from localdoc_finder.core import logging_setup
+from localdoc_finder.core.logging_setup import (
     JsonFormatter,
     configure_logging,
     install_excepthooks,

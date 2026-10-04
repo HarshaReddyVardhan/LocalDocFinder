@@ -4,10 +4,10 @@ from pathlib import Path
 import pytest
 from tests.core.conftest import Env
 
-from vector_embed.core.documents import DocumentError, DocumentLoader
-from vector_embed.core.match import recall as rc
-from vector_embed.core.match.recall import MatchCandidate, Recall
-from vector_embed.core.skills.base import SkillContext
+from localdoc_finder.core.documents import DocumentError, DocumentLoader
+from localdoc_finder.core.match import recall as rc
+from localdoc_finder.core.match.recall import MatchCandidate, Recall
+from localdoc_finder.core.skills.base import SkillContext
 
 JD = (
     "Senior backend engineer wanted. Responsibilities: design payment APIs in Python and "

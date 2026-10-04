@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vector_embed.core.models import hardware as hwmod
+from localdoc_finder.core.models import hardware as hwmod
 
 
 def test_probe_gpu_returns_none_without_nvml(monkeypatch: pytest.MonkeyPatch) -> None:

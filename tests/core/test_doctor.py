@@ -3,13 +3,13 @@ from pathlib import Path
 import pytest
 from tests.core.conftest import Env
 
-from vector_embed.core import doctor
-from vector_embed.core.extractors.base import NullOcr
-from vector_embed.core.models.catalog import load_catalog
-from vector_embed.core.models.hardware import Hardware
-from vector_embed.core.models.registry import ModelRegistry
-from vector_embed.core.providers.base import CAP_COMPLETION, CAP_EMBEDDING, ModelInfo
-from vector_embed.core.setup.flow import SETUP_COMPLETED_KEY
+from localdoc_finder.core import doctor
+from localdoc_finder.core.extractors.base import NullOcr
+from localdoc_finder.core.models.catalog import load_catalog
+from localdoc_finder.core.models.hardware import Hardware
+from localdoc_finder.core.models.registry import ModelRegistry
+from localdoc_finder.core.providers.base import CAP_COMPLETION, CAP_EMBEDDING, ModelInfo
+from localdoc_finder.core.setup.flow import SETUP_COMPLETED_KEY
 
 GPU = Hardware("RTX 2070", 8192, 7000, 32000, 16000, 8, True)
 
@@ -105,7 +105,7 @@ def test_old_python_is_flagged(monkeypatch: object) -> None:
 def test_setup_not_run_is_reported(env: Env) -> None:
     checks = names(doctor.run_doctor(env.settings, registry([]), GPU, Ocr(), state=env.state))
     assert not checks["setup"].ok
-    assert "ve setup" in checks["setup"].detail
+    assert "ldf setup" in checks["setup"].detail
 
 
 def test_extractors_check_lists_the_builtin_formats() -> None:

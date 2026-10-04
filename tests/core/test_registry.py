@@ -1,6 +1,6 @@
 import pytest
 
-from vector_embed.core.registry import Registry, RegistryError
+from localdoc_finder.core.registry import Registry, RegistryError
 
 
 def test_register_and_get() -> None:

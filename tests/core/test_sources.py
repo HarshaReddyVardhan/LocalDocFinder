@@ -5,11 +5,11 @@ from pathlib import Path
 import pytest
 from tests.core.conftest import Env
 
-from vector_embed.core.projects import Projects
-from vector_embed.core.reconcile import reconcile
-from vector_embed.core.scope import ScopePolicy
-from vector_embed.core.sources.base import SOURCES, content_sources
-from vector_embed.core.sources.filesystem import FilesystemSource
+from localdoc_finder.core.projects import Projects
+from localdoc_finder.core.reconcile import reconcile
+from localdoc_finder.core.scope import ScopePolicy
+from localdoc_finder.core.sources.base import SOURCES, content_sources
+from localdoc_finder.core.sources.filesystem import FilesystemSource
 
 
 def write(path: Path, text: str) -> str:

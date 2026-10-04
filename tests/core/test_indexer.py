@@ -6,10 +6,10 @@ import pytest
 from tests.core.conftest import Env
 from tests.core.fakes import DIM
 
-from vector_embed.core.providers.ollama import Interrupted
-from vector_embed.core.reconcile import reconcile
-from vector_embed.core.store.lance import CHUNKS, DOCUMENTS
-from vector_embed.core.store.sqlite import QueueItem
+from localdoc_finder.core.providers.ollama import Interrupted
+from localdoc_finder.core.reconcile import reconcile
+from localdoc_finder.core.store.lance import CHUNKS, DOCUMENTS
+from localdoc_finder.core.store.sqlite import QueueItem
 
 PY_A = (
     "def alpha():\n    return 'alpha value ' * 3\n\n\ndef beta():\n    return 'beta value ' * 3\n"
@@ -222,7 +222,7 @@ class TestReconcile:
     @pytest.fixture(autouse=True)
     def check_every_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Small test trees: ask the stop check about every file (production asks sparingly)."""
-        import vector_embed.core.reconcile as reconcile_module
+        import localdoc_finder.core.reconcile as reconcile_module
 
         monkeypatch.setattr(reconcile_module, "_CHECK_EVERY_FILES", 1)
 
@@ -267,7 +267,7 @@ class TestReconcile:
     def test_the_stop_check_is_asked_sparingly_on_a_big_tree(
         self, env: "Env", monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import vector_embed.core.reconcile as reconcile_module
+        import localdoc_finder.core.reconcile as reconcile_module
 
         monkeypatch.setattr(reconcile_module, "_CHECK_EVERY_FILES", 200)
         monkeypatch.setattr(reconcile_module, "_CHECK_EVERY_SECONDS", 3600.0)
@@ -289,7 +289,7 @@ class TestReconcile:
     def test_an_interrupted_scan_keeps_what_it_found(
         self, env: "Env", monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import vector_embed.core.reconcile as reconcile_module
+        import localdoc_finder.core.reconcile as reconcile_module
 
         monkeypatch.setattr(reconcile_module, "_FLUSH_EVERY", 2)
         for i in range(5):
@@ -449,7 +449,7 @@ class TestVersionGroupingCost:
 class TestThumbnailCleanup:
     @staticmethod
     def with_thumbnails(env: "Env", tmp_path: Path) -> Path:
-        from vector_embed.core.extractors.base import ExtractContext, ExtractorSet
+        from localdoc_finder.core.extractors.base import ExtractContext, ExtractorSet
 
         thumbs = tmp_path / "thumbs"
         env.indexer.extractors = ExtractorSet(

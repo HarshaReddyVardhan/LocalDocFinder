@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from vector_embed.core.store import sqlite as sq
-from vector_embed.core.store.sqlite import FAILED_HASH, ManifestEntry, StateDb
+from localdoc_finder.core.store import sqlite as sq
+from localdoc_finder.core.store.sqlite import FAILED_HASH, ManifestEntry, StateDb
 
 
 class FakeClock:

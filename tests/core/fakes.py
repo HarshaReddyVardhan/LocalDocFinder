@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import xxhash
 
-from vector_embed.core.providers.base import (
+from localdoc_finder.core.providers.base import (
     ChatChunk,
     ChatOptions,
     EmbedKind,
@@ -16,7 +16,7 @@ from vector_embed.core.providers.base import (
     ModelInfo,
     Usage,
 )
-from vector_embed.core.providers.ollama import Interrupted
+from localdoc_finder.core.providers.ollama import Interrupted
 
 DIM = 16
 

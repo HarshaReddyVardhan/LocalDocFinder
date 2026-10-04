@@ -5,10 +5,10 @@ import pytest
 from tests.core.conftest import Chat, CloudRig, Env
 from tests.core.match.test_pipeline import JD, faithful_model, resume, write
 
-from vector_embed.app.match_controller import LOCAL, MatchController, format_tokens
-from vector_embed.core.match.judge import MatchError
-from vector_embed.core.match.recall import MatchCandidate
-from vector_embed.core.skills.base import SkillContext
+from localdoc_finder.app.match_controller import LOCAL, MatchController, format_tokens
+from localdoc_finder.core.match.judge import MatchError
+from localdoc_finder.core.match.recall import MatchCandidate
+from localdoc_finder.core.skills.base import SkillContext
 
 
 @pytest.fixture

@@ -3,10 +3,10 @@ from pathlib import Path
 
 import pytest
 
-from vector_embed.core.privacy.policy import PrivacyFilter
-from vector_embed.core.providers.base import Message
-from vector_embed.core.scope import ScopePolicy
-from vector_embed.core.settings import PrivacySettings, ScopeSettings
+from localdoc_finder.core.privacy.policy import PrivacyFilter
+from localdoc_finder.core.providers.base import Message
+from localdoc_finder.core.scope import ScopePolicy
+from localdoc_finder.core.settings import PrivacySettings, ScopeSettings
 
 RESUME = (
     "Jane Doe\njane.doe@example.com | +1 415 555 0132\n"
@@ -197,9 +197,9 @@ class TestNamesAcrossTurns:
 
 
 def test_the_personal_details_choice_can_be_changed_for_the_session() -> None:
-    from vector_embed.core.privacy.policy import PrivacyFilter
-    from vector_embed.core.scope import ScopePolicy
-    from vector_embed.core.settings import PrivacySettings, ScopeSettings
+    from localdoc_finder.core.privacy.policy import PrivacyFilter
+    from localdoc_finder.core.scope import ScopePolicy
+    from localdoc_finder.core.settings import PrivacySettings, ScopeSettings
 
     privacy = PrivacyFilter(PrivacySettings(), ScopePolicy(ScopeSettings()))
     message = [Message("user", "Jane Doe\njane@example.com")]

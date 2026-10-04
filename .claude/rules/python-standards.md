@@ -12,7 +12,7 @@
 - `pre-commit` runs ruff (lint+format), mypy and whitespace/EOF fixers on every commit.
 
 ## Layout
-- `src/vector_embed/` package (src layout). Tests in `tests/` mirror the package tree.
+- `src/localdoc_finder/` package (src layout). Tests in `tests/` mirror the package tree.
 - All tool config (ruff, pytest, mypy, coverage) is in `pyproject.toml`. No stray dotfiles for tool config.
 - Absolute imports for project code. No wildcard imports. No import-time side effects (no I/O, no model loads, no network).
 

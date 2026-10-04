@@ -6,10 +6,10 @@ import pytest
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from tests.core.app.test_models_panel import wait_for
 
-from vector_embed.app import main as app_main
-from vector_embed.app.update_scheduler import UpdateScheduler
-from vector_embed.core.store.sqlite import StateDb
-from vector_embed.core.updates import Updater
+from localdoc_finder.app import main as app_main
+from localdoc_finder.app.update_scheduler import UpdateScheduler
+from localdoc_finder.core.store.sqlite import StateDb
+from localdoc_finder.core.updates import Updater
 
 
 class FakeManager:
@@ -106,7 +106,7 @@ def test_announcing_shows_the_restart_action_and_a_message(
 
 
 def test_auto_check_setting_is_read_fresh(tmp_path: Path) -> None:
-    from vector_embed.core.settings_io import set_setting
+    from localdoc_finder.core.settings_io import set_setting
 
     path = tmp_path / "settings.toml"
     enabled = app_main.auto_check_enabled(path)

@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from tests.core.setup.fakes import Clock, FakeSystem
 
-from vector_embed.core.setup.ollama_install import (
+from localdoc_finder.core.setup.ollama_install import (
     EXPECTED_SIGNER,
     INSTALLER_ARGS,
     INSTALLER_URL,

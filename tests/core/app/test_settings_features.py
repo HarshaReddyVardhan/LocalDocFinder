@@ -5,13 +5,13 @@ from tests.core.app.test_models_panel import wait_for
 from tests.core.app.test_settings_window import FakeKeys
 from tests.core.conftest import Env
 
-from vector_embed.app.settings_controller import SettingsController
-from vector_embed.app.settings_features import FeaturesTab
-from vector_embed.core.features import enabled_features
-from vector_embed.core.models.manager import ProgressCallback
-from vector_embed.core.models.starter import StarterPick
-from vector_embed.core.providers.base import ProviderError, PullProgress
-from vector_embed.core.settings import SettingsError
+from localdoc_finder.app.settings_controller import SettingsController
+from localdoc_finder.app.settings_features import FeaturesTab
+from localdoc_finder.core.features import enabled_features
+from localdoc_finder.core.models.manager import ProgressCallback
+from localdoc_finder.core.models.starter import StarterPick
+from localdoc_finder.core.providers.base import ProviderError, PullProgress
+from localdoc_finder.core.settings import SettingsError
 
 PICK = StarterPick("chat", "qwen3.5:9b", "fits your 8192 MB of VRAM", 6100, "qwen3:8b")
 

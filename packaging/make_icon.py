@@ -1,4 +1,4 @@
-"""Draw the app icon (a magnifier with a sparkle on a blue tile) to a PNG and ``vector_embed.ico``.
+"""Draw the app icon (a magnifier with a sparkle on a blue tile) to PNG and ICO files.
 
 The PNG is what the tray loads at runtime; the ICO is for the exe and installer. Both come from
 one drawing, rendered large and scaled down so the edges are smooth.
@@ -27,7 +27,7 @@ HANDLE_ANGLE_DEG = 45  # down and to the right
 SPARKLE_RADIUS = 120
 SPARKLE_WAIST = 0.22  # how thin the sparkle's arms pinch in (0 = needle, 1 = diamond)
 LENS_TINT = (255, 255, 255, 46)
-ASSET = Path(__file__).parents[1] / "src" / "vector_embed" / "app" / "assets" / "icon.png"
+ASSET = Path(__file__).parents[1] / "src" / "localdoc_finder" / "app" / "assets" / "icon.png"
 
 
 def draw_icon() -> Image.Image:
@@ -102,4 +102,6 @@ def main(target: Path) -> None:
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).with_name("vector_embed.ico"))
+    main(
+        Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).with_name("localdoc_finder.ico")
+    )

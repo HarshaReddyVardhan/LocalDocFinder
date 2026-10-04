@@ -1,8 +1,8 @@
 import pytest
 
-from vector_embed.core.privacy import detectors as d
-from vector_embed.core.privacy.detectors import detect_sensitive
-from vector_embed.core.privacy.mask import mask_sensitive
+from localdoc_finder.core.privacy import detectors as d
+from localdoc_finder.core.privacy.detectors import detect_sensitive
+from localdoc_finder.core.privacy.mask import mask_sensitive
 
 VALID_CARD = "4111 1111 1111 1111"  # Visa test number, Luhn valid
 VALID_AADHAAR = "2345 6789 0124"  # Verhoeff valid (computed below in a test)
@@ -247,7 +247,7 @@ class TestDetectorGaps:
 
 class TestStripSecretTokens:
     def test_only_recognisable_credentials_are_replaced(self) -> None:
-        from vector_embed.core.privacy.mask import strip_secret_tokens
+        from localdoc_finder.core.privacy.mask import strip_secret_tokens
 
         key = "ghp_" + "a" * 36
         text = f"token = get_token(request)  # and {key} here"
@@ -256,6 +256,6 @@ class TestStripSecretTokens:
         )
 
     def test_text_without_secrets_is_returned_unchanged(self) -> None:
-        from vector_embed.core.privacy.mask import strip_secret_tokens
+        from localdoc_finder.core.privacy.mask import strip_secret_tokens
 
         assert strip_secret_tokens("plain words") == "plain words"

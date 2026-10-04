@@ -6,18 +6,18 @@ import pytest
 from tests.core.conftest import Chat, CloudRig, Env
 from tests.core.match.test_pipeline import CHECKLIST, faithful_model, resume
 
-from vector_embed.app.match_controller import MatchController
-from vector_embed.core.documents import DocumentLoader
-from vector_embed.core.llm import ChatBlockedError
-from vector_embed.core.match.pipeline import MatchPipeline
-from vector_embed.core.match.recall import select_all
-from vector_embed.core.privacy.policy import PrivacyFilter
-from vector_embed.core.providers.base import Message
-from vector_embed.core.skills.ask import AskInput, AskSkill
-from vector_embed.core.skills.base import SkillContext
-from vector_embed.core.skills.chat import ChatInput, ChatSkill
-from vector_embed.core.skills.match import MatchInput, MatchSkill
-from vector_embed.core.store.lance import sql_quote
+from localdoc_finder.app.match_controller import MatchController
+from localdoc_finder.core.documents import DocumentLoader
+from localdoc_finder.core.llm import ChatBlockedError
+from localdoc_finder.core.match.pipeline import MatchPipeline
+from localdoc_finder.core.match.recall import select_all
+from localdoc_finder.core.privacy.policy import PrivacyFilter
+from localdoc_finder.core.providers.base import Message
+from localdoc_finder.core.skills.ask import AskInput, AskSkill
+from localdoc_finder.core.skills.base import SkillContext
+from localdoc_finder.core.skills.chat import ChatInput, ChatSkill
+from localdoc_finder.core.skills.match import MatchInput, MatchSkill
+from localdoc_finder.core.store.lance import sql_quote
 
 JD = "Senior backend engineer. Requirements: Python, PostgreSQL. Nice to have: Kubernetes, AWS."
 PUBLIC_NOTE = (

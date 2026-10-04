@@ -3,23 +3,23 @@ from pathlib import Path
 import pytest
 from tests.core.setup.fakes import Harness
 
-from vector_embed.core.features import FEATURES
-from vector_embed.core.models.benchmark import (
+from localdoc_finder.core.features import FEATURES
+from localdoc_finder.core.models.benchmark import (
     BenchKind,
     BenchmarkError,
     load_results,
 )
-from vector_embed.core.models.catalog import ROLE_EMBED
-from vector_embed.core.providers.base import ProviderError
-from vector_embed.core.setup.flow import (
+from localdoc_finder.core.models.catalog import ROLE_EMBED
+from localdoc_finder.core.providers.base import ProviderError
+from localdoc_finder.core.setup.flow import (
     SETUP_COMPLETED_KEY,
     SetupCancelled,
     SetupError,
     SetupOptions,
     Stage,
 )
-from vector_embed.core.setup.ollama_install import OllamaState
-from vector_embed.core.setup.plan import SetupChoices
+from localdoc_finder.core.setup.ollama_install import OllamaState
+from localdoc_finder.core.setup.plan import SetupChoices
 
 EVERYTHING = SetupOptions(choices=SetupChoices(features=FEATURES))  # search plus Ask/Chat/Match
 

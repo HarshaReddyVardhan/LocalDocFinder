@@ -3,8 +3,8 @@ from pathlib import Path
 
 from tests.core.extractors.conftest import FakeOcr, Writer, png_bytes
 
-from vector_embed.core.extractors.base import ExtractorSet
-from vector_embed.core.extractors.rtf import read_rtf
+from localdoc_finder.core.extractors.base import ExtractorSet
+from localdoc_finder.core.extractors.rtf import read_rtf
 
 Build = Callable[..., ExtractorSet]
 

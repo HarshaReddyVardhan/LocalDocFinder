@@ -1,11 +1,11 @@
 import re
 from typing import Any
 
-from vector_embed.core import rag
-from vector_embed.core.prompt_safety import fence_for
-from vector_embed.core.rag import Source, build_sources, cited_sources
-from vector_embed.core.retrieval import Candidate
-from vector_embed.core.tokens import estimate_tokens
+from localdoc_finder.core import rag
+from localdoc_finder.core.prompt_safety import fence_for
+from localdoc_finder.core.rag import Source, build_sources, cited_sources
+from localdoc_finder.core.retrieval import Candidate
+from localdoc_finder.core.tokens import estimate_tokens
 
 
 def row(path: str, start: int, end: int, text: str, **kw: Any) -> Candidate:

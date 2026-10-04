@@ -8,9 +8,9 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from vector_embed.core.setup import windows_ollama
-from vector_embed.core.setup.ollama_install import Signature
-from vector_embed.core.setup.windows_ollama import WindowsOllamaSystem
+from localdoc_finder.core.setup import windows_ollama
+from localdoc_finder.core.setup.ollama_install import Signature
+from localdoc_finder.core.setup.windows_ollama import WindowsOllamaSystem
 
 
 def system_with(transport: httpx.MockTransport | None = None) -> WindowsOllamaSystem:

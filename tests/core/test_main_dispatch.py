@@ -1,8 +1,8 @@
 import pytest
 
-from vector_embed import __main__ as entry
-from vector_embed import watcher, worker
-from vector_embed.app import main as app_main
+from localdoc_finder import __main__ as entry
+from localdoc_finder import watcher, worker
+from localdoc_finder.app import main as app_main
 
 
 @pytest.mark.parametrize(
@@ -32,7 +32,7 @@ def test_main_runs_the_resolved_entry(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_main_reads_sys_argv_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("sys.argv", ["VectorEmbed.exe", "watcher", "--status"])
+    monkeypatch.setattr("sys.argv", ["LocalDocFinder.exe", "watcher", "--status"])
     monkeypatch.setattr(watcher, "main", lambda args: 0 if list(args) == ["--status"] else 9)
     assert entry.main() == 0
 
@@ -40,7 +40,7 @@ def test_main_reads_sys_argv_by_default(monkeypatch: pytest.MonkeyPatch) -> None
 def test_frozen_build_runs_the_velopack_hooks_before_anything_else(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vector_embed.core import lifecycle
+    from localdoc_finder.core import lifecycle
 
     order: list[str] = []
     monkeypatch.setattr(entry, "is_frozen", lambda: True)
@@ -51,7 +51,7 @@ def test_frozen_build_runs_the_velopack_hooks_before_anything_else(
 
 
 def test_unfrozen_runs_skip_the_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
-    from vector_embed.core import lifecycle
+    from localdoc_finder.core import lifecycle
 
     monkeypatch.setattr(entry, "is_frozen", lambda: False)
     monkeypatch.setattr(
@@ -62,13 +62,13 @@ def test_unfrozen_runs_skip_the_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_autostart_follows_the_users_setting(monkeypatch: pytest.MonkeyPatch) -> None:
-    from vector_embed.core import lifecycle
-    from vector_embed.core.settings import Settings, SettingsError
+    from localdoc_finder.core import lifecycle
+    from localdoc_finder.core.settings import Settings, SettingsError
 
     seen: list[bool] = []
     monkeypatch.setattr(lifecycle, "run_startup_hooks", lambda *, enabled: seen.append(enabled()))
     monkeypatch.setattr(
-        "vector_embed.core.settings.load_settings",
+        "localdoc_finder.core.settings.load_settings",
         lambda: Settings(app={"start_with_windows": False}),  # type: ignore[arg-type]
     )
     entry._run_velopack_hooks()
@@ -76,6 +76,6 @@ def test_autostart_follows_the_users_setting(monkeypatch: pytest.MonkeyPatch) ->
     def broken() -> Settings:
         raise SettingsError("bad file")
 
-    monkeypatch.setattr("vector_embed.core.settings.load_settings", broken)
+    monkeypatch.setattr("localdoc_finder.core.settings.load_settings", broken)
     entry._run_velopack_hooks()
     assert seen == [False, True]  # an unreadable settings file must not block registration

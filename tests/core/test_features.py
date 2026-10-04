@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from vector_embed.core.features import FEATURE_TITLES, FEATURES, enabled_features, is_enabled
-from vector_embed.core.settings import FeatureSettings, Settings, load_settings
-from vector_embed.core.settings_schema import editable_options
+from localdoc_finder.core.features import FEATURE_TITLES, FEATURES, enabled_features, is_enabled
+from localdoc_finder.core.settings import FeatureSettings, Settings, load_settings
+from localdoc_finder.core.settings_schema import editable_options
 
 
 def test_every_feature_has_a_title() -> None:

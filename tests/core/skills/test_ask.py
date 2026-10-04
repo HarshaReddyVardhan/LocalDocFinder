@@ -3,10 +3,10 @@ from pathlib import Path
 import pytest
 from tests.core.conftest import Chat, Env, Power
 
-from vector_embed.core.llm import ChatBlockedError
-from vector_embed.core.rag import NOT_FOUND
-from vector_embed.core.skills.ask import AskInput, AskResult, AskSkill, gateway_of
-from vector_embed.core.skills.base import SkillContext, create_skill
+from localdoc_finder.core.llm import ChatBlockedError
+from localdoc_finder.core.rag import NOT_FOUND
+from localdoc_finder.core.skills.ask import AskInput, AskResult, AskSkill, gateway_of
+from localdoc_finder.core.skills.base import SkillContext, create_skill
 
 PAYMENTS = (
     "def retry_failed_payments(order):\n"

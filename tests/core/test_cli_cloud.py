@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 from tests.core.conftest import Env
 
-from vector_embed import cli, cli_cloud
-from vector_embed.core.secrets import MemoryKeyStore
-from vector_embed.core.settings import Settings, load_settings
+from localdoc_finder import cli, cli_cloud
+from localdoc_finder.core.secrets import MemoryKeyStore
+from localdoc_finder.core.settings import Settings, load_settings
 
 
 @pytest.fixture(autouse=True)
@@ -67,7 +67,7 @@ class TestKeys:
     def test_status_lists_providers_and_whether_a_key_exists(self, env: Env) -> None:
         out = Out()
         cli_cloud.run_keys(parse("keys", "status"), env.settings, MemoryKeyStore(), out)
-        assert out == ["no cloud providers configured (see: ve cloud add)"]
+        assert out == ["no cloud providers configured (see: ldf cloud add)"]
         cli_cloud.run_cloud(
             parse("cloud", "add", "openrouter", "--base-url", "https://x/v1", "--use"),
             env.settings,
@@ -99,7 +99,7 @@ class TestCloud:
             MemoryKeyStore(),
             out,
         )  # fmt: skip
-        assert "ve keys set openrouter" in out[0]
+        assert "ldf keys set openrouter" in out[0]
         cloud = reload(env).cloud
         provider = cloud.providers["openrouter"]
         assert provider.base_url == "https://openrouter.ai/api/v1"
@@ -194,7 +194,7 @@ class TestThroughTheMainCommand:
     def test_a_credential_store_failure_is_an_error_exit(
         self, env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        from vector_embed.core.secrets import KeyStoreError
+        from localdoc_finder.core.secrets import KeyStoreError
 
         class Broken:
             def get(self, provider: str) -> str | None:

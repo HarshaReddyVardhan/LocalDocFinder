@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from vector_embed.core import updates
-from vector_embed.core.store.sqlite import StateDb
-from vector_embed.core.updates import (
+from localdoc_finder.core import updates
+from localdoc_finder.core.store.sqlite import StateDb
+from localdoc_finder.core.updates import (
     CHECK_INTERVAL_SECONDS,
     LAST_CHECK_KEY,
     UpdateKind,

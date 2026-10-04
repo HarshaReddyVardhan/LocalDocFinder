@@ -4,18 +4,18 @@ import tomllib
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
-from vector_embed.core.models.benchmark import BenchKind, BenchmarkError, BenchResult
-from vector_embed.core.models.catalog import load_catalog
-from vector_embed.core.models.hardware import Hardware
-from vector_embed.core.providers.base import ModelInfo, ProviderError, PullProgress
-from vector_embed.core.setup.flow import SetupEvent, SetupFlow, SlowOffer
-from vector_embed.core.setup.ollama_install import (
+from localdoc_finder.core.models.benchmark import BenchKind, BenchmarkError, BenchResult
+from localdoc_finder.core.models.catalog import load_catalog
+from localdoc_finder.core.models.hardware import Hardware
+from localdoc_finder.core.providers.base import ModelInfo, ProviderError, PullProgress
+from localdoc_finder.core.setup.flow import SetupEvent, SetupFlow, SlowOffer
+from localdoc_finder.core.setup.ollama_install import (
     EXPECTED_SIGNER,
     OllamaSetup,
     ProgressCallback,
     Signature,
 )
-from vector_embed.core.store.sqlite import StateDb
+from localdoc_finder.core.store.sqlite import StateDb
 
 
 class FakeSystem:

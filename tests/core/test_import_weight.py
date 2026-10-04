@@ -41,9 +41,9 @@ def loaded_after_importing(module: str) -> list[str]:
 
 
 def test_the_watcher_does_not_load_heavy_libraries() -> None:
-    assert loaded_after_importing("vector_embed.watcher") == []
+    assert loaded_after_importing("localdoc_finder.watcher") == []
 
 
-@pytest.mark.parametrize("module", ["vector_embed.core.wiring", "vector_embed.core.idle"])
+@pytest.mark.parametrize("module", ["localdoc_finder.core.wiring", "localdoc_finder.core.idle"])
 def test_the_light_helpers_stay_light(module: str) -> None:
     assert loaded_after_importing(module) == []

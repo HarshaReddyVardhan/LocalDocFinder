@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from vector_embed.core.indexing_control import IndexingControl, IndexingStatus
-from vector_embed.core.process import single_instance
-from vector_embed.core.store.sqlite import StateDb
+from localdoc_finder.core.indexing_control import IndexingControl, IndexingStatus
+from localdoc_finder.core.process import single_instance
+from localdoc_finder.core.store.sqlite import StateDb
 
 
 class FakeLauncher:

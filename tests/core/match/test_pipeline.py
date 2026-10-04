@@ -5,14 +5,14 @@ from typing import Any
 import pytest
 from tests.core.conftest import Chat, Env
 
-from vector_embed.core.documents import DocumentLoader
-from vector_embed.core.llm import ChatBlockedError
-from vector_embed.core.match.judge import MatchError
-from vector_embed.core.match.pipeline import MatchPipeline
-from vector_embed.core.match.recall import select_all, select_none
-from vector_embed.core.providers.base import Message, ProviderUnavailableError
-from vector_embed.core.skills.base import SkillContext
-from vector_embed.core.skills.chat import ChatInput, ChatSkill
+from localdoc_finder.core.documents import DocumentLoader
+from localdoc_finder.core.llm import ChatBlockedError
+from localdoc_finder.core.match.judge import MatchError
+from localdoc_finder.core.match.pipeline import MatchPipeline
+from localdoc_finder.core.match.recall import select_all, select_none
+from localdoc_finder.core.providers.base import Message, ProviderUnavailableError
+from localdoc_finder.core.skills.base import SkillContext
+from localdoc_finder.core.skills.chat import ChatInput, ChatSkill
 
 JD = (
     "Senior backend engineer wanted. Requirements: Python, PostgreSQL. "

@@ -1186,6 +1186,112 @@ wheels = [
 ]
 
 [[package]]
+name = "localdoc-finder"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "imagehash" },
+    { name = "keyring" },
+    { name = "lancedb" },
+    { name = "mcp" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "nvidia-ml-py" },
+    { name = "ollama" },
+    { name = "openai" },
+    { name = "pathspec" },
+    { name = "pillow" },
+    { name = "psutil" },
+    { name = "pyarrow" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pymupdf" },
+    { name = "pyside6" },
+    { name = "python-docx" },
+    { name = "python-pptx" },
+    { name = "pyyaml" },
+    { name = "tomli-w" },
+    { name = "tree-sitter-language-pack" },
+    { name = "velopack" },
+    { name = "watchdog" },
+    { name = "winrt-runtime", marker = "sys_platform == 'win32'" },
+    { name = "winrt-windows-foundation", marker = "sys_platform == 'win32'" },
+    { name = "winrt-windows-foundation-collections", marker = "sys_platform == 'win32'" },
+    { name = "winrt-windows-globalization", marker = "sys_platform == 'win32'" },
+    { name = "winrt-windows-graphics-imaging", marker = "sys_platform == 'win32'" },
+    { name = "winrt-windows-media-ocr", marker = "sys_platform == 'win32'" },
+    { name = "winrt-windows-storage", marker = "sys_platform == 'win32'" },
+    { name = "winrt-windows-storage-streams", marker = "sys_platform == 'win32'" },
+    { name = "xxhash" },
+]
+
+[package.dev-dependencies]
+build = [
+    { name = "pyinstaller" },
+]
+dev = [
+    { name = "mypy" },
+    { name = "pip-audit" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-mock" },
+    { name = "ruff" },
+    { name = "types-psutil" },
+    { name = "types-pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "imagehash" },
+    { name = "keyring", specifier = ">=25" },
+    { name = "lancedb", specifier = ">=0.30,<1" },
+    { name = "mcp", specifier = ">=2,<3" },
+    { name = "numpy", specifier = ">=2,<3" },
+    { name = "nvidia-ml-py" },
+    { name = "ollama", specifier = ">=0.4" },
+    { name = "openai", specifier = ">=1.40" },
+    { name = "pathspec", specifier = ">=0.12" },
+    { name = "pillow" },
+    { name = "psutil", specifier = ">=5.9" },
+    { name = "pyarrow", specifier = ">=20,<27" },
+    { name = "pydantic", specifier = ">=2.7" },
+    { name = "pydantic-settings", specifier = ">=2.3" },
+    { name = "pymupdf", specifier = ">=1.26,<2" },
+    { name = "pyside6", specifier = ">=6.9,<7" },
+    { name = "python-docx" },
+    { name = "python-pptx" },
+    { name = "pyyaml" },
+    { name = "tomli-w", specifier = ">=1.0" },
+    { name = "tree-sitter-language-pack" },
+    { name = "velopack", specifier = ">=1.2" },
+    { name = "watchdog" },
+    { name = "winrt-runtime", marker = "sys_platform == 'win32'" },
+    { name = "winrt-windows-foundation", marker = "sys_platform == 'win32'" },
+    { name = "winrt-windows-foundation-collections", marker = "sys_platform == 'win32'" },
+    { name = "winrt-windows-globalization", marker = "sys_platform == 'win32'" },
+    { name = "winrt-windows-graphics-imaging", marker = "sys_platform == 'win32'" },
+    { name = "winrt-windows-media-ocr", marker = "sys_platform == 'win32'" },
+    { name = "winrt-windows-storage", marker = "sys_platform == 'win32'" },
+    { name = "winrt-windows-storage-streams", marker = "sys_platform == 'win32'" },
+    { name = "xxhash" },
+]
+
+[package.metadata.requires-dev]
+build = [{ name = "pyinstaller", specifier = ">=6.10" }]
+dev = [
+    { name = "mypy", specifier = ">=1.11" },
+    { name = "pip-audit", specifier = ">=2.7" },
+    { name = "pre-commit", specifier = ">=3.8" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-cov", specifier = ">=5" },
+    { name = "pytest-mock", specifier = ">=3.14" },
+    { name = "ruff", specifier = ">=0.6" },
+    { name = "types-psutil" },
+    { name = "types-pyyaml" },
+]
+
+[[package]]
 name = "lxml"
 version = "6.1.3"
 source = { registry = "https://pypi.org/simple" }
@@ -3311,112 +3417,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/da/34/30e9280707135d2cfc589dfff3cb796bd07a3aeb1a3e415ba09dd89d7bb4/uvicorn-0.54.0.tar.gz", hash = "sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620", size = 112283, upload-time = "2026-09-25T06:52:37.601Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/38/0c/b54a4fdd7f90a3af8b02ebc9ce6712c2c208b7926a2f7bad95c33ebbe943/uvicorn-0.54.0-py3-none-any.whl", hash = "sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf", size = 87427, upload-time = "2026-09-25T06:52:35.829Z" },
-]
-
-[[package]]
-name = "vector-embed"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "imagehash" },
-    { name = "keyring" },
-    { name = "lancedb" },
-    { name = "mcp" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "nvidia-ml-py" },
-    { name = "ollama" },
-    { name = "openai" },
-    { name = "pathspec" },
-    { name = "pillow" },
-    { name = "psutil" },
-    { name = "pyarrow" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "pymupdf" },
-    { name = "pyside6" },
-    { name = "python-docx" },
-    { name = "python-pptx" },
-    { name = "pyyaml" },
-    { name = "tomli-w" },
-    { name = "tree-sitter-language-pack" },
-    { name = "velopack" },
-    { name = "watchdog" },
-    { name = "winrt-runtime", marker = "sys_platform == 'win32'" },
-    { name = "winrt-windows-foundation", marker = "sys_platform == 'win32'" },
-    { name = "winrt-windows-foundation-collections", marker = "sys_platform == 'win32'" },
-    { name = "winrt-windows-globalization", marker = "sys_platform == 'win32'" },
-    { name = "winrt-windows-graphics-imaging", marker = "sys_platform == 'win32'" },
-    { name = "winrt-windows-media-ocr", marker = "sys_platform == 'win32'" },
-    { name = "winrt-windows-storage", marker = "sys_platform == 'win32'" },
-    { name = "winrt-windows-storage-streams", marker = "sys_platform == 'win32'" },
-    { name = "xxhash" },
-]
-
-[package.dev-dependencies]
-build = [
-    { name = "pyinstaller" },
-]
-dev = [
-    { name = "mypy" },
-    { name = "pip-audit" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
-    { name = "ruff" },
-    { name = "types-psutil" },
-    { name = "types-pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "imagehash" },
-    { name = "keyring", specifier = ">=25" },
-    { name = "lancedb", specifier = ">=0.30,<1" },
-    { name = "mcp", specifier = ">=2,<3" },
-    { name = "numpy", specifier = ">=2,<3" },
-    { name = "nvidia-ml-py" },
-    { name = "ollama", specifier = ">=0.4" },
-    { name = "openai", specifier = ">=1.40" },
-    { name = "pathspec", specifier = ">=0.12" },
-    { name = "pillow" },
-    { name = "psutil", specifier = ">=5.9" },
-    { name = "pyarrow", specifier = ">=20,<27" },
-    { name = "pydantic", specifier = ">=2.7" },
-    { name = "pydantic-settings", specifier = ">=2.3" },
-    { name = "pymupdf", specifier = ">=1.26,<2" },
-    { name = "pyside6", specifier = ">=6.9,<7" },
-    { name = "python-docx" },
-    { name = "python-pptx" },
-    { name = "pyyaml" },
-    { name = "tomli-w", specifier = ">=1.0" },
-    { name = "tree-sitter-language-pack" },
-    { name = "velopack", specifier = ">=1.2" },
-    { name = "watchdog" },
-    { name = "winrt-runtime", marker = "sys_platform == 'win32'" },
-    { name = "winrt-windows-foundation", marker = "sys_platform == 'win32'" },
-    { name = "winrt-windows-foundation-collections", marker = "sys_platform == 'win32'" },
-    { name = "winrt-windows-globalization", marker = "sys_platform == 'win32'" },
-    { name = "winrt-windows-graphics-imaging", marker = "sys_platform == 'win32'" },
-    { name = "winrt-windows-media-ocr", marker = "sys_platform == 'win32'" },
-    { name = "winrt-windows-storage", marker = "sys_platform == 'win32'" },
-    { name = "winrt-windows-storage-streams", marker = "sys_platform == 'win32'" },
-    { name = "xxhash" },
-]
-
-[package.metadata.requires-dev]
-build = [{ name = "pyinstaller", specifier = ">=6.10" }]
-dev = [
-    { name = "mypy", specifier = ">=1.11" },
-    { name = "pip-audit", specifier = ">=2.7" },
-    { name = "pre-commit", specifier = ">=3.8" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "pytest-cov", specifier = ">=5" },
-    { name = "pytest-mock", specifier = ">=3.14" },
-    { name = "ruff", specifier = ">=0.6" },
-    { name = "types-psutil" },
-    { name = "types-pyyaml" },
 ]
 
 [[package]]

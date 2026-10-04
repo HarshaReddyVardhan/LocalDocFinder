@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from vector_embed.core import settings as s
-from vector_embed.core.settings_io import set_setting
+from localdoc_finder.core import settings as s
+from localdoc_finder.core.settings_io import set_setting
 
 
 @pytest.fixture(autouse=True)
@@ -104,7 +104,7 @@ class TestSafeWrites:
     def test_a_held_lock_times_out_with_a_clear_message(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import vector_embed.core.settings_io as io_module
+        import localdoc_finder.core.settings_io as io_module
 
         monkeypatch.setattr(io_module, "LOCK_TIMEOUT_SECONDS", 0.2)
         path = tmp_path / "settings.toml"
@@ -192,7 +192,7 @@ class TestSettingsFileLocation:
     def test_a_data_dir_entry_moves_the_index_but_not_the_settings_file(
         self, tmp_path: Path
     ) -> None:
-        elsewhere = tmp_path / "bigdisk" / "ve"
+        elsewhere = tmp_path / "bigdisk" / "ldf"
         path = tmp_path / "settings.toml"
         path.write_text(f'[storage]\ndata_dir = "{elsewhere.as_posix()}"\n', encoding="utf-8")
         loaded = s.load_settings(path)

@@ -5,24 +5,24 @@ from typing import ClassVar
 import pytest
 from tests.core.providers.fakes import FakeOllamaClient
 
-from vector_embed.core import llm
-from vector_embed.core.llm import ChatBlockedError, ChatTarget, LlmGateway, NoChatModelError
-from vector_embed.core.models.catalog import load_catalog
-from vector_embed.core.models.hardware import Hardware
-from vector_embed.core.models.registry import ModelRegistry
-from vector_embed.core.power import PowerGate
-from vector_embed.core.privacy.policy import PrivacyFilter
-from vector_embed.core.providers.base import Message
-from vector_embed.core.providers.ollama import OllamaProvider
-from vector_embed.core.scope import ScopePolicy
-from vector_embed.core.settings import (
+from localdoc_finder.core import llm
+from localdoc_finder.core.llm import ChatBlockedError, ChatTarget, LlmGateway, NoChatModelError
+from localdoc_finder.core.models.catalog import load_catalog
+from localdoc_finder.core.models.hardware import Hardware
+from localdoc_finder.core.models.registry import ModelRegistry
+from localdoc_finder.core.power import PowerGate
+from localdoc_finder.core.privacy.policy import PrivacyFilter
+from localdoc_finder.core.providers.base import Message
+from localdoc_finder.core.providers.ollama import OllamaProvider
+from localdoc_finder.core.scope import ScopePolicy
+from localdoc_finder.core.settings import (
     ChatSettings,
     EmbeddingSettings,
     PowerSettings,
     PrivacySettings,
     ScopeSettings,
 )
-from vector_embed.core.store.sqlite import CHAT_LOCK, StateDb
+from localdoc_finder.core.store.sqlite import CHAT_LOCK, StateDb
 
 GPU = Hardware("RTX 2070", 8192, 7000, 32000, 16000, 8, True)
 MODELS = {

@@ -5,9 +5,9 @@ from typing import Any
 import numpy as np
 import pytest
 
-from vector_embed.core.store import lance as lc
-from vector_embed.core.store.lance import LanceStore, sql_quote
-from vector_embed.core.store.sqlite import StateDb
+from localdoc_finder.core.store import lance as lc
+from localdoc_finder.core.store.lance import LanceStore, sql_quote
+from localdoc_finder.core.store.sqlite import StateDb
 
 DIM = 4
 

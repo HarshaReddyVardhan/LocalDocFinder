@@ -7,10 +7,10 @@ import pytest
 from PIL import Image, ImageDraw
 from tests.core.extractors.conftest import FakeOcr, Writer, png_bytes
 
-from vector_embed.core.extractors import image as image_mod
-from vector_embed.core.extractors import ocr as ocr_mod
-from vector_embed.core.extractors.base import ExtractContext, ExtractError, ExtractorSet, NullOcr
-from vector_embed.core.settings import ImageSettings
+from localdoc_finder.core.extractors import image as image_mod
+from localdoc_finder.core.extractors import ocr as ocr_mod
+from localdoc_finder.core.extractors.base import ExtractContext, ExtractError, ExtractorSet, NullOcr
+from localdoc_finder.core.settings import ImageSettings
 
 Build = Callable[..., ExtractorSet]
 

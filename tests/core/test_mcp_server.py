@@ -6,13 +6,13 @@ from mcp.server.mcpserver.exceptions import ToolError
 from tests.core.conftest import Chat, Env, Power
 from tests.core.match.test_pipeline import JD, faithful_model, resume
 
-from vector_embed import mcp_server
-from vector_embed.core.llm import CHAT_LOCK
-from vector_embed.core.privacy.policy import PrivacyFilter
-from vector_embed.core.rag import NOT_FOUND
-from vector_embed.core.settings import PrivacySettings
-from vector_embed.core.skills.base import SkillContext
-from vector_embed.mcp_server import Service, build_server
+from localdoc_finder import mcp_server
+from localdoc_finder.core.llm import CHAT_LOCK
+from localdoc_finder.core.privacy.policy import PrivacyFilter
+from localdoc_finder.core.rag import NOT_FOUND
+from localdoc_finder.core.settings import PrivacySettings
+from localdoc_finder.core.skills.base import SkillContext
+from localdoc_finder.mcp_server import Service, build_server
 
 PAYMENTS = (
     "def retry_failed_payments(order):\n"
@@ -189,9 +189,9 @@ class TestNoCloud:
     def test_the_context_has_no_cloud_route(
         self, env: Env, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from vector_embed.core import runtime
-        from vector_embed.core.secrets import MemoryKeyStore
-        from vector_embed.core.settings import (
+        from localdoc_finder.core import runtime
+        from localdoc_finder.core.secrets import MemoryKeyStore
+        from localdoc_finder.core.settings import (
             CloudProviderSettings,
             CloudSettings,
             Settings,

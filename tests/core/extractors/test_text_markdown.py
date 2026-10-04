@@ -5,10 +5,10 @@ from pathlib import Path
 import pytest
 from tests.core.extractors.conftest import Writer
 
-from vector_embed.core.extractors import chunking
-from vector_embed.core.extractors.base import Chunk, ExtractError, ExtractorSet
-from vector_embed.core.extractors.markdown import heading_sections
-from vector_embed.core.settings import ChunkingSettings
+from localdoc_finder.core.extractors import chunking
+from localdoc_finder.core.extractors.base import Chunk, ExtractError, ExtractorSet
+from localdoc_finder.core.extractors.markdown import heading_sections
+from localdoc_finder.core.settings import ChunkingSettings
 
 Builder = Callable[[ChunkingSettings], ExtractorSet]
 

@@ -10,17 +10,17 @@ from tests.core.app.test_settings_window import FakeKeys
 from tests.core.conftest import Env
 from tests.core.setup.fakes import GPU8, Harness
 
-from vector_embed.app import main as app_main
-from vector_embed.app.settings_controller import SettingsController
-from vector_embed.app.setup_controller import SetupController
-from vector_embed.app.setup_wizard import ModelsPage, SetupWizard, TermsPage
-from vector_embed.core.features import FEATURES
-from vector_embed.core.models.benchmark import BenchKind
-from vector_embed.core.models.catalog import load_catalog
-from vector_embed.core.models.hardware import Hardware
-from vector_embed.core.settings import Settings
-from vector_embed.core.settings_io import set_settings
-from vector_embed.core.setup.flow import (
+from localdoc_finder.app import main as app_main
+from localdoc_finder.app.settings_controller import SettingsController
+from localdoc_finder.app.setup_controller import SetupController
+from localdoc_finder.app.setup_wizard import ModelsPage, SetupWizard, TermsPage
+from localdoc_finder.core.features import FEATURES
+from localdoc_finder.core.models.benchmark import BenchKind
+from localdoc_finder.core.models.catalog import load_catalog
+from localdoc_finder.core.models.hardware import Hardware
+from localdoc_finder.core.settings import Settings
+from localdoc_finder.core.settings_io import set_settings
+from localdoc_finder.core.setup.flow import (
     SETUP_COMPLETED_KEY,
     SetupEvent,
     SetupFlow,
@@ -29,9 +29,9 @@ from vector_embed.core.setup.flow import (
     SlowOffer,
     Stage,
 )
-from vector_embed.core.setup.ollama_install import OllamaState
-from vector_embed.core.setup.plan import SetupChoices
-from vector_embed.core.terms import accept_terms, terms_accepted
+from localdoc_finder.core.setup.ollama_install import OllamaState
+from localdoc_finder.core.setup.plan import SetupChoices
+from localdoc_finder.core.terms import accept_terms, terms_accepted
 
 GPU4 = Hardware("GTX 1650", 4096, 3500, 16000, 8000, 8, True)
 NO_GPU = Hardware(None, 0, 0, 16000, 8000, 8, True)

@@ -1,4 +1,4 @@
-# Evaluation set for `ve eval`. Replace/extend with 30-50 queries about YOUR real projects.
+# Evaluation set for `ldf eval`. Replace/extend with 30-50 queries about YOUR real projects.
 #   corpus : directories to index for the comparison (relative paths are relative to this file)
 #   models : embedding models to compare (each needs `ollama pull <name>`)
 #   expect : any of these substrings in a result's path counts as a hit

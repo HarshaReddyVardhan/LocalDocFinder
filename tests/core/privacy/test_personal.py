@@ -1,4 +1,4 @@
-from vector_embed.core.privacy.mask import PersonalRedactor, redact_personal
+from localdoc_finder.core.privacy.mask import PersonalRedactor, redact_personal
 
 RESUME = """Jane Q. Doe
 jane.doe@example.com | +1 415 555 0132

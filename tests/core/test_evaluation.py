@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 from tests.core.fakes import FakeEmbedder
 
-from vector_embed.core import evaluation as ev
-from vector_embed.core.evaluation import (
+from localdoc_finder.core import evaluation as ev
+from localdoc_finder.core.evaluation import (
     EvalQuery,
     EvalSpec,
     EvaluationError,
@@ -14,8 +14,8 @@ from vector_embed.core.evaluation import (
     load_spec,
     rank_of,
 )
-from vector_embed.core.scope import ScopePolicy
-from vector_embed.core.settings import ScopeSettings, Settings
+from localdoc_finder.core.scope import ScopePolicy
+from localdoc_finder.core.settings import ScopeSettings, Settings
 
 
 @pytest.fixture

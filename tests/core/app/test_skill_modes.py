@@ -11,10 +11,10 @@ from PySide6.QtWidgets import QApplication
 from tests.core.app.test_app import FakeService
 from tests.core.app.test_modes import FakeAssistant, wait_for
 
-from vector_embed.app.assistant import AssistantService, Delta, Event, Failed, Finished
-from vector_embed.app.controller import Launcher
-from vector_embed.app.window import Mode, SearchWindow, SkillMode
-from vector_embed.core.skills.base import (
+from localdoc_finder.app.assistant import AssistantService, Delta, Event, Failed, Finished
+from localdoc_finder.app.controller import Launcher
+from localdoc_finder.app.window import Mode, SearchWindow, SkillMode
+from localdoc_finder.core.skills.base import (
     SKILLS,
     UI_PANEL,
     Skill,

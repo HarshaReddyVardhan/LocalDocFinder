@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from tests.core.conftest import Env
 
-from vector_embed.core.documents import DocumentError, DocumentLoader
+from localdoc_finder.core.documents import DocumentError, DocumentLoader
 
 RESUME = (
     "Jane Doe\nSummary\nBackend engineer\nWork Experience\nBuilt payment systems in Python\n"
@@ -137,7 +137,7 @@ class TestExtractionCache:
     def test_the_cache_is_bounded(
         self, env: Env, loader: DocumentLoader, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from vector_embed.core import documents as documents_module
+        from localdoc_finder.core import documents as documents_module
 
         monkeypatch.setattr(documents_module, "_RECENT_DOCUMENTS", 2)
         paths = [write(env, f"doc{i}.txt", lines(f"document {i}")) for i in range(4)]

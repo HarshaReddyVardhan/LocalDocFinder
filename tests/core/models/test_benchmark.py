@@ -4,8 +4,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from vector_embed.core.models import benchmark as bench
-from vector_embed.core.models.benchmark import (
+from localdoc_finder.core.models import benchmark as bench
+from localdoc_finder.core.models.benchmark import (
     BenchKind,
     BenchmarkError,
     BenchResult,
@@ -16,14 +16,14 @@ from vector_embed.core.models.benchmark import (
     load_results,
     record_result,
 )
-from vector_embed.core.providers.base import (
+from localdoc_finder.core.providers.base import (
     ChatChunk,
     ChatOptions,
     EmbedKind,
     Message,
     ProviderError,
 )
-from vector_embed.core.store.sqlite import StateDb
+from localdoc_finder.core.store.sqlite import StateDb
 
 
 class FakeClock:

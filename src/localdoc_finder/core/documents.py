@@ -1,0 +1,100 @@
+"""Load whole documents for Chat and Match: from the index when stored there, else re-extract."""
+
+import logging
+import os
+import threading
+from collections import OrderedDict
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+from localdoc_finder.core.extractors.base import ExtractError, ExtractorSet
+from localdoc_finder.core.scope import ScopePolicy
+from localdoc_finder.core.store.lance import DOCUMENTS, LanceStore, sql_quote
+
+logger = logging.getLogger(__name__)
+
+_RECENT_DOCUMENTS = 16  # extracted documents kept in memory
+
+
+class DocumentError(RuntimeError):
+    """A document cannot be loaded (secret, missing or unreadable)."""
+
+
+@dataclass(frozen=True)
+class LoadedDocument:
+    path: str
+    title: str
+    text: str
+    doc_type: str
+    from_index: bool
+
+
+class DocumentLoader:
+    """Whole-document text. Secrets are refused here so no caller can send them to a model."""
+
+    def __init__(
+        self,
+        store: LanceStore,
+        scope: ScopePolicy,
+        extractors: Callable[[], ExtractorSet],
+    ) -> None:
+        self._store = store
+        self._scope = scope
+        self._extractors = extractors
+        # Documents read straight from disk (not in the index), newest last. A chat asks for its
+        # pinned files on every turn; extracting them again, OCR included, each time is waste.
+        self._recent: OrderedDict[tuple[str, int, int], LoadedDocument] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def load(self, path: str | Path) -> LoadedDocument:
+        target = Path(path)
+        if self._scope.is_secret(target):
+            raise DocumentError(f"{target.name} looks like a secret and is never loaded")
+        if not target.is_file():
+            raise DocumentError(f"{target} does not exist")
+        if not self._scope.is_valid_file(target):  # the same rules as indexing, minus .gitignore
+            raise DocumentError(
+                f"{target.name} is in a folder or of a kind LocalDoc Finder does not read "
+                "(system folders, blocked directories, unsupported types)"
+            )
+        key = str(target)
+        rows = self._store.scan(
+            DOCUMENTS,
+            ["title", "doc_type", "full_text"],
+            f"path = {sql_quote(key)}",
+            limit=1,
+        )
+        if rows and rows[0]["full_text"]:
+            row = rows[0]
+            return LoadedDocument(key, row["title"], row["full_text"], row["doc_type"], True)
+        stored_type = rows[0]["doc_type"] if rows else ""  # keep the type the index knows
+        return self._extract_cached(target, stored_type)
+
+    def _extract_cached(self, target: Path, doc_type: str) -> LoadedDocument:
+        """``_extract``, remembered per file version (path, mtime, size): an edit is a new key."""
+        try:
+            info = target.stat()
+        except OSError as exc:
+            raise DocumentError(f"cannot read {target.name}: {exc}") from exc
+        key = (os.path.normcase(target), info.st_mtime_ns, info.st_size)
+        with self._lock:
+            hit = self._recent.get(key)
+            if hit is not None:
+                self._recent.move_to_end(key)
+                return hit
+        document = self._extract(target, doc_type)
+        with self._lock:
+            self._recent[key] = document
+            while len(self._recent) > _RECENT_DOCUMENTS:
+                self._recent.popitem(last=False)
+        return document
+
+    def _extract(self, target: Path, doc_type: str = "") -> LoadedDocument:
+        try:
+            chunks = self._extractors().extract(target)
+        except ExtractError as exc:
+            raise DocumentError(f"cannot read {target.name}: {exc}") from exc
+        text = "\n".join(c.text for c in chunks if c.kind != "outline")
+        first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        return LoadedDocument(str(target), first[:120] or target.name, text, doc_type, False)

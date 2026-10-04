@@ -16,11 +16,11 @@ from watchdog.events import (
     FileMovedEvent,
 )
 
-from vector_embed import watcher
-from vector_embed.core import ollama_http
-from vector_embed.core.process import request_stop
-from vector_embed.core.store.sqlite import INDEXING_PAUSED_KEY
-from vector_embed.watcher import ChangeHandler, Watcher, quick_reject
+from localdoc_finder import watcher
+from localdoc_finder.core import ollama_http
+from localdoc_finder.core.process import request_stop
+from localdoc_finder.core.store.sqlite import INDEXING_PAUSED_KEY
+from localdoc_finder.watcher import ChangeHandler, Watcher, quick_reject
 
 DEBOUNCE = 30
 
@@ -740,10 +740,10 @@ class TestHelpers:
         monkeypatch.setattr(watcher.subprocess, "Popen", fake_popen)
         launcher = watcher.SubprocessLauncher(tmp_path / "logs")
         assert launcher.start(reconcile=True) == "handle"
-        assert captured["command"][-4:] == ["-m", "vector_embed", "worker", "--reconcile"]  # type: ignore[index]
+        assert captured["command"][-4:] == ["-m", "localdoc_finder", "worker", "--reconcile"]  # type: ignore[index]
         assert captured["flags"] == 0x00004000 | 0x08000000
         launcher.start(reconcile=False)
-        assert captured["command"][-3:] == ["-m", "vector_embed", "worker"]  # type: ignore[index]
+        assert captured["command"][-3:] == ["-m", "localdoc_finder", "worker"]  # type: ignore[index]
 
     def test_main_status(
         self, env: Env, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -755,7 +755,7 @@ class TestHelpers:
     def test_main_exits_when_already_running(
         self, env: Env, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from vector_embed.core.process import single_instance
+        from localdoc_finder.core.process import single_instance
 
         monkeypatch.setattr(watcher, "load_settings", lambda: env.settings)
         monkeypatch.setattr(watcher, "configure_logging", lambda *_a, **_k: None)

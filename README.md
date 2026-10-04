@@ -1,10 +1,10 @@
-# Vector_Embed
+# LocalDoc Finder
 
 Local semantic search and chat-with-documents engine for Windows, backed by Ollama.
 Design and build order: [.claude/PLAN.md](.claude/PLAN.md). Working rules: [.claude/CLAUDE.md](.claude/CLAUDE.md).
 
 ## Install (Windows, no Python needed)
-Download `VectorEmbed-win-Setup.exe` from the project's GitHub Releases and run it. It installs for
+Download `LocalDocFinder-win-Setup.exe` from the project's GitHub Releases and run it. It installs for
 the current user only (no admin rights), bundles its own Python, and updates itself. Windows may
 show a SmartScreen warning because the build is not code-signed: choose "More info" > "Run anyway".
 
@@ -34,7 +34,7 @@ On first start a **setup wizard** runs:
    slow on your machine gets a "switch to a smaller one?" offer.
 4. It shows all your settings once (hotkey, folders to index, start with Windows, cloud and
    privacy, updates), then you are done. Settings are per Windows user, in
-   `%LOCALAPPDATA%\VectorEmbedData\settings.toml`.
+   `%LOCALAPPDATA%\LocalDocFinderData\settings.toml`.
 
 Press **Ctrl+Alt+Space** anywhere: the popup is just a search bar, and results appear below it like
 Explorer's (file icon, name, full path, date and size; the selected row also shows its snippet).
@@ -42,7 +42,7 @@ Enter opens, Ctrl+Enter reveals in Explorer, Shift+Enter opens in VS Code, `?` o
 Chat and Match. Models, health and every setting live in the tray icon's **Settings** window.
 
 Choosing models yourself: pick them in the wizard, later in Settings > Models & Health, or from the
-command line: `ve setup --embed qwen3-embedding:0.6b --chat llama3.2` (add `--dry-run` to preview,
+command line: `ldf setup --embed qwen3-embedding:0.6b --chat llama3.2` (add `--dry-run` to preview,
 `--yes` to skip prompts, `--no-install-ollama`, `--skip-bench`, `--extras caption reranker`).
 Switching the embedding model later re-indexes your files (the app tells you before it does).
 
@@ -60,37 +60,37 @@ ollama pull qwen3-embedding:0.6b          # embeddings
 
 ## Use
 ```powershell
-.venv\Scripts\ve doctor                   # check the environment
-.venv\Scripts\ve index --now --path D:\Projects\myapp
-.venv\Scripts\ve search "where do we retry failed payments"
-.venv\Scripts\ve search "charge_card type:code proj:billing after:2026-01"
-.venv\Scripts\ve models                   # installed models, role choices, recommendations
-.venv\Scripts\ve setup --dry-run         # what first-run setup would download for this PC
-.venv\Scripts\python -m vector_embed.app  # hotkey window (Ctrl+Alt+Space) + tray icon
-.venv\Scripts\ve autostart on            # watcher + UI at logon (or scripts\install_task.ps1)
+.venv\Scripts\ldf doctor                   # check the environment
+.venv\Scripts\ldf index --now --path D:\Projects\myapp
+.venv\Scripts\ldf search "where do we retry failed payments"
+.venv\Scripts\ldf search "charge_card type:code proj:billing after:2026-01"
+.venv\Scripts\ldf models                   # installed models, role choices, recommendations
+.venv\Scripts\ldf setup --dry-run         # what first-run setup would download for this PC
+.venv\Scripts\python -m localdoc_finder.app  # hotkey window (Ctrl+Alt+Space) + tray icon
+.venv\Scripts\ldf autostart on            # watcher + UI at logon (or scripts\install_task.ps1)
 ```
 
 Search filters: `type:img|code|doc|plan|memory|note|pdf` `ext:py` `proj:name` `in:D:\path` `after:2026-01` `before:2026-06`.
 UI keys: Enter open · Ctrl+Enter reveal in Explorer · Shift+Enter `code -g file:line` · Esc hide.
 
 ## Use from Claude Code, Cursor and other MCP clients
-`ve mcp` serves `search`, `ask` and `match` over stdio. Register it once:
+`ldf mcp` serves `search`, `ask` and `match` over stdio. Register it once:
 ```powershell
-claude mcp add vector-embed -- D:\Projects\LocalDocFinder\.venv\Scripts\ve.exe mcp
+claude mcp add localdoc-finder -- D:\Projects\LocalDocFinder\.venv\Scripts\ldf.exe mcp
 ```
 Other clients take the same command in their MCP config. The caller is usually a cloud model, so the server treats everything it returns as outbound: files under the never-send rules (secrets, `.claude` memory) are left out, government/financial IDs are masked, and `ask`/`match` use local models only (never a cloud provider). Tools are read-only, `match` takes its text inline (it cannot read arbitrary files), and nothing is loaded until the first call. `ask` and `match` take the chat lock, so they wait while the desktop app is chatting and unload their model when done.
 
 ## How it runs
 | piece | role |
 |---|---|
-| `vector_embed.watcher` | always on, light. watchdog events -> SQLite queue (debounced). Starts the worker only on AC power, settled, idle. |
-| `vector_embed.worker` | drains the queue: hash diff -> extract -> embed only new chunks -> LanceDB -> unload the model. Checks power before every batch. |
-| `vector_embed.cli` | `ve` command; skill commands are generated from the skill registry. |
-| `vector_embed.mcp_server` | `ve mcp`: MCP front-end for search, ask and match. |
-| `vector_embed.app` | PySide6 tray app: the hotkey popup, the Settings window and the setup wizard. |
-| `python -m vector_embed <app\|watcher\|worker\|setup>` | one dispatcher for every entry point; the installed `VectorEmbed.exe` takes the same arguments. |
+| `localdoc_finder.watcher` | always on, light. watchdog events -> SQLite queue (debounced). Starts the worker only on AC power, settled, idle. |
+| `localdoc_finder.worker` | drains the queue: hash diff -> extract -> embed only new chunks -> LanceDB -> unload the model. Checks power before every batch. |
+| `localdoc_finder.cli` | `ldf` command; skill commands are generated from the skill registry. |
+| `localdoc_finder.mcp_server` | `ldf mcp`: MCP front-end for search, ask and match. |
+| `localdoc_finder.app` | PySide6 tray app: the hotkey popup, the Settings window and the setup wizard. |
+| `python -m localdoc_finder <app\|watcher\|worker\|setup>` | one dispatcher for every entry point; the installed `LocalDocFinder.exe` takes the same arguments. |
 
-Data lives in `%LOCALAPPDATA%\VectorEmbedData` (index, queue, logs), apart from the install folder `%LOCALAPPDATA%\VectorEmbed`, so uninstalling keeps it. Older installs are migrated on first start. Settings: `settings.toml` there, overridable with `VE_*` environment variables (see `.env.example`).
+Data lives in `%LOCALAPPDATA%\LocalDocFinderData` (index, queue, logs), apart from the install folder `%LOCALAPPDATA%\LocalDocFinder`, so uninstalling keeps it. Older installs are migrated on first start. Settings: `settings.toml` there, overridable with `VE_*` environment variables (see `.env.example`).
 
 ## Development
 ```powershell
@@ -103,11 +103,11 @@ Data lives in `%LOCALAPPDATA%\VectorEmbedData` (index, queue, logs), apart from 
 Needs the .NET SDK on the build machine (end users need nothing):
 ```powershell
 dotnet tool install vpk --tool-path .tools                 # once; or: dotnet tool install -g vpk
-powershell -ExecutionPolicy Bypass -File scripts\build.ps1  # -> Releases\VectorEmbed-win-Setup.exe
+powershell -ExecutionPolicy Bypass -File scripts\build.ps1  # -> Releases\LocalDocFinder-win-Setup.exe
 ```
 `scripts\build.ps1` syncs the build dependencies, builds the one-folder app with PyInstaller
-(`packaging\vector_embed.spec`: `VectorEmbed.exe` windowed, `ve.exe` console), smoke-tests the
-packaged `ve.exe doctor`, and packs it with Velopack (full package, plus a small delta package when
+(`packaging\localdoc_finder.spec`: `LocalDocFinder.exe` windowed, `ldf.exe` console), smoke-tests the
+packaged `ldf.exe doctor`, and packs it with Velopack (full package, plus a small delta package when
 an earlier release can be downloaded).
 
 To publish an update: bump `version` in `pyproject.toml`, then

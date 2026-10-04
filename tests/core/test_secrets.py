@@ -3,8 +3,8 @@ import pytest
 from keyring.backend import KeyringBackend
 from keyring.errors import KeyringError, PasswordDeleteError
 
-from vector_embed.core import secrets
-from vector_embed.core.secrets import KeyringStore, KeyStoreError, MemoryKeyStore, scrub
+from localdoc_finder.core import secrets
+from localdoc_finder.core.secrets import KeyringStore, KeyStoreError, MemoryKeyStore, scrub
 
 
 class InMemoryBackend(KeyringBackend):
@@ -41,6 +41,12 @@ def backend() -> InMemoryBackend:
     keyring.set_keyring(backend)
     yield backend  # type: ignore[misc]
     keyring.set_keyring(previous)
+
+
+def test_a_key_saved_under_the_old_name_moves_over(backend: InMemoryBackend) -> None:
+    backend.data[(secrets.OLD_SERVICE_NAME, "openrouter")] = "sk-old"
+    assert KeyringStore().get("openrouter") == "sk-old"
+    assert backend.data == {(secrets.SERVICE_NAME, "openrouter"): "sk-old"}
 
 
 def test_keys_roundtrip_through_the_credential_store(backend: InMemoryBackend) -> None:

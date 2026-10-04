@@ -1,5 +1,5 @@
 [project]
-name = "vector-embed"
+name = "localdoc-finder"
 version = "0.1.0"
 description = "Local semantic search and chat-with-documents engine (Ollama-backed)"
 readme = "README.md"
@@ -40,7 +40,7 @@ dependencies = [
 ]
 
 [project.scripts]
-ve = "vector_embed.cli:main"
+ldf = "localdoc_finder.cli:main"
 
 [dependency-groups]
 dev = [
@@ -64,7 +64,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/vector_embed"]
+packages = ["src/localdoc_finder"]
 
 # ---------------------------------------------------------------- ruff
 [tool.ruff]
@@ -87,7 +87,7 @@ ignore = [
 "tests/**" = ["S", "ANN", "PLR0913"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["vector_embed"]
+known-first-party = ["localdoc_finder"]
 
 # ---------------------------------------------------------------- mypy
 [tool.mypy]
@@ -97,7 +97,7 @@ files = ["src"]
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-module = ["vector_embed.core.extractors.pdf"]
+module = ["localdoc_finder.core.extractors.pdf"]
 disallow_untyped_calls = false  # pymupdf is only partially typed
 
 [[tool.mypy.overrides]]
@@ -108,12 +108,12 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "src"]   # "." lets tests import shared helpers as tests.core.*
-addopts = "-ra --strict-markers --cov=vector_embed --cov-report=term:skip-covered --cov-fail-under=80"
+addopts = "-ra --strict-markers --cov=localdoc_finder --cov-report=term:skip-covered --cov-fail-under=80"
 markers = ["ollama: needs a running Ollama server with the model pulled"]
 
 # ---------------------------------------------------------------- coverage
 [tool.coverage.run]
-source = ["src/vector_embed"]
+source = ["src/localdoc_finder"]
 branch = true
 
 [tool.coverage.report]

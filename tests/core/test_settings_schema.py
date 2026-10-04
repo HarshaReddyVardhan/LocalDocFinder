@@ -3,8 +3,8 @@ from typing import Literal
 import pytest
 from pydantic import BaseModel, Field
 
-from vector_embed.core.settings import Settings, SettingsError
-from vector_embed.core.settings_schema import OWNED_OPTIONS, editable_options
+from localdoc_finder.core.settings import Settings, SettingsError
+from localdoc_finder.core.settings_schema import OWNED_OPTIONS, editable_options
 
 
 def by_path() -> dict[tuple[str, ...], object]:

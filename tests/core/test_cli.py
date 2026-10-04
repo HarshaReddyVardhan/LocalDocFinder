@@ -7,14 +7,14 @@ from pydantic import Field
 from tests.core.conftest import Chat, Env
 from tests.core.providers.fakes import FakeOllamaClient
 
-from vector_embed import cli
-from vector_embed.core import runtime
-from vector_embed.core.models.hardware import Hardware
-from vector_embed.core.providers.base import ModelInfo, ProviderError
-from vector_embed.core.providers.ollama import OllamaProvider
-from vector_embed.core.settings import FeatureSettings, SettingsError
-from vector_embed.core.setup.ollama_install import OllamaState
-from vector_embed.core.skills.base import (
+from localdoc_finder import cli
+from localdoc_finder.core import runtime
+from localdoc_finder.core.models.hardware import Hardware
+from localdoc_finder.core.providers.base import ModelInfo, ProviderError
+from localdoc_finder.core.providers.ollama import OllamaProvider
+from localdoc_finder.core.settings import FeatureSettings, SettingsError
+from localdoc_finder.core.setup.ollama_install import OllamaState
+from localdoc_finder.core.skills.base import (
     SKILLS,
     Skill,
     SkillContext,
@@ -267,8 +267,8 @@ class TestOptionalFeatures:
     ) -> None:
         assert cli.main(["chat", "hello"]) == cli.EXIT_USAGE
         err = capsys.readouterr().err
-        assert "ve chat is not enabled" in err
-        assert "ve setup --features chat" in err
+        assert "ldf chat is not enabled" in err
+        assert "ldf setup --features chat" in err
 
 
 class TestChatSessions:
@@ -292,4 +292,4 @@ class TestChatSessions:
         self, wired: SkillContext, chat: Chat, capsys: pytest.CaptureFixture[str]
     ) -> None:
         assert cli.main(["chat"]) == cli.EXIT_USAGE
-        assert "ve chat: a message is required" in capsys.readouterr().err
+        assert "ldf chat: a message is required" in capsys.readouterr().err

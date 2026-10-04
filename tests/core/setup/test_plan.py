@@ -1,9 +1,9 @@
 import pytest
 
-from vector_embed.core.features import FEATURES
-from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_EMBED, load_catalog
-from vector_embed.core.models.hardware import Hardware
-from vector_embed.core.setup.plan import (
+from localdoc_finder.core.features import FEATURES
+from localdoc_finder.core.models.catalog import ROLE_CHAT, ROLE_EMBED, load_catalog
+from localdoc_finder.core.models.hardware import Hardware
+from localdoc_finder.core.setup.plan import (
     DISK_HEADROOM_MB,
     SetupChoices,
     SetupPlanError,

@@ -4,9 +4,9 @@ from collections.abc import Callable
 import pytest
 from tests.core.extractors.conftest import Writer
 
-from vector_embed.core.extractors import code
-from vector_embed.core.extractors.base import ExtractorSet
-from vector_embed.core.settings import ChunkingSettings
+from localdoc_finder.core.extractors import code
+from localdoc_finder.core.extractors.base import ExtractorSet
+from localdoc_finder.core.settings import ChunkingSettings
 
 Builder = Callable[[ChunkingSettings], ExtractorSet]
 

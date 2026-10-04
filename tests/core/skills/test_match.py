@@ -2,9 +2,9 @@ import pytest
 from tests.core.conftest import Chat, Env
 from tests.core.match.test_pipeline import JD, faithful_model, resume, write
 
-from vector_embed.core.match.pipeline import MatchRun
-from vector_embed.core.skills.base import SkillContext, create_skill
-from vector_embed.core.skills.match import MatchInput, MatchSkill, format_scores, pipeline_of
+from localdoc_finder.core.match.pipeline import MatchRun
+from localdoc_finder.core.skills.base import SkillContext, create_skill
+from localdoc_finder.core.skills.match import MatchInput, MatchSkill, format_scores, pipeline_of
 
 
 @pytest.fixture

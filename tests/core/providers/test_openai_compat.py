@@ -6,7 +6,7 @@ import httpx
 import openai
 import pytest
 
-from vector_embed.core.providers.base import (
+from localdoc_finder.core.providers.base import (
     ChatChunk,
     ChatOptions,
     ChatProvider,
@@ -17,8 +17,8 @@ from vector_embed.core.providers.base import (
     ProviderUnavailableError,
     Usage,
 )
-from vector_embed.core.providers.openai_compat import OpenAICompatibleProvider
-from vector_embed.core.settings import CloudProviderSettings
+from localdoc_finder.core.providers.openai_compat import OpenAICompatibleProvider
+from localdoc_finder.core.settings import CloudProviderSettings
 
 KEY = "sk-secret-key-1234567890abcdef"
 REQUEST = httpx.Request("POST", "https://example.invalid/v1/chat/completions")

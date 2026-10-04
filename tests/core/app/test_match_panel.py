@@ -12,17 +12,17 @@ from tests.core.app.test_modes import FakeAssistant
 from tests.core.conftest import Chat, CloudRig, Env
 from tests.core.match.test_pipeline import JD, faithful_model, resume, write
 
-from vector_embed.app.assistant import ChatState, CloudPreview
-from vector_embed.app.controller import Launcher
-from vector_embed.app.match_controller import MatchController
-from vector_embed.app.match_panel import (
+from localdoc_finder.app.assistant import ChatState, CloudPreview
+from localdoc_finder.app.controller import Launcher
+from localdoc_finder.app.match_controller import MatchController
+from localdoc_finder.app.match_panel import (
     PAGE_CANDIDATES,
     PAGE_CHECKLIST,
     PAGE_RESULTS,
     MatchPanel,
 )
-from vector_embed.app.window import Mode, SearchWindow
-from vector_embed.core.skills.base import SkillContext
+from localdoc_finder.app.window import Mode, SearchWindow
+from localdoc_finder.core.skills.base import SkillContext
 
 
 def wait_for(qapp: QApplication, condition: Callable[[], bool], timeout: float = 8.0) -> None:

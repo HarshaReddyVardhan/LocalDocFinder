@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 from tests.core.setup.fakes import Clock, FakeSystem
 
-from vector_embed.core.ollama_service import AUTOSTART_DISABLE_ENV, ensure_ollama_running
-from vector_embed.core.setup.ollama_install import OllamaSetup, OllamaState
+from localdoc_finder.core.ollama_service import AUTOSTART_DISABLE_ENV, ensure_ollama_running
+from localdoc_finder.core.setup.ollama_install import OllamaSetup, OllamaState
 
 
 @pytest.fixture(autouse=True)

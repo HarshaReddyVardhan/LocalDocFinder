@@ -2,11 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from vector_embed.core.file_kinds import FileKind
-from vector_embed.core.protection import SystemProtection
-from vector_embed.core.scope import ScopePolicy
-from vector_embed.core.scope_roots import resolve_roots
-from vector_embed.core.settings import ScopeSettings
+from localdoc_finder.core.file_kinds import FileKind
+from localdoc_finder.core.protection import SystemProtection
+from localdoc_finder.core.scope import ScopePolicy
+from localdoc_finder.core.scope_roots import resolve_roots
+from localdoc_finder.core.settings import ScopeSettings
 
 ENV = {
     "SystemRoot": r"C:\Windows",
@@ -97,7 +97,7 @@ def resolve(
 def test_the_whole_pc_is_every_fixed_drive_with_the_windows_drive_made_safe(
     protection: SystemProtection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from vector_embed.core import scope_roots
+    from localdoc_finder.core import scope_roots
 
     monkeypatch.setattr(scope_roots, "is_reparse_point", lambda _path: False)  # fake folders
     home = tmp_path / "me"
@@ -230,7 +230,7 @@ def test_a_chosen_scope_without_folders_is_invalid() -> None:
 def test_fixed_drives_lists_only_internal_disks(monkeypatch: pytest.MonkeyPatch) -> None:
     from collections import namedtuple
 
-    from vector_embed.core import drives
+    from localdoc_finder.core import drives
 
     part = namedtuple("part", "mountpoint opts")
     monkeypatch.setattr(
@@ -247,7 +247,7 @@ def test_fixed_drives_lists_only_internal_disks(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_fixed_drives_survives_a_listing_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    from vector_embed.core import drives
+    from localdoc_finder.core import drives
 
     def broken(all: bool) -> list[object]:  # psutil's parameter name
         raise OSError("no")

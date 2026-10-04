@@ -4,18 +4,18 @@ from pathlib import Path
 import pytest
 from tests.core.conftest import Chat, Env
 
-from vector_embed.core import hooks
-from vector_embed.core.hooks import (
+from localdoc_finder.core import hooks
+from localdoc_finder.core.hooks import (
     Answered,
     DocumentClassified,
     FileIndexed,
     HookBus,
     QueryRan,
 )
-from vector_embed.core.skills.ask import AskInput, AskSkill
-from vector_embed.core.skills.base import SkillContext
-from vector_embed.core.skills.chat import ChatInput, ChatSkill
-from vector_embed.core.skills.search import SearchSkill
+from localdoc_finder.core.skills.ask import AskInput, AskSkill
+from localdoc_finder.core.skills.base import SkillContext
+from localdoc_finder.core.skills.chat import ChatInput, ChatSkill
+from localdoc_finder.core.skills.search import SearchSkill
 
 NOTES = "# Decisions\n\nWe retry failed payments with exponential backoff and a jitter.\n"
 

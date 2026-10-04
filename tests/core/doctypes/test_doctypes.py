@@ -3,8 +3,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from vector_embed.core.doctypes import base
-from vector_embed.core.doctypes.base import (
+from localdoc_finder.core.doctypes import base
+from localdoc_finder.core.doctypes.base import (
     DOC_TYPE_CODE,
     DOC_TYPE_OTHER,
     DocInfo,
@@ -13,14 +13,14 @@ from vector_embed.core.doctypes.base import (
     build_prototypes,
     register_doctype,
 )
-from vector_embed.core.doctypes.versions import (
+from localdoc_finder.core.doctypes.versions import (
     VersionCandidate,
     group_versions,
     jaccard,
     newest_per_group,
     shingles,
 )
-from vector_embed.core.settings import DocTypeSettings, ScopeSettings
+from localdoc_finder.core.settings import DocTypeSettings, ScopeSettings
 
 RESUME = """Jane Doe
 Summary

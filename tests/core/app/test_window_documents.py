@@ -10,12 +10,12 @@ from tests.core.app.test_app import FakeService
 from tests.core.app.test_modes import FakeAssistant, source, wait_for
 from tests.core.conftest import Chat, Env
 
-from vector_embed.app.assistant import AssistantService, ChatState, Delta, Finished
-from vector_embed.app.controller import Launcher
-from vector_embed.app.window import Mode, SearchWindow, dropped_files, link_citations
-from vector_embed.core.documents import DocumentError
-from vector_embed.core.rag import Source
-from vector_embed.core.skills.base import SkillContext
+from localdoc_finder.app.assistant import AssistantService, ChatState, Delta, Finished
+from localdoc_finder.app.controller import Launcher
+from localdoc_finder.app.window import Mode, SearchWindow, dropped_files, link_citations
+from localdoc_finder.core.documents import DocumentError
+from localdoc_finder.core.rag import Source
+from localdoc_finder.core.skills.base import SkillContext
 
 
 def pdf_source(n: int = 2) -> Source:

@@ -4,7 +4,7 @@
   Needs the .NET SDK on the build machine for `vpk` (end users need nothing). vpk is found on PATH,
   or in .tools\ (install there with:  dotnet tool install vpk --tool-path .tools).
 
-  Output (Releases\):  VectorEmbed-win-Setup.exe, the full package and, when an earlier release can
+  Output (Releases\):  LocalDocFinder-win-Setup.exe, the full package and, when an earlier release can
   be downloaded, a delta package. Unsigned builds show a SmartScreen warning.
 
   Examples:
@@ -31,7 +31,7 @@ function Run($exe, [string[]]$arguments) {
 if (-not $Version) {
     $Version = & $python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
 }
-$sourceFile = Join-Path $root "src\vector_embed\update_source.txt"
+$sourceFile = Join-Path $root "src\localdoc_finder\update_source.txt"
 
 Step "1/5 Build dependencies"
 if (Get-Command uv -ErrorAction SilentlyContinue) { Run "uv" @("sync", "--group", "build") }
@@ -41,19 +41,19 @@ Step "2/5 PyInstaller (version $Version)"
 if ($RepoUrl) { Set-Content -Path $sourceFile -Value $RepoUrl -NoNewline -Encoding ascii }
 elseif (Test-Path $sourceFile) { Remove-Item $sourceFile }
 Run $python @("packaging\make_icon.py")
-Run $python @("-m", "PyInstaller", "packaging\vector_embed.spec", "--noconfirm", "--clean",
+Run $python @("-m", "PyInstaller", "packaging\localdoc_finder.spec", "--noconfirm", "--clean",
     "--distpath", "dist", "--workpath", "build")
 
-Step "3/5 Smoke test: ve.exe doctor"
+Step "3/5 Smoke test: ldf.exe doctor"
 # doctor's exit code reflects this machine's setup (Ollama, models); we only need it to run.
 # Windows PowerShell 5.1 turns native stderr into terminating errors under "Stop"; relax it here.
 $previous = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
-$smoke = & "dist\VectorEmbed\ve.exe" doctor 2>&1 | Out-String
+$smoke = & "dist\LocalDocFinder\ldf.exe" doctor 2>&1 | Out-String
 $ErrorActionPreference = $previous
 Write-Host $smoke
 if ($smoke -notmatch "\[ok\] python" -or $smoke -match "Traceback") {
-    throw "The packaged ve.exe doctor did not run cleanly."
+    throw "The packaged ldf.exe doctor did not run cleanly."
 }
 # Proves the extractor modules were bundled (they are found by scanning the package at run time).
 if ($smoke -notmatch "\[ok\] extractors: .*pdf.*") {
@@ -73,19 +73,19 @@ if ($RepoUrl) {
     & $vpk @downloadArgs
     if ($LASTEXITCODE -ne 0) { Write-Host "No earlier release to base a delta on (first release?)." }
 }
-Run $vpk @("pack", "--packId", "VectorEmbed", "--packVersion", $Version,
-    "--packDir", "dist\VectorEmbed", "--mainExe", "VectorEmbed.exe",
-    "--packTitle", "Vector Embed", "--runtime", "win-x64", "--icon", "packaging\vector_embed.ico",
+Run $vpk @("pack", "--packId", "LocalDocFinder", "--packVersion", $Version,
+    "--packDir", "dist\LocalDocFinder", "--mainExe", "LocalDocFinder.exe",
+    "--packTitle", "LocalDoc Finder", "--runtime", "win-x64", "--icon", "packaging\localdoc_finder.ico",
     "--outputDir", "Releases")
 
 Step "5/5 Publish"
 if ($Upload) {
     if (-not $RepoUrl) { throw "-Upload needs -RepoUrl." }
     $uploadArgs = @("upload", "github", "--repoUrl", $RepoUrl, "--outputDir", "Releases",
-        "--tag", "v$Version", "--releaseName", "Vector Embed $Version", "--publish")
+        "--tag", "v$Version", "--releaseName", "LocalDoc Finder $Version", "--publish")
     if ($env:GITHUB_TOKEN) { $uploadArgs += @("--token", $env:GITHUB_TOKEN) }
     Run $vpk $uploadArgs
 } else {
     Write-Host "Skipped (add -Upload -RepoUrl <repo> to publish)."
 }
-Write-Host "`nDone. Installer: Releases\VectorEmbed-win-Setup.exe" -ForegroundColor Green
+Write-Host "`nDone. Installer: Releases\LocalDocFinder-win-Setup.exe" -ForegroundColor Green

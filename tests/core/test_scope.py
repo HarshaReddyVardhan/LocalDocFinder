@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from vector_embed.core import scope
-from vector_embed.core.scope import AiNoteSource, ScopePolicy, glob_to_regex
-from vector_embed.core.settings import ScopeSettings
+from localdoc_finder.core import scope
+from localdoc_finder.core.scope import AiNoteSource, ScopePolicy, glob_to_regex
+from localdoc_finder.core.settings import ScopeSettings
 
 Make = Callable[..., str]
 

@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from vector_embed.core import projects as projects_module
-from vector_embed.core.projects import Projects
-from vector_embed.core.scope import ScopePolicy
-from vector_embed.core.settings import ScopeSettings
+from localdoc_finder.core import projects as projects_module
+from localdoc_finder.core.projects import Projects
+from localdoc_finder.core.scope import ScopePolicy
+from localdoc_finder.core.settings import ScopeSettings
 
 Make = Callable[..., str]
 

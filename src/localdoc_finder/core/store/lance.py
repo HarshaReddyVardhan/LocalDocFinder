@@ -1,0 +1,447 @@
+"""LanceDB tables: ``chunks`` (vectors, text, FTS) and ``documents`` (one row per file).
+
+Vectors from different embedding models cannot be mixed, so the model id and dimension are
+recorded in the state DB; a change wipes both tables and the manifest (a clean re-index).
+"""
+
+import logging
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from datetime import timedelta
+from functools import partial
+from pathlib import Path
+from typing import Any, TypeAlias, TypeVar
+
+import numpy as np
+import pyarrow as pa
+
+from localdoc_finder.core.store.sqlite import StateDb
+
+logger = logging.getLogger(__name__)
+
+CHUNKS = "chunks"
+DOCUMENTS = "documents"
+CHUNK_VECTOR = "vector"
+DOC_VECTOR = "doc_vector"
+LANCE_DIRNAME = "lance"
+
+CHUNK_COLUMNS = [
+    "text",
+    "path",
+    "project",
+    "kind",
+    "source",
+    "ext",
+    "symbol",
+    "start_line",
+    "end_line",
+    "page",
+    "chunk_hash",
+    "model_id",
+    "mtime",
+]
+DOCUMENT_COLUMNS = [
+    "path",
+    "project",
+    "doc_type",
+    "title",
+    "full_text",
+    "version_group",
+    "modified_at",
+    "model_id",
+]
+
+_KEEP_VERSIONS = timedelta(hours=1)  # older table versions are deleted at optimize
+_REINDEX_GROWTH = 2  # rebuild the vector index when the table has grown this many times
+_BATCH = 200
+_VECTOR_INDEX_MIN_ROWS = 100_000
+_T = TypeVar("_T")
+
+Row = dict[str, Any]
+LanceTable: TypeAlias = Any  # lancedb ships no usable type information
+
+
+def sql_quote(value: str) -> str:
+    """Quote a string literal for a LanceDB SQL filter."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _batches(items: Sequence[_T], size: int = _BATCH) -> Iterator[Sequence[_T]]:
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
+
+
+def chunk_schema(dim: int) -> pa.Schema:
+    return pa.schema(
+        [
+            (CHUNK_VECTOR, pa.list_(pa.float32(), dim)),
+            ("text", pa.string()),
+            ("path", pa.string()),
+            ("project", pa.string()),
+            ("kind", pa.string()),
+            ("source", pa.string()),
+            ("ext", pa.string()),
+            ("symbol", pa.string()),
+            ("start_line", pa.int32()),
+            ("end_line", pa.int32()),
+            ("page", pa.int32()),
+            ("chunk_hash", pa.string()),
+            ("model_id", pa.string()),
+            ("mtime", pa.int64()),
+        ]
+    )
+
+
+def document_schema(dim: int) -> pa.Schema:
+    return pa.schema(
+        [
+            (DOC_VECTOR, pa.list_(pa.float32(), dim)),
+            ("path", pa.string()),
+            ("project", pa.string()),
+            ("doc_type", pa.string()),
+            ("title", pa.string()),
+            ("full_text", pa.string()),
+            ("version_group", pa.string()),
+            ("modified_at", pa.int64()),
+            ("model_id", pa.string()),
+        ]
+    )
+
+
+class ModelMismatchError(RuntimeError):
+    """The index was built with another embedding model or dimension than the one configured."""
+
+
+class IndexSchemaError(RuntimeError):
+    """The index was written by a newer version of the app than this one."""
+
+
+LanceMigration = Callable[["LanceStore"], None]
+# Index i upgrades the index schema from version i+1 to i+2. Version 1 is the first layout of the
+# chunk and document tables; a change to ``chunk_schema``/``document_schema`` adds a step here.
+LANCE_MIGRATIONS: tuple[LanceMigration, ...] = ()
+LANCE_SCHEMA_VERSION = 1 + len(LANCE_MIGRATIONS)
+SCHEMA_VERSION_KEY = "lance_schema_version"
+
+
+class LanceStore:
+    """Chunk and document tables bound to one embedding model.
+
+    Pass ``dim=None`` for read-only use (search): existing tables are opened as they are.
+    """
+
+    def __init__(
+        self,
+        data_dir: Path,
+        state: StateDb,
+        model_id: str,
+        dim: int | None = None,
+        vector_index_min_rows: int = _VECTOR_INDEX_MIN_ROWS,
+        *,
+        allow_wipe: bool = False,
+    ) -> None:
+        import lancedb
+
+        self.model_id = model_id
+        self.dim = dim
+        self._allow_wipe = allow_wipe
+        self._state = state
+        self._min_rows = vector_index_min_rows
+        self.db: Any = lancedb.connect(str(Path(data_dir) / LANCE_DIRNAME))
+        self._tables: dict[str, LanceTable] = {}
+        if dim is None:
+            self._open_existing()
+        else:
+            self.check_model()
+
+    # ------------------------------------------------------------------ tables
+    def _table_names(self) -> list[str]:
+        listing = (
+            self.db.list_tables() if hasattr(self.db, "list_tables") else self.db.table_names()
+        )
+        return list(getattr(listing, "tables", listing))
+
+    def _open_existing(self) -> None:
+        names = self._table_names()
+        if names:
+            self._stored_schema_version()  # refuses an index from a newer app; never migrates
+        for name in (CHUNKS, DOCUMENTS):
+            if name in names:
+                self._tables[name] = self.db.open_table(name)
+
+    def _stored_schema_version(self) -> int:
+        """The index's schema version (1 for an index from before versions were recorded)."""
+        stored = int(self._state.get_meta(SCHEMA_VERSION_KEY, "1") or 1)
+        if stored > LANCE_SCHEMA_VERSION:
+            raise IndexSchemaError(
+                f"the index has schema version {stored}, newer than this app supports "
+                f"({LANCE_SCHEMA_VERSION}); update the app"
+            )
+        return stored
+
+    def _migrate(self, migrations: Sequence[LanceMigration] | None = None) -> None:
+        """Bring existing tables up to ``LANCE_SCHEMA_VERSION``, one recorded step at a time, so
+        an interrupted upgrade resumes where it stopped."""
+        steps = LANCE_MIGRATIONS if migrations is None else migrations
+        latest = 1 + len(steps)
+        version = self._stored_schema_version()
+        while version < latest:
+            logger.info("lance: migrating the index schema %d -> %d", version, version + 1)
+            steps[version - 1](self)
+            version += 1
+            self._state.set_meta(SCHEMA_VERSION_KEY, str(version))
+
+    def check_model(self) -> bool:
+        """Create tables; rebuild the index if the model or dimension changed (True if wiped).
+
+        A different model or dimension makes every stored vector meaningless, but wiping is
+        destructive and slow to undo, so it only happens when the user approved it (the
+        ``allow_wipe`` flag). Otherwise this raises and leaves the index as it is.
+        """
+        assert self.dim is not None
+        stored = (self._state.get_meta("model_id"), self._state.get_meta("dim"))
+        wanted = (self.model_id, str(self.dim))
+        names = self._table_names()
+        untracked = stored == (None, None)  # tables with no record of their model: nothing to keep
+        wiped = bool(names) and stored != wanted
+        if wiped and not (self._allow_wipe or untracked):
+            raise ModelMismatchError(
+                f"the index was built with {stored[0]} (dim {stored[1]}) but {wanted[0]} "
+                f"(dim {wanted[1]}) is configured; switch with: ldf models --embedder "
+                f"{wanted[0]} --yes (this re-indexes every file)"
+            )
+        if wiped:
+            for name in names:
+                self.db.drop_table(name)
+            self._state.manifest_clear()
+            self._state.set_meta("last_reconcile", "0")  # every file must be indexed again
+            names = []
+        schemas = {CHUNKS: chunk_schema(self.dim), DOCUMENTS: document_schema(self.dim)}
+        for name, schema in schemas.items():
+            if name in names:
+                self._tables[name] = self.db.open_table(name)
+            else:
+                self._tables[name] = self.db.create_table(name, schema=schema)
+                self._create_fts(name, "text" if name == CHUNKS else "full_text")
+        if names:
+            self._migrate()
+        else:  # new tables are created in the current layout
+            self._state.set_meta(SCHEMA_VERSION_KEY, str(LANCE_SCHEMA_VERSION))
+        self._state.set_meta("model_id", self.model_id)
+        self._state.set_meta("dim", str(self.dim))
+        return wiped
+
+    def _create_fts(self, name: str, column: str) -> None:
+        """BM25 index; an optimisation only, so failure degrades to vector-only search."""
+        from lancedb.index import FTS
+
+        attempts: list[dict[str, Any]] = [
+            {"stem": False, "remove_stop_words": False, "with_position": True,
+             "split_identifiers": True},
+            {"stem": False, "remove_stop_words": False, "with_position": True},
+            {},
+        ]  # fmt: skip
+        for options in attempts:
+            try:
+                self._tables[name].create_index(column, config=FTS(**options), replace=True)
+            except TypeError:
+                continue  # older lancedb without this option
+            except Exception:
+                logger.warning("lance: FTS index on %s.%s failed", name, column, exc_info=True)
+                return
+            else:
+                return
+
+    def table(self, name: str) -> LanceTable | None:
+        """The named table, or ``None`` if the index has not been built yet."""
+        if name not in self._tables:
+            self._open_existing()
+        return self._tables.get(name)
+
+    @property
+    def chunks(self) -> LanceTable | None:
+        return self.table(CHUNKS)
+
+    @property
+    def documents(self) -> LanceTable | None:
+        return self.table(DOCUMENTS)
+
+    def count(self, name: str = CHUNKS) -> int:
+        table = self.table(name)
+        return int(table.count_rows()) if table is not None else 0
+
+    # ------------------------------------------------------------------ chunks
+    def vectors_for_hashes(self, hashes: Iterable[str]) -> dict[str, np.ndarray]:
+        """Embeddings already stored for identical chunk text (embedded once, reused anywhere)."""
+        table = self.chunks
+        found: dict[str, np.ndarray] = {}
+        if table is None:
+            return found
+        for part in _batches(sorted(set(hashes))):
+            listed = ",".join(sql_quote(h) for h in part)
+            where = f"chunk_hash IN ({listed}) AND model_id = {sql_quote(self.model_id)}"
+            rows = (
+                table.search()
+                .where(where)
+                .select(["chunk_hash", CHUNK_VECTOR])
+                .limit(len(part) * 4)
+                .to_list()
+            )
+            for row in rows:
+                found.setdefault(row["chunk_hash"], np.asarray(row[CHUNK_VECTOR], dtype=np.float32))
+        return found
+
+    def delete_paths(self, paths: Iterable[str]) -> None:
+        """Remove every chunk and document row belonging to ``paths``."""
+        listed = list(paths)
+        for name in (CHUNKS, DOCUMENTS):
+            table = self.table(name)
+            if table is None:
+                continue
+            for part in _batches(listed):
+                table.delete("path IN (" + ",".join(sql_quote(p) for p in part) + ")")
+
+    def doc_types_for(self, paths: Sequence[str]) -> dict[str, str]:
+        """The stored document type of each indexed path (paths never indexed are absent)."""
+        found: dict[str, str] = {}
+        for part in _batches(list(paths)):
+            listed = ",".join(sql_quote(p) for p in part)
+            for row in self.scan(DOCUMENTS, ["path", "doc_type"], f"path IN ({listed})", len(part)):
+                found[row["path"]] = row["doc_type"]
+        return found
+
+    def replace_rows(self, paths: Iterable[str], rows: list[Row]) -> None:
+        """Swap all chunk rows of ``paths`` for ``rows`` (delete, then a single add)."""
+        table = self.chunks
+        assert table is not None, "store opened read-only"
+        for part in _batches(list(paths)):
+            table.delete("path IN (" + ",".join(sql_quote(p) for p in part) + ")")
+        if rows:
+            table.add(rows)
+
+    def replace_documents(self, paths: Iterable[str], rows: list[Row]) -> None:
+        """Swap the document rows of ``paths`` for ``rows``."""
+        table = self.documents
+        assert table is not None, "store opened read-only"
+        for part in _batches(list(paths)):
+            table.delete("path IN (" + ",".join(sql_quote(p) for p in part) + ")")
+        if rows:
+            table.add(rows)
+
+    def set_version_groups(self, groups: dict[str, str], candidates: Iterable[str]) -> None:
+        """Write ``version_group`` for ``groups``; other ``candidates`` are reset to ungrouped.
+
+        One update per group (not per file): a table update rewrites a fragment each time.
+        """
+        table = self.documents
+        assert table is not None, "store opened read-only"
+        by_group: dict[str, list[str]] = {}
+        for path in candidates:
+            by_group.setdefault(groups.get(path, ""), []).append(path)
+        for group, paths in by_group.items():
+            for part in _batches(paths):
+                listed = ",".join(sql_quote(p) for p in part)
+                table.update(where=f"path IN ({listed})", values={"version_group": group})
+
+    # ------------------------------------------------------------------ queries
+    def scan(self, name: str, columns: list[str], where: str = "", limit: int = 1000) -> list[Row]:
+        table = self.table(name)
+        if table is None:
+            return []
+        query = table.search()
+        if where:
+            query = query.where(where)
+        rows: list[Row] = query.select(columns).limit(limit).to_list()
+        return rows
+
+    def vector_search(
+        self, name: str, vector: np.ndarray, columns: list[str], where: str = "", limit: int = 50
+    ) -> list[Row]:
+        table = self.table(name)
+        if table is None:
+            return []
+        column = CHUNK_VECTOR if name == CHUNKS else DOC_VECTOR
+        query = table.search(vector, vector_column_name=column).metric("cosine")
+        if where:
+            query = query.where(where, prefilter=True)
+        rows: list[Row] = query.select(columns).limit(limit).to_list()
+        return rows
+
+    def fts_search(
+        self, name: str, text: str, columns: list[str], where: str = "", limit: int = 50
+    ) -> list[Row]:
+        """BM25 keyword search; returns ``[]`` if the FTS index is unavailable."""
+        table = self.table(name)
+        if table is None:
+            return []
+        try:
+            query = table.search(text, query_type="fts")
+            if where:
+                query = query.where(where, prefilter=True)
+            rows: list[Row] = query.select(columns).limit(limit).to_list()
+        except Exception:
+            logger.debug("lance: FTS search failed on %s", name, exc_info=True)
+            return []
+        return rows
+
+    # ------------------------------------------------------------------ maintenance
+    @staticmethod
+    def _has_index_on(table: LanceTable, column: str) -> bool:
+        """Whether any index covers ``column``. Matching on the column, not the index type: the
+        full-text index reports itself as ``INVERTED`` or ``FTS`` depending on the version."""
+        return any(column in (getattr(i, "columns", None) or ()) for i in table.list_indices())
+
+    def maintain(self) -> None:
+        """Keep the tables fast: keyword and lookup indexes, compaction, the vector index."""
+        steps: tuple[tuple[str, Callable[[LanceTable, str], object]], ...] = (
+            ("FTS check", self._repair_fts),
+            ("scalar indexes", self._scalar_indexes),
+            ("optimize", self._optimize),
+        )
+        for name in (CHUNKS, DOCUMENTS):
+            table = self.table(name)
+            if table is None:
+                continue
+            for what, step in steps:
+                self._guarded(name, what, partial(step, table, name))
+            if table.count_rows() >= self._min_rows:
+                self._guarded(name, "vector index", partial(self._vector_index, table, name))
+
+    @staticmethod
+    def _guarded(name: str, what: str, action: Callable[[], object]) -> None:
+        """Maintenance is an optimisation: a failure is logged and the next run tries again."""
+        try:
+            action()
+        except Exception:
+            logger.warning("lance: %s failed on %s", what, name, exc_info=True)
+
+    def _repair_fts(self, table: LanceTable, name: str) -> None:
+        column = "text" if name == CHUNKS else "full_text"
+        if not self._has_index_on(table, column):  # its creation failed earlier
+            self._create_fts(name, column)
+
+    @staticmethod
+    def _optimize(table: LanceTable, _name: str) -> None:
+        table.optimize(cleanup_older_than=_KEEP_VERSIONS)
+
+    def _scalar_indexes(self, table: LanceTable, name: str) -> None:
+        """BTREE indexes on the columns used by ``IN (...)`` lookups and deletes."""
+        from lancedb.index import BTree
+
+        columns = ("chunk_hash", "path") if name == CHUNKS else ("path",)
+        for column in columns:
+            if not self._has_index_on(table, column):
+                table.create_index(column, config=BTree(), replace=False)
+
+    def _vector_index(self, table: LanceTable, name: str) -> None:
+        """Build the vector index, and rebuild it when the table has doubled since it was made
+        (new rows are searched by brute force until then; a stale index degrades recall)."""
+        from lancedb.index import IvfPq
+
+        column = CHUNK_VECTOR if name == CHUNKS else DOC_VECTOR
+        key = f"vector_index_rows_{name}"
+        rows = int(table.count_rows())
+        built_at = int(self._state.get_meta(key, "0") or 0)
+        if self._has_index_on(table, column) and rows < built_at * _REINDEX_GROWTH:
+            return
+        table.create_index(column, config=IvfPq(distance_type="cosine"), replace=True)
+        self._state.set_meta(key, str(rows))

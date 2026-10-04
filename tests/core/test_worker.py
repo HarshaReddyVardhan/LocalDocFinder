@@ -3,11 +3,11 @@ from pathlib import Path
 import pytest
 from tests.core.conftest import Env
 
-from vector_embed import worker
-from vector_embed.core.providers.base import ProviderError
-from vector_embed.core.store.lance import CHUNKS, DOCUMENTS
-from vector_embed.core.store.sqlite import INDEXING_PAUSED_KEY, StateDb
-from vector_embed.worker import WorkerOptions, WorkerParts, run_worker
+from localdoc_finder import worker
+from localdoc_finder.core.providers.base import ProviderError
+from localdoc_finder.core.store.lance import CHUNKS, DOCUMENTS
+from localdoc_finder.core.store.sqlite import INDEXING_PAUSED_KEY, StateDb
+from localdoc_finder.worker import WorkerOptions, WorkerParts, run_worker
 
 RESUME = (
     "Jane Doe\nSummary\nBackend engineer\nWork Experience\nBuilt payment systems in Python\n"
@@ -195,7 +195,7 @@ def test_reconcile_option_records_the_time(env: Env) -> None:
 
 
 def test_interrupted_reconcile_is_not_recorded(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
-    import vector_embed.core.reconcile as reconcile_module
+    import localdoc_finder.core.reconcile as reconcile_module
 
     monkeypatch.setattr(reconcile_module, "_CHECK_EVERY_FILES", 1)
     write(env, "a.txt", "alpha text\n" * 20)
@@ -320,7 +320,7 @@ class TestCli:
         assert settings.storage.data_dir == data_dir  # type: ignore[attr-defined]
 
     def test_second_worker_exits_quietly(self, env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
-        from vector_embed.core.process import single_instance
+        from localdoc_finder.core.process import single_instance
 
         monkeypatch.setattr(worker, "load_settings", lambda: env.settings)
         monkeypatch.setattr(worker, "configure_logging", lambda *_a, **_k: None)
@@ -380,7 +380,7 @@ class TestCli:
 
 
 def test_a_stop_request_ends_the_run_and_still_unloads(env: Env) -> None:
-    from vector_embed.core.process import clear_stop_request, request_stop
+    from localdoc_finder.core.process import clear_stop_request, request_stop
 
     env.state.enqueue(write(env, "s.txt", "stop me " * 40), delay=0)
     unload = Unloader()
@@ -405,7 +405,7 @@ class TestModelOverride:
     def test_reindex_records_the_approval_for_that_model(
         self, env: Env, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from vector_embed.core.store.sqlite import EMBEDDER_APPROVED_KEY
+        from localdoc_finder.core.store.sqlite import EMBEDDER_APPROVED_KEY
 
         seen: list[str | None] = []
 
@@ -431,7 +431,7 @@ class TestModelOverride:
     def test_a_mismatched_index_ends_the_run_without_touching_it(
         self, env: Env, monkeypatch: pytest.MonkeyPatch, newer_app: bool
     ) -> None:
-        from vector_embed.core.store.lance import IndexSchemaError, ModelMismatchError
+        from localdoc_finder.core.store.lance import IndexSchemaError, ModelMismatchError
 
         def mismatch(*_args: object) -> WorkerParts:
             if newer_app:

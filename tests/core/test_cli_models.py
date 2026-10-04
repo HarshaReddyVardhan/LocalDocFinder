@@ -4,10 +4,10 @@ import pytest
 from tests.core.conftest import Env
 from tests.core.providers.fakes import FakeOllamaClient
 
-from vector_embed import cli
-from vector_embed.core import runtime
-from vector_embed.core.models.hardware import Hardware
-from vector_embed.core.providers.ollama import OllamaProvider
+from localdoc_finder import cli
+from localdoc_finder.core import runtime
+from localdoc_finder.core.models.hardware import Hardware
+from localdoc_finder.core.providers.ollama import OllamaProvider
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ def wired(env: Env, monkeypatch: pytest.MonkeyPatch) -> FakeOllamaClient:
         cli, "probe_hardware", lambda: Hardware("RTX 2070", 8192, 7000, 32000, 16000, 8, True)
     )
     monkeypatch.setattr(
-        "vector_embed.core.models.registry.probe_hardware",
+        "localdoc_finder.core.models.registry.probe_hardware",
         lambda: Hardware("RTX 2070", 8192, 7000, 32000, 16000, 8, True),
     )
     return client
@@ -99,7 +99,7 @@ def test_health_shows_the_configured_monthly_budget(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vector_embed.core.settings import CloudSettings
+    from localdoc_finder.core.settings import CloudSettings
 
     capped = env.settings.model_copy(update={"cloud": CloudSettings(monthly_budget_usd=5.0)})
     monkeypatch.setattr(cli, "load_settings", lambda: capped)

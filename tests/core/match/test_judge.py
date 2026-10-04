@@ -4,13 +4,13 @@ from typing import Any
 import pytest
 from tests.core.conftest import Chat
 
-from vector_embed.core.match import judge
-from vector_embed.core.match.judge import MatchError
-from vector_embed.core.match.scoring import Requirement, RowResult
-from vector_embed.core.prompt_safety import fence_for
-from vector_embed.core.providers.base import ProviderUnavailableError
-from vector_embed.core.settings import ChatSettings, MatchSettings
-from vector_embed.core.tokens import estimate_tokens
+from localdoc_finder.core.match import judge
+from localdoc_finder.core.match.judge import MatchError
+from localdoc_finder.core.match.scoring import Requirement, RowResult
+from localdoc_finder.core.prompt_safety import fence_for
+from localdoc_finder.core.providers.base import ProviderUnavailableError
+from localdoc_finder.core.settings import ChatSettings, MatchSettings
+from localdoc_finder.core.tokens import estimate_tokens
 
 JD = "Senior backend engineer. Must know Python and PostgreSQL. Kubernetes is a plus."
 RESUME = (
@@ -85,7 +85,7 @@ class TestExtractRequirements:
         chat.client.chat_json_reply = json.dumps(CHECKLIST)
         small = ChatSettings(num_ctx=2048)
         huge = "Must know Python. " + "Company history and benefits. " * 2000
-        with caplog.at_level("WARNING", logger="vector_embed.core.match.judge"):
+        with caplog.at_level("WARNING", logger="localdoc_finder.core.match.judge"):
             judge.extract_requirements(chat.gateway, huge, MATCH, chat=small)
         messages = chat.chat_calls()[0]["messages"]
         sent = sum(estimate_tokens(m["content"]) for m in messages)  # type: ignore[union-attr]
@@ -266,7 +266,7 @@ class TestJudge:
         secret = "confidential job description text"
         chat.client.chat_json_reply = json.dumps({"requirements": secret})
         with (
-            caplog.at_level("INFO", logger="vector_embed.core.match.judge"),
+            caplog.at_level("INFO", logger="localdoc_finder.core.match.judge"),
             pytest.raises(MatchError),
         ):
             judge.extract_requirements(chat.gateway, JD, MATCH)

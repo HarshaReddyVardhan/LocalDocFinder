@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from vector_embed.core import terms
-from vector_embed.core.store.sqlite import StateDb
+from localdoc_finder.core import terms
+from localdoc_finder.core.store.sqlite import StateDb
 
 
 def test_terms_are_accepted_per_version(tmp_path: Path) -> None:

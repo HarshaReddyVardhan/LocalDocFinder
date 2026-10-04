@@ -16,9 +16,9 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QFileIconProvider, QStyle, QStyleOptionViewItem
 
-from vector_embed.app.controller import ResultRow
-from vector_embed.app.result_delegate import ICON_SIZE, ROW_ROLE, ResultDelegate
-from vector_embed.core.extractors.image import thumbnail_path
+from localdoc_finder.app.controller import ResultRow
+from localdoc_finder.app.result_delegate import ICON_SIZE, ROW_ROLE, ResultDelegate
+from localdoc_finder.core.extractors.image import thumbnail_path
 
 
 def make_row(**overrides: object) -> ResultRow:
@@ -196,7 +196,7 @@ def test_a_thumbnail_is_read_from_disk_once_not_on_every_paint(
     thumb.parent.mkdir(parents=True)
     Image.new("RGB", (50, 25), "red").save(thumb, format="JPEG")
     loads: list[str] = []
-    from vector_embed.app import result_delegate as module
+    from localdoc_finder.app import result_delegate as module
 
     original = module.QPixmap
     monkeypatch.setattr(
@@ -211,7 +211,7 @@ def test_a_thumbnail_is_read_from_disk_once_not_on_every_paint(
 def test_a_missing_thumbnail_is_not_looked_up_on_every_paint_but_is_retried_later(
     delegate: ResultDelegate, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from vector_embed.app import result_delegate as module
+    from localdoc_finder.app import result_delegate as module
 
     picture = tmp_path / "later.png"
     Image.new("RGB", (200, 100), "blue").save(picture)
@@ -229,7 +229,7 @@ def test_a_missing_thumbnail_is_not_looked_up_on_every_paint_but_is_retried_late
 
 
 def test_the_icon_caches_are_bounded() -> None:
-    from vector_embed.app.result_delegate import _BoundedCache
+    from localdoc_finder.app.result_delegate import _BoundedCache
 
     cache: _BoundedCache[int] = _BoundedCache(3)
     for i in range(10):

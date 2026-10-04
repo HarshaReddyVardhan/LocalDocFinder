@@ -6,22 +6,22 @@ import pytest
 from tests.core.fakes import DIM, FakeCloudInner, FakeEmbedder
 from tests.core.providers.fakes import FakeOllamaClient
 
-from vector_embed.core.cloud import CloudChatProvider, CloudConsent, CloudRouter
-from vector_embed.core.doctypes.base import DocTypeClassifierSet
-from vector_embed.core.documents import DocumentLoader
-from vector_embed.core.extractors.base import ExtractContext, ExtractorSet
-from vector_embed.core.indexer import Indexer
-from vector_embed.core.llm import LlmGateway
-from vector_embed.core.models.catalog import load_catalog
-from vector_embed.core.models.hardware import Hardware
-from vector_embed.core.models.registry import ModelRegistry
-from vector_embed.core.power import PowerGate
-from vector_embed.core.privacy.policy import PrivacyFilter
-from vector_embed.core.projects import Projects
-from vector_embed.core.providers.ollama import OllamaProvider
-from vector_embed.core.runtime import CloudContext
-from vector_embed.core.scope import ScopePolicy
-from vector_embed.core.settings import (
+from localdoc_finder.core.cloud import CloudChatProvider, CloudConsent, CloudRouter
+from localdoc_finder.core.doctypes.base import DocTypeClassifierSet
+from localdoc_finder.core.documents import DocumentLoader
+from localdoc_finder.core.extractors.base import ExtractContext, ExtractorSet
+from localdoc_finder.core.indexer import Indexer
+from localdoc_finder.core.llm import LlmGateway
+from localdoc_finder.core.models.catalog import load_catalog
+from localdoc_finder.core.models.hardware import Hardware
+from localdoc_finder.core.models.registry import ModelRegistry
+from localdoc_finder.core.power import PowerGate
+from localdoc_finder.core.privacy.policy import PrivacyFilter
+from localdoc_finder.core.projects import Projects
+from localdoc_finder.core.providers.ollama import OllamaProvider
+from localdoc_finder.core.runtime import CloudContext
+from localdoc_finder.core.scope import ScopePolicy
+from localdoc_finder.core.settings import (
     CloudProviderSettings,
     CloudSettings,
     EmbeddingSettings,
@@ -30,15 +30,15 @@ from vector_embed.core.settings import (
     Settings,
     StorageSettings,
 )
-from vector_embed.core.skills.base import SkillContext
-from vector_embed.core.store.lance import LanceStore
-from vector_embed.core.store.sqlite import StateDb
+from localdoc_finder.core.skills.base import SkillContext
+from localdoc_finder.core.store.lance import LanceStore
+from localdoc_finder.core.store.sqlite import StateDb
 
 
 @pytest.fixture(autouse=True)
 def _no_real_ollama_autostart(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests must never start (or even ping) a real Ollama on the developer's machine."""
-    monkeypatch.setenv("VE_NO_OLLAMA_AUTOSTART", "1")
+    monkeypatch.setenv("LDF_NO_OLLAMA_AUTOSTART", "1")
 
 
 @pytest.fixture

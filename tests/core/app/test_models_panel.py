@@ -12,9 +12,9 @@ from tests.core.app.test_app import FakeService
 from tests.core.app.test_modes import FakeAssistant
 from tests.core.conftest import Chat, Env
 
-from vector_embed.app.controller import Launcher
-from vector_embed.app.models_controller import ModelsController
-from vector_embed.app.models_panel import (
+from localdoc_finder.app.controller import Launcher
+from localdoc_finder.app.models_controller import ModelsController
+from localdoc_finder.app.models_panel import (
     AUTOMATIC,
     CHOICE_COLUMN,
     MODEL_COLUMN,
@@ -23,10 +23,10 @@ from vector_embed.app.models_panel import (
     reason_text,
     recommendation_text,
 )
-from vector_embed.app.window import Mode, SearchWindow
-from vector_embed.core.models.hardware import Hardware
-from vector_embed.core.models.registry import BETTER_OPTION, ModelRegistry
-from vector_embed.core.skills.base import SkillContext
+from localdoc_finder.app.window import Mode, SearchWindow
+from localdoc_finder.core.models.hardware import Hardware
+from localdoc_finder.core.models.registry import BETTER_OPTION, ModelRegistry
+from localdoc_finder.core.skills.base import SkillContext
 
 GPU = Hardware("RTX 2070", 8192, 7000, 32000, 16000, 8, True)
 
@@ -44,7 +44,7 @@ def controller(
 ) -> ModelsController:
     chat.client.models["deepseek-r1:8b"] = {"caps": ["completion"], "size": 5 * 1024**3}
     chat.client.models["mxbai-embed-large"] = {"caps": ["embedding"], "size": 700 * 1024**2}
-    monkeypatch.setattr("vector_embed.core.models.registry.probe_hardware", lambda: GPU)
+    monkeypatch.setattr("localdoc_finder.core.models.registry.probe_hardware", lambda: GPU)
     chat.gateway._registry._probe = lambda: GPU
     return ModelsController(lambda: skill_ctx, env.data_dir / "settings.toml")
 
@@ -329,7 +329,7 @@ class TestHealthRefresh:
         assert not widget._timer.isActive()
 
     def test_the_interval_is_a_glance_not_a_monitor(self) -> None:
-        from vector_embed.app import models_panel
+        from localdoc_finder.app import models_panel
 
         assert models_panel.HEALTH_REFRESH_MS >= 10_000
 

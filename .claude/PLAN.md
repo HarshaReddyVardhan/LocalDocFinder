@@ -5,7 +5,7 @@ The user wants a local desktop engine on a Windows laptop (RTX 2070 8 GB). It ha
 1. **Semantic search** over code, documents, PDFs, images and AI-tool notes (`.claude/plans`, memory files), opened with a hotkey.
 2. **New: chat with documents.** Example: paste a job description, ask "which resume on my system best matches this JD?", then keep chatting ("what's missing?", "rewrite my bullets for it"). A **regular chat LLM is loaded on demand only when a question is asked** and unloaded afterwards.
 
-Only `d:\Projects\Vector_Embed\indexer_config.py` exists so far, and the user has said everything can be rebuilt. Requirements that must stay:
+Only `d:\Projects\LocalDoc Finder\indexer_config.py` exists so far, and the user has said everything can be rebuilt. Requirements that must stay:
 - No heavy background process when idle.
 - VRAM goes back to 0 after work.
 - **Indexing only on AC power.**
@@ -248,7 +248,7 @@ SQLite:  manifest, queue, chat_sessions/messages, locks
 ```
 Search and query latency target: **under 150 ms**. Index maintenance: flat search below about 100k rows, IVF_PQ index above that.
 
-## 10. Project layout (fresh, in `d:\Projects\Vector_Embed\`)
+## 10. Project layout (fresh, in `d:\Projects\LocalDoc Finder\`)
 ```
 core/
   settings.py          pydantic schema + settings.toml + migrations
@@ -266,7 +266,7 @@ core/
 watcher.py             always-on gatekeeper
 worker.py              short-lived indexer
 app/                   PySide6 hotkey UI: search list, chat panel, match table, Models tab, dashboard
-cli.py                 `ve search|ask|match|index|models|doctor`
+cli.py                 `ldf search|ask|match|index|models|doctor`
 eval/                  queries.yaml, match_cases/, run.py
 tests/
 ```
@@ -288,7 +288,7 @@ tests/
 
 ## 11. Feature ideas (each is a new skill or source; no core rewrite needed)
 **High value, low effort:**
-1. **MCP server** (`ve mcp`) exposing `search`, `ask` and `match` to Claude Code, Cursor and similar tools. Your AI coding tools can then search your whole drive, your old projects and your plans.
+1. **MCP server** (`ldf mcp`) exposing `search`, `ask` and `match` to Claude Code, Cursor and similar tools. Your AI coding tools can then search your whole drive, your old projects and your plans.
 2. **Collections and tags:** for example "Job hunt" = resumes + JDs + cover letters, so Match and Ask can be limited to a collection.
 3. **Context pack:** select results and choose "Copy as context", which produces clean markdown with paths and snippets to paste into any chatbot.
 4. **"Similar to this file" and duplicate finder:** near-duplicate documents, images and code across projects, to reclaim disk space.
@@ -342,7 +342,7 @@ tests/
 - **Ask:** every answer cites real files and lines, and a question with no answer in the index returns "not found" instead of making something up.
 - **Latency:** search under 150 ms; first chat token under about 3 s with the model pre-warmed.
 - **Quality:** `python eval/run.py` prints the comparison table, which is used to choose the final models.
-- **Model registry:** `ve models` lists the installed Ollama models with roles and capabilities, and flags `mxbai-embed-large` (512-token context) and an unused `deepseek-r1`.
+- **Model registry:** `ldf models` lists the installed Ollama models with roles and capabilities, and flags `mxbai-embed-large` (512-token context) and an unused `deepseek-r1`.
   - Remove `qwen3.5:9b`: the chat role falls back to `qwen2.5-coder:7b` or `llama3.2`, and the UI suggests the pull.
   - Simulate low free VRAM: the resolver picks a smaller model.
 - **Providers:**

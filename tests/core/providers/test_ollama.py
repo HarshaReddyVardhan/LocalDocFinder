@@ -6,8 +6,8 @@ import ollama
 import pytest
 from tests.core.providers.fakes import FakeOllamaClient
 
-from vector_embed.core.providers import ollama as om
-from vector_embed.core.providers.base import (
+from localdoc_finder.core.providers import ollama as om
+from localdoc_finder.core.providers.base import (
     CAP_EMBEDDING,
     ChatChunk,
     ChatOptions,
@@ -20,7 +20,7 @@ from vector_embed.core.providers.base import (
     ProviderUnavailableError,
     Usage,
 )
-from vector_embed.core.settings import EmbeddingSettings, ModelPrefixes
+from localdoc_finder.core.settings import EmbeddingSettings, ModelPrefixes
 
 QUERY_PREFIX = "Q: "
 DOC_PREFIX = "D: "

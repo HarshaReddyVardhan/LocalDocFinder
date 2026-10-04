@@ -1,4 +1,4 @@
-from vector_embed.core.prompt_safety import FENCE_OPEN, fence_for
+from localdoc_finder.core.prompt_safety import FENCE_OPEN, fence_for
 
 
 def test_the_token_is_stable_so_prompts_stay_cacheable() -> None:

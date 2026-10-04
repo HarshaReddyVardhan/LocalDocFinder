@@ -1,12 +1,12 @@
 from tests.core.conftest import Env
 
-from vector_embed.core import health
-from vector_embed.core.health import collect_health, format_health, month_start
-from vector_embed.core.models.catalog import load_catalog
-from vector_embed.core.models.hardware import Hardware
-from vector_embed.core.models.registry import ModelRegistry
-from vector_embed.core.providers.base import CAP_COMPLETION, ModelInfo, ProviderError
-from vector_embed.core.store.sqlite import CHAT_LOCK
+from localdoc_finder.core import health
+from localdoc_finder.core.health import collect_health, format_health, month_start
+from localdoc_finder.core.models.catalog import load_catalog
+from localdoc_finder.core.models.hardware import Hardware
+from localdoc_finder.core.models.registry import ModelRegistry
+from localdoc_finder.core.providers.base import CAP_COMPLETION, ModelInfo, ProviderError
+from localdoc_finder.core.store.sqlite import CHAT_LOCK
 
 GPU = Hardware("RTX 2070", 8192, 7000, 32000, 16000, 8, True)
 NOW = 1_780_000_000.0  # mid-month
