@@ -10,6 +10,7 @@ from tests.core.providers.fakes import FakeOllamaClient
 from localdoc_finder import cli
 from localdoc_finder.core import runtime
 from localdoc_finder.core.models.hardware import Hardware
+from localdoc_finder.core.models.registry import ModelRegistry
 from localdoc_finder.core.providers.base import ModelInfo, ProviderError
 from localdoc_finder.core.providers.ollama import OllamaProvider
 from localdoc_finder.core.settings import FeatureSettings, SettingsError
@@ -148,8 +149,12 @@ class TestOtherCommands:
         provider = OllamaProvider(env.settings.embedding, client=client)
         monkeypatch.setattr(cli, "load_settings", lambda: env.settings)
         monkeypatch.setattr(runtime, "build_provider", lambda _s: provider)
-        monkeypatch.setattr(
-            cli, "probe_hardware", lambda: Hardware("RTX 2070", 8192, 7000, 32000, 16000, 8, True)
+        hardware = Hardware("RTX 2070", 8192, 7000, 32000, 16000, 8, True)
+        monkeypatch.setattr(cli, "probe_hardware", lambda: hardware)
+        # The registry binds its probe when the module loads; without this the report depends
+        # on how much VRAM happens to be free on the machine running the tests.
+        monkeypatch.setitem(
+            ModelRegistry.__init__.__kwdefaults__, "hardware_probe", lambda: hardware
         )
         assert cli.main(["models"]) == 0
         text = capsys.readouterr().out
