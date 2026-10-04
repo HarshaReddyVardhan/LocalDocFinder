@@ -1,12 +1,13 @@
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import pytest
 
 from localdoc_finder.core.store import lance as lc
 from localdoc_finder.core.store.lance import LanceStore, sql_quote
+from localdoc_finder.core.store.search_columns import content_chars, file_name, search_text
 from localdoc_finder.core.store.sqlite import StateDb
 
 DIM = 4
@@ -28,6 +29,9 @@ def chunk(path: str, text: str, vec: list[float], *, h: str | None = None, **kw:
         "chunk_hash": h or f"h-{text}",
         "model_id": "m1",
         "mtime": kw.get("mtime", 1),
+        "content_chars": content_chars(text),
+        "name": file_name(path),
+        "search_text": search_text(path, text),
     }
 
 
@@ -249,10 +253,10 @@ class TestIndexMaintenance:
         store.replace_rows([r["path"] for r in rows], rows)
         table = store.chunks
         assert table is not None
-        table.drop_index("text_idx")  # as if its creation had failed at table creation time
-        assert not store._has_index_on(table, "text")
+        table.drop_index("search_text_idx")  # as if its creation had failed at table creation time
+        assert not store._has_index_on(table, "search_text")
         store.maintain()
-        assert store._has_index_on(table, "text")  # repaired
+        assert store._has_index_on(table, "search_text")  # repaired
         assert store._has_index_on(table, lc.CHUNK_VECTOR)  # FTS no longer hides the need for it
         assert store.fts_search(lc.CHUNKS, "alpha", ["path"], "", 5)
 
@@ -313,9 +317,94 @@ class TestIndexMaintenance:
         assert state.get_meta("vector_index_rows_chunks") == "700"
 
 
+V1_COLUMNS = [c for c in lc.CHUNK_COLUMNS if c not in ("content_chars", "name", "search_text")]
+
+
+def build_v1_index(data_dir: Path, state: StateDb, rows: list[dict]) -> None:
+    """An index as the first schema version wrote it: no derived columns, BM25 on ``text``."""
+    import lancedb
+    import pyarrow as pa
+    from lancedb.index import FTS
+
+    db = lancedb.connect(str(data_dir / lc.LANCE_DIRNAME))
+    full = lc.chunk_schema(DIM)
+    schema = pa.schema([full.field(lc.CHUNK_VECTOR)] + [full.field(c) for c in V1_COLUMNS])
+    table = db.create_table(lc.CHUNKS, schema=schema)
+    table.add([{k: v for k, v in row.items() if k in schema.names} for row in rows])
+    table.create_index("text", config=FTS(with_position=True, stem=False))
+    db.create_table(lc.DOCUMENTS, schema=lc.document_schema(DIM))
+    state.set_meta("model_id", "m1")
+    state.set_meta("dim", str(DIM))
+    state.set_meta(lc.SCHEMA_VERSION_KEY, "1")
+
+
+class TestSearchColumnsMigration:
+    ROWS: ClassVar[list[dict]] = [
+        chunk(
+            "D:\\billing\\retryPayments.py",
+            "p > D:\\billing\\retryPayments.py\ncharging cards",
+            [1, 0, 0, 0],
+        ),
+        chunk(
+            "D:\\scans\\scan_0042.pdf",
+            "p > D:\\scans\\scan_0042.pdf > p.1\n  -- . --",
+            [0, 1, 0, 0],
+        ),
+    ]
+
+    def test_a_reader_of_an_old_index_keeps_searching_text(
+        self, tmp_path: Path, state: StateDb
+    ) -> None:
+        build_v1_index(tmp_path, state, self.ROWS)
+        reader = LanceStore(tmp_path, state, "m1", dim=None)  # readers never migrate
+        assert [r["path"] for r in reader.fts_search(lc.CHUNKS, "charging", ["path"])] == [
+            "D:\\billing\\retryPayments.py"
+        ]
+
+    def test_v1_index_gains_backfilled_columns_and_stemmed_search(
+        self, tmp_path: Path, state: StateDb
+    ) -> None:
+        build_v1_index(tmp_path, state, self.ROWS)
+        store = LanceStore(tmp_path, state, "m1", dim=DIM)
+        assert state.get_meta(lc.SCHEMA_VERSION_KEY) == str(lc.LANCE_SCHEMA_VERSION)
+        rows = {r["path"]: r for r in store.scan(lc.CHUNKS, lc.CHUNK_COLUMNS)}
+        code = rows["D:\\billing\\retryPayments.py"]
+        assert code["name"] == "retrypayments.py"
+        assert code["content_chars"] == len("chargingcards")
+        assert code["search_text"] == "retry payments\ncharging cards"
+        assert rows["D:\\scans\\scan_0042.pdf"]["content_chars"] == 0
+        # Stemmed, on the file-name words, and blind to directory names.
+        assert store.fts_search(lc.CHUNKS, "charge", ["path"])
+        assert store.fts_search(lc.CHUNKS, "payment", ["path"])
+        assert store.fts_search(lc.CHUNKS, "billing", ["path"]) == []
+        assert [i.columns for i in store.chunks.list_indices() if i.columns == ["text"]] == []
+
+    def test_a_resumed_upgrade_does_not_add_the_columns_twice(
+        self, tmp_path: Path, state: StateDb
+    ) -> None:
+        build_v1_index(tmp_path, state, self.ROWS)
+        LanceStore(tmp_path, state, "m1", dim=DIM)
+        state.set_meta(lc.SCHEMA_VERSION_KEY, "1")  # as if it stopped before recording v2
+        store = LanceStore(tmp_path, state, "m1", dim=DIM)
+        assert store.count() == 2
+
+
 class TestSchemaVersion:
     def test_new_tables_record_the_current_version(self, store: LanceStore, state: StateDb) -> None:
         assert state.get_meta(lc.SCHEMA_VERSION_KEY) == str(lc.LANCE_SCHEMA_VERSION)
+
+    def test_search_results_carry_their_raw_scores(self, store: LanceStore) -> None:
+        store.replace_rows(
+            ["a.py", "b.py"],
+            [chunk("a.py", "retry payments", [1, 0, 0, 0]), chunk("b.py", "garden", [0, 1, 0, 0])],
+        )
+        near = store.vector_search(lc.CHUNKS, np.asarray([1, 0, 0, 0], np.float32), ["path"])
+        assert near[0]["path"] == "a.py"
+        assert near[0]["_distance"] == pytest.approx(0.0, abs=1e-6)
+        assert near[1]["_distance"] == pytest.approx(1.0, abs=1e-6)
+        hits = store.fts_search(lc.CHUNKS, "payments", ["path"])
+        assert hits[0]["path"] == "a.py"
+        assert hits[0]["_score"] > 0
 
     def test_an_index_from_before_versions_runs_every_step_once(
         self, tmp_path: Path, state: StateDb, monkeypatch: pytest.MonkeyPatch

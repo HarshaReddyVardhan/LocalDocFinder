@@ -48,6 +48,27 @@ def test_scores_are_descending_and_unique_per_chunk(env: Env, skill_ctx: SkillCo
     assert len({(c.row["path"], c.row["chunk_hash"]) for c in found}) == len(found)
 
 
+def test_candidates_keep_each_legs_raw_score_and_rank(env: Env, skill_ctx: SkillContext) -> None:
+    pay = index(env, "pay.txt", "retry failed payments with backoff\n")
+    index(env, "other.txt", "completely unrelated gardening notes\n")
+    skill_ctx.store.maintain()
+    found = hybrid_candidates(
+        skill_ctx.store, skill_ctx.embedder, skill_ctx.power, skill_ctx.settings.search,
+        table=CHUNKS, text="payments", columns=COLUMNS,
+    )  # fmt: skip
+    by_path = {c.row["path"]: c for c in found}
+    top = by_path[pay]
+    assert top.keyword_rank == 1
+    assert top.vector_rank in (1, 2)
+    assert top.similarity is not None and 0 < top.similarity <= 1
+    assert top.bm25 is not None and top.bm25 > 0
+    rrf_k = skill_ctx.settings.search.rrf_k
+    assert top.score == pytest.approx(1 / (rrf_k + 1) + 1 / (rrf_k + top.vector_rank))
+    other = next(c for p, c in by_path.items() if p != pay)
+    assert other.keyword_rank is None and other.bm25 is None  # no keyword match
+    assert other.vector_rank is not None and other.similarity is not None
+
+
 def test_force_cpu_embeds_the_query_on_the_cpu(env: Env, skill_ctx: SkillContext) -> None:
     index(env, "a.txt", "alpha beta gamma\n")
     seen: list[bool] = []

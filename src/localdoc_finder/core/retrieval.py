@@ -17,8 +17,27 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Candidate:
+    """A chunk found by either leg, with what each leg said about it.
+
+    ``similarity`` is the cosine similarity of the vector leg and ``bm25`` the keyword leg's raw
+    score; ``None`` (and a rank of ``None``) means that leg did not return the chunk.
+    """
+
     row: Row
     score: float
+    similarity: float | None = None
+    bm25: float | None = None
+    vector_rank: int | None = None
+    keyword_rank: int | None = None
+
+
+@dataclass
+class _Hits:
+    row: Row
+    similarity: float | None = None
+    bm25: float | None = None
+    vector_rank: int | None = None
+    keyword_rank: int | None = None
 
 
 def fts_terms(text: str) -> str:
@@ -47,14 +66,11 @@ def hybrid_candidates(
     only the keyword leg contributes.
     """
     n = limit or cfg.candidates
-    by_key: dict[tuple[str, str], Row] = {}
-    scores: dict[tuple[str, str], float] = {}
+    hits: dict[tuple[str, str], _Hits] = {}
 
-    def add(rows: list[Row]) -> None:
-        for rank, row in enumerate(rows):
-            key = (row[unique_key[0]], row[unique_key[1]])
-            by_key.setdefault(key, row)
-            scores[key] = scores.get(key, 0.0) + 1.0 / (cfg.rrf_k + rank + 1)
+    def hit(row: Row) -> _Hits:
+        key = (row[unique_key[0]], row[unique_key[1]])
+        return hits.setdefault(key, _Hits(row))
 
     try:
         if query_vector is not None:
@@ -62,11 +78,25 @@ def hybrid_candidates(
         else:
             cpu = force_cpu or power.search_on_cpu()
             vector = embedder.embed([text], kind="query", cpu=cpu)[0]
-        add(store.vector_search(table, vector, columns, where, n))
+        for rank, row in enumerate(store.vector_search(table, vector, columns, where, n), 1):
+            found = hit(row)
+            found.similarity, found.vector_rank = 1.0 - float(row["_distance"]), rank
     except ProviderError:
         logger.info("retrieval: embedding unavailable, using keyword search only")
     terms = fts_terms(text)
     if terms:
-        add(store.fts_search(table, terms, columns, where, n))
-    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-    return [Candidate(by_key[key], score) for key, score in ranked]
+        for rank, row in enumerate(store.fts_search(table, terms, columns, where, n), 1):
+            found = hit(row)
+            found.bm25, found.keyword_rank = float(row["_score"]), rank
+    candidates = [_fuse(found, cfg) for found in hits.values()]
+    return sorted(candidates, key=lambda c: c.score, reverse=True)
+
+
+def _fuse(found: _Hits, cfg: SearchSettings) -> Candidate:
+    """Reciprocal-rank fusion: each leg adds ``1 / (k + rank)``."""
+    score = sum(
+        1.0 / (cfg.rrf_k + rank) for rank in (found.vector_rank, found.keyword_rank) if rank
+    )
+    return Candidate(
+        found.row, score, found.similarity, found.bm25, found.vector_rank, found.keyword_rank
+    )

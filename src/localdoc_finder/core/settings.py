@@ -379,7 +379,8 @@ class ChunkingSettings(_Section):
     max_chunks_per_file: int = Field(default=300, gt=0)
     max_chunks_per_doc: int = Field(default=1500, gt=0)  # PDFs / Office documents (books)
     max_data_file_kb: int = Field(default=512, gt=0)  # .json/.xml/... above this are data dumps
-    stored_text_chars: int = Field(default=3000, gt=0)  # raw text kept for snippets / FTS
+    # Raw text kept for snippets; covers a whole chunk (max_chunk_chars) plus its header line.
+    stored_text_chars: int = Field(default=5000, gt=0)
     worker_batch_files: int = Field(default=16, gt=0)
 
 

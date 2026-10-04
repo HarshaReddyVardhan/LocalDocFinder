@@ -15,6 +15,7 @@ import numpy as np
 import pyarrow as pa
 
 from localdoc_finder.core.model_names import same_model
+from localdoc_finder.core.store.search_columns import SQL_COLUMNS
 from localdoc_finder.core.store.sqlite import StateDb
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,9 @@ CHUNK_COLUMNS = [
     "chunk_hash",
     "model_id",
     "mtime",
+    "content_chars",
+    "name",
+    "search_text",
 ]
 DOCUMENT_COLUMNS = [
     "path",
@@ -88,6 +92,9 @@ def chunk_schema(dim: int) -> pa.Schema:
             ("chunk_hash", pa.string()),
             ("model_id", pa.string()),
             ("mtime", pa.int64()),
+            ("content_chars", pa.int32()),
+            ("name", pa.string()),
+            ("search_text", pa.string()),
         ]
     )
 
@@ -121,10 +128,26 @@ class IndexSchemaError(RuntimeError):
     """The index was written by a newer version of the app than this one."""
 
 
+def _add_search_columns(store: "LanceStore") -> None:
+    """v1 -> v2: ``content_chars``, ``name`` and ``search_text`` on chunks, backfilled from the
+    stored text and path (no re-embedding), and BM25 moved from ``text`` to ``search_text``."""
+    table = store.table(CHUNKS)
+    if table is None:
+        return
+    present = set(table.schema.names)
+    missing = {column: sql for column, sql in SQL_COLUMNS.items() if column not in present}
+    if missing:  # a resumed upgrade skips what it already added
+        table.add_columns(missing)
+    store.create_fts(CHUNKS)
+    for index in table.list_indices():
+        if list(getattr(index, "columns", None) or ()) == ["text"]:
+            table.drop_index(index.name)
+
+
 LanceMigration = Callable[["LanceStore"], None]
 # Index i upgrades the index schema from version i+1 to i+2. Version 1 is the first layout of the
 # chunk and document tables; a change to ``chunk_schema``/``document_schema`` adds a step here.
-LANCE_MIGRATIONS: tuple[LanceMigration, ...] = ()
+LANCE_MIGRATIONS: tuple[LanceMigration, ...] = (_add_search_columns,)
 LANCE_SCHEMA_VERSION = 1 + len(LANCE_MIGRATIONS)
 SCHEMA_VERSION_KEY = "lance_schema_version"
 
@@ -227,7 +250,7 @@ class LanceStore:
                 self._tables[name] = self.db.open_table(name)
             else:
                 self._tables[name] = self.db.create_table(name, schema=schema)
-                self._create_fts(name, "text" if name == CHUNKS else "full_text")
+                self.create_fts(name)
         if names:
             self._migrate()
         else:  # new tables are created in the current layout
@@ -236,16 +259,33 @@ class LanceStore:
         self._state.set_meta("dim", str(self.dim))
         return wiped
 
-    def _create_fts(self, name: str, column: str) -> None:
-        """BM25 index; an optimisation only, so failure degrades to vector-only search."""
+    def _fts_column(self, name: str) -> str:
+        """The column BM25 searches: ``search_text`` on chunks (``text`` on an index from before
+        it existed, until the upgrade has run), ``full_text`` on documents."""
+        if name != CHUNKS:
+            return "full_text"
+        table = self._tables.get(name)
+        if table is not None and "search_text" not in table.schema.names:
+            return "text"
+        return "search_text"
+
+    def create_fts(self, name: str) -> None:
+        """BM25 index; an optimisation only, so failure degrades to vector-only search.
+
+        Chunk text is stemmed with English stop words removed, so "payments" finds "payment";
+        whole documents keep exact words (they are matched by name and phrase, not ranked).
+        """
         from lancedb.index import FTS
 
-        attempts: list[dict[str, Any]] = [
-            {"stem": False, "remove_stop_words": False, "with_position": True,
-             "split_identifiers": True},
-            {"stem": False, "remove_stop_words": False, "with_position": True},
-            {},
-        ]  # fmt: skip
+        column = self._fts_column(name)
+        stemmed = name == CHUNKS
+        base: dict[str, Any] = {
+            "with_position": True,
+            "language": "English",
+            "stem": stemmed,
+            "remove_stop_words": stemmed,
+        }
+        attempts: list[dict[str, Any]] = [{**base, "split_identifiers": True}, base, {}]
         for options in attempts:
             try:
                 self._tables[name].create_index(column, config=FTS(**options), replace=True)
@@ -378,8 +418,8 @@ class LanceStore:
     def vector_search(
         self, name: str, vector: np.ndarray, columns: list[str], where: str = "", limit: int = 50
     ) -> list[Row]:
-        """Nearest rows by cosine distance; ``[]`` while the stored vectors belong to another
-        embedder (comparing across models would rank at random)."""
+        """Nearest rows, each with its cosine ``_distance``; ``[]`` while the stored vectors
+        belong to another embedder (comparing across models would rank at random)."""
         table = self.table(name)
         if table is None:
             return []
@@ -390,21 +430,22 @@ class LanceStore:
         query = table.search(vector, vector_column_name=column).metric("cosine")
         if where:
             query = query.where(where, prefilter=True)
-        rows: list[Row] = query.select(columns).limit(limit).to_list()
+        rows: list[Row] = query.select([*columns, "_distance"]).limit(limit).to_list()
         return rows
 
     def fts_search(
         self, name: str, text: str, columns: list[str], where: str = "", limit: int = 50
     ) -> list[Row]:
-        """BM25 keyword search; returns ``[]`` if the FTS index is unavailable."""
+        """BM25 keyword search, each row with its ``_score``; ``[]`` if the FTS index is
+        unavailable."""
         table = self.table(name)
         if table is None:
             return []
         try:
-            query = table.search(text, query_type="fts")
+            query = table.search(text, query_type="fts", fts_columns=self._fts_column(name))
             if where:
                 query = query.where(where, prefilter=True)
-            rows: list[Row] = query.select(columns).limit(limit).to_list()
+            rows: list[Row] = query.select([*columns, "_score"]).limit(limit).to_list()
         except Exception:
             logger.debug("lance: FTS search failed on %s", name, exc_info=True)
             return []
@@ -442,9 +483,8 @@ class LanceStore:
             logger.warning("lance: %s failed on %s", what, name, exc_info=True)
 
     def _repair_fts(self, table: LanceTable, name: str) -> None:
-        column = "text" if name == CHUNKS else "full_text"
-        if not self._has_index_on(table, column):  # its creation failed earlier
-            self._create_fts(name, column)
+        if not self._has_index_on(table, self._fts_column(name)):  # its creation failed earlier
+            self.create_fts(name)
 
     @staticmethod
     def _optimize(table: LanceTable, _name: str) -> None:

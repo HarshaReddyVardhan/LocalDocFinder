@@ -27,6 +27,7 @@ from localdoc_finder.core.providers.base import EmbedKind
 from localdoc_finder.core.scope import ScopePolicy
 from localdoc_finder.core.settings import Settings
 from localdoc_finder.core.store.lance import DOCUMENTS, LanceStore, Row, sql_quote
+from localdoc_finder.core.store.search_columns import content_chars, file_name, search_text
 from localdoc_finder.core.store.sqlite import QueueItem, StateDb
 
 logger = logging.getLogger(__name__)
@@ -152,6 +153,9 @@ class Indexer:
                     "chunk_hash": digest,
                     "model_id": self.store.model_id,
                     "mtime": prepared.mtime,
+                    "content_chars": content_chars(chunk.text),
+                    "name": file_name(path),
+                    "search_text": search_text(path, chunk.text),
                 }
             )
         return metas
