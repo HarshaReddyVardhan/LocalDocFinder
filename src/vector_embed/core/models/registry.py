@@ -122,6 +122,10 @@ class ModelRegistry:
         self._installed: list[ModelInfo] = []
         self._retry_after = 0.0  # no automatic refresh before this time (a provider was down)
 
+    @property
+    def catalog(self) -> Catalog:
+        return self._catalog
+
     # ------------------------------------------------------------------ discovery
     def refresh(self) -> list[ModelInfo]:
         """Re-discover models from every provider. An unreachable provider is skipped."""

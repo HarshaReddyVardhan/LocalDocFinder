@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QFrame, QLabel, QScrollArea, QTabWidget, QVBoxLayo
 from vector_embed.app.models_controller import ModelsController
 from vector_embed.app.models_panel import ModelsPanel
 from vector_embed.app.settings_controller import SettingsController
+from vector_embed.app.settings_features import FeaturesTab
 from vector_embed.app.settings_tabs import (
     AboutTab,
     AdvancedTab,
@@ -51,6 +52,7 @@ class SettingsWindow(QWidget):
         self.resize(*WINDOW_SIZE)
         self.setMinimumSize(*MIN_WINDOW_SIZE)
         self.general = general or GeneralTab(controller)
+        self.features = FeaturesTab(controller, models)
         self.models = ModelsTab(controller, ModelsPanel(models))
         self.cloud = cloud or CloudTab(controller)
         self.updates = UpdatesTab(controller)
@@ -64,6 +66,7 @@ class SettingsWindow(QWidget):
             tabs.append(("Indexing", self.indexing))
         for title, page in (
             *tabs,
+            ("Features", self.features),
             ("Models & Health", self.models),
             ("Cloud & Privacy", self.cloud),
             ("Updates", self.updates),

@@ -4,8 +4,10 @@ from collections.abc import Callable
 from pathlib import Path
 
 from vector_embed.core.health import HealthSnapshot, collect_health, format_health
+from vector_embed.core.models.catalog import ROLE_CHAT
 from vector_embed.core.models.manager import ModelManager, ProgressCallback
 from vector_embed.core.models.registry import ModelRegistry, ReindexNotice, Report
+from vector_embed.core.models.starter import StarterPick, pick_starter
 from vector_embed.core.providers.ollama import OllamaProvider
 from vector_embed.core.skills.base import SkillContext
 
@@ -52,6 +54,14 @@ class ModelsController:
 
     def health_text(self) -> str:
         return format_health(self.health())
+
+    def missing_chat_model(self) -> StarterPick | None:
+        """The chat model Ask, Chat and Match need, if none is installed and one fits."""
+        report = self.report()
+        if report.resolutions[ROLE_CHAT].model is not None:
+            return None
+        starter = pick_starter(self.registry.catalog, report.hardware, (ROLE_CHAT,))
+        return starter.pick_for(ROLE_CHAT)
 
     def pull(self, name: str, progress: ProgressCallback | None = None) -> None:
         self.manager.pull(name, progress)

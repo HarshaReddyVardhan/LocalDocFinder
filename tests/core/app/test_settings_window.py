@@ -185,6 +185,7 @@ def test_window_has_the_expected_tabs(window: SettingsWindow) -> None:
     titles = [window.tabs.tabText(i) for i in range(window.tabs.count())]
     assert titles == [
         "General",
+        "Features",
         "Models & Health",
         "Cloud & Privacy",
         "Updates",

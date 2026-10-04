@@ -7,6 +7,7 @@ from pathlib import Path
 
 from vector_embed.app.hotkey import parse_hotkey
 from vector_embed.app.theme import THEME_CHOICES
+from vector_embed.core.features import FEATURES
 from vector_embed.core.lifecycle import (
     ensure_data_folder,
     schedule_data_deletion,
@@ -119,6 +120,13 @@ class SettingsController:
         if choice not in THEME_CHOICES:
             raise SettingsError(f"unknown theme {choice!r}")
         set_setting(self._path, ["app", "theme"], choice)
+        self._on_changed()
+
+    def set_feature(self, name: str, enabled: bool) -> None:
+        """Switch Ask, Chat or Match on or off; Search is always on."""
+        if name not in FEATURES:
+            raise SettingsError(f"unknown feature {name!r}")
+        set_setting(self._path, ["features", name], enabled)
         self._on_changed()
 
     # ------------------------------------------------------------------ models
