@@ -1,4 +1,4 @@
-"""Hardware probe: GPU/VRAM, RAM, CPU and power source. Every probe degrades gracefully."""
+"""Hardware probe: GPU/VRAM, RAM, CPU, power source and current load. Every probe degrades."""
 
 import logging
 from dataclasses import dataclass
@@ -8,6 +8,7 @@ import psutil
 logger = logging.getLogger(__name__)
 
 _MB = 1024 * 1024
+CPU_SAMPLE_SECONDS = 0.5  # psutil needs a window; a zero window reports 0% on first call
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,38 @@ def probe_gpu() -> tuple[str, int, int] | None:
     except Exception:  # NVML missing, no driver or no device: all mean "no usable GPU"
         logger.debug("hardware: no NVIDIA GPU available", exc_info=True)
         return None
+
+
+@dataclass(frozen=True)
+class Load:
+    """How busy the machine is right now, in percent."""
+
+    cpu_percent: float
+    gpu_percent: int | None  # None without a readable NVIDIA GPU
+
+
+def probe_gpu_busy() -> int | None:
+    """Percent of the last sample period the first NVIDIA GPU was busy, or ``None``."""
+    try:
+        import pynvml
+
+        pynvml.nvmlInit()
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            return int(pynvml.nvmlDeviceGetUtilizationRates(handle).gpu)
+        finally:
+            pynvml.nvmlShutdown()
+    except Exception:  # NVML missing, no driver or no device: all mean "no usable GPU"
+        logger.debug("hardware: GPU load unavailable", exc_info=True)
+        return None
+
+
+def probe_load() -> Load:
+    """CPU and GPU load; blocks for ``CPU_SAMPLE_SECONDS`` to measure the CPU."""
+    return Load(
+        cpu_percent=float(psutil.cpu_percent(interval=CPU_SAMPLE_SECONDS)),
+        gpu_percent=probe_gpu_busy(),
+    )
 
 
 def on_ac_power() -> bool:

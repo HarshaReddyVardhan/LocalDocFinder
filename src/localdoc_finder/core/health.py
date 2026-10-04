@@ -1,4 +1,4 @@
-"""Health dashboard data: queue, index size, VRAM and loaded models, usage and cost."""
+"""Health dashboard data: CPU/GPU load, queue, index size, VRAM and loaded models, usage, cost."""
 
 import logging
 import time
@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from localdoc_finder.core.models.hardware import Hardware, probe_hardware
+from localdoc_finder.core.models.hardware import Hardware, Load, probe_hardware, probe_load
 from localdoc_finder.core.models.registry import ModelRegistry, Report
 from localdoc_finder.core.providers.base import ProviderError
 from localdoc_finder.core.store.lance import DOCUMENTS, LanceStore
@@ -20,6 +20,7 @@ LoadedModels = Callable[[], list[str]]
 @dataclass(frozen=True)
 class HealthSnapshot:
     hardware: Hardware
+    load: Load
     indexed_files: int
     queue_total: int
     queue_due: int
@@ -50,6 +51,7 @@ def collect_health(
     loaded_models: LoadedModels,
     *,
     hardware: Hardware | None = None,
+    load: Load | None = None,
     budget_usd: float | None = None,
     clock: Callable[[], float] = time.time,
 ) -> HealthSnapshot:
@@ -64,6 +66,7 @@ def collect_health(
     last = state.get_meta("last_reconcile")
     return HealthSnapshot(
         hardware=hw,
+        load=load or probe_load(),
         indexed_files=state.manifest_count(),
         queue_total=state.queue_size(),
         queue_due=state.queue_size(due_only=True),
@@ -94,6 +97,11 @@ def format_health(snapshot: HealthSnapshot) -> str:
     loaded = ", ".join(snapshot.loaded_models) or "none (VRAM free)"
     lines = [
         f"power           : {'AC' if hw.on_ac else 'battery (indexing paused)'}",
+        f"CPU use         : {snapshot.load.cpu_percent:.0f}% ({hw.cpu_count} threads)",
+    ]
+    if snapshot.load.gpu_percent is not None:
+        lines.append(f"GPU use         : {snapshot.load.gpu_percent}%")
+    lines += [
         f"VRAM            : {vram}",
         f"loaded models   : {loaded}",
         f"chat session    : {'active' if snapshot.chat_active else 'idle'}",

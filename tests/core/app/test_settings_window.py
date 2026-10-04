@@ -22,6 +22,7 @@ from localdoc_finder.app.theme import (
 )
 from localdoc_finder.core.indexing_control import IndexingStatus, StartResult
 from localdoc_finder.core.models.benchmark import BenchKind, BenchResult, record_result
+from localdoc_finder.core.models.hardware import Load
 from localdoc_finder.core.settings import (
     CloudProviderSettings,
     Settings,
@@ -184,6 +185,8 @@ def models(
     chat: Chat, skill_ctx: SkillContext, env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> ModelsController:
     monkeypatch.setattr("localdoc_finder.core.models.registry.probe_hardware", lambda: GPU)
+    monkeypatch.setattr("localdoc_finder.core.health.probe_hardware", lambda: GPU)
+    monkeypatch.setattr("localdoc_finder.core.health.probe_load", lambda: Load(10.0, 20))
     chat.gateway._registry._probe = lambda: GPU
     return ModelsController(lambda: skill_ctx, env.data_dir / "settings.toml")
 

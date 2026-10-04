@@ -84,3 +84,38 @@ def test_probe_hardware_without_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
     result = hwmod.probe_hardware()
     assert not result.has_gpu
     assert result.vram_free_mb == 0
+
+
+def test_probe_gpu_busy_reads_nvml_utilisation(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    calls: list[str] = []
+    fake = SimpleNamespace(
+        nvmlInit=lambda: calls.append("init"),
+        nvmlShutdown=lambda: calls.append("shutdown"),
+        nvmlDeviceGetHandleByIndex=lambda _i: object(),
+        nvmlDeviceGetUtilizationRates=lambda _h: SimpleNamespace(gpu=41, memory=10),
+    )
+    monkeypatch.setitem(sys.modules, "pynvml", fake)
+    assert hwmod.probe_gpu_busy() == 41
+    assert calls == ["init", "shutdown"]
+
+
+def test_probe_gpu_busy_is_none_without_nvml(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    monkeypatch.setitem(sys.modules, "pynvml", None)
+    assert hwmod.probe_gpu_busy() is None
+
+
+def test_probe_load_combines_cpu_and_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[float] = []
+
+    def cpu_percent(interval: float) -> float:
+        seen.append(interval)
+        return 23.5
+
+    monkeypatch.setattr(hwmod.psutil, "cpu_percent", cpu_percent)
+    monkeypatch.setattr(hwmod, "probe_gpu_busy", lambda: 7)
+    assert hwmod.probe_load() == hwmod.Load(cpu_percent=23.5, gpu_percent=7)
+    assert seen == [hwmod.CPU_SAMPLE_SECONDS]  # a zero window would always read 0%

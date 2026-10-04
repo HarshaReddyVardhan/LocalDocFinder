@@ -24,7 +24,7 @@ from localdoc_finder.app.models_panel import (
     recommendation_text,
 )
 from localdoc_finder.app.window import Mode, SearchWindow
-from localdoc_finder.core.models.hardware import Hardware
+from localdoc_finder.core.models.hardware import Hardware, Load
 from localdoc_finder.core.models.registry import BETTER_OPTION, ModelRegistry
 from localdoc_finder.core.skills.base import SkillContext
 
@@ -45,6 +45,8 @@ def controller(
     chat.client.models["deepseek-r1:8b"] = {"caps": ["completion"], "size": 5 * 1024**3}
     chat.client.models["mxbai-embed-large"] = {"caps": ["embedding"], "size": 700 * 1024**2}
     monkeypatch.setattr("localdoc_finder.core.models.registry.probe_hardware", lambda: GPU)
+    monkeypatch.setattr("localdoc_finder.core.health.probe_hardware", lambda: GPU)
+    monkeypatch.setattr("localdoc_finder.core.health.probe_load", lambda: Load(10.0, 20))
     chat.gateway._registry._probe = lambda: GPU
     return ModelsController(lambda: skill_ctx, env.data_dir / "settings.toml")
 
