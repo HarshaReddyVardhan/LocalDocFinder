@@ -17,11 +17,17 @@ class ModelsController:
         self._factory = context_factory
         self._settings_path = settings_path
         self._manager: ModelManager | None = None
+        self._context: SkillContext | None = None
 
     @property
     def manager(self) -> ModelManager:
-        if self._manager is None:
-            ctx = self._factory()
+        """The manager for the current skill context.
+
+        A settings change builds a new context; the tab must show (and change) the registry the
+        popup uses now, not the one it started with.
+        """
+        ctx = self._factory()
+        if self._manager is None or ctx is not self._context:
             provider = ctx.extras["provider"]
             registry = ctx.extras["models"]
             assert isinstance(provider, OllamaProvider)
@@ -29,6 +35,7 @@ class ModelsController:
             self._manager = ModelManager(
                 registry, provider, ctx.state, self._settings_path, ctx.state.manifest_count
             )
+            self._context = ctx
         return self._manager
 
     @property

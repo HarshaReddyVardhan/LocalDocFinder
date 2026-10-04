@@ -1,6 +1,7 @@
 import time
 import tomllib
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from vector_embed.app.models_controller import ModelsController
 from vector_embed.app.models_panel import AUTOMATIC, ModelsPanel
 from vector_embed.app.window import Mode, SearchWindow
 from vector_embed.core.models.hardware import Hardware
+from vector_embed.core.models.registry import ModelRegistry
 from vector_embed.core.skills.base import SkillContext
 
 GPU = Hardware("RTX 2070", 8192, 7000, 32000, 16000, 8, True)
@@ -61,6 +63,20 @@ def load(qapp: QApplication, widget: ModelsPanel) -> None:
 def settings_file(env: Env) -> dict[str, object]:
     with (env.data_dir / "settings.toml").open("rb") as handle:
         return tomllib.load(handle)
+
+
+def test_the_controller_follows_a_rebuilt_context(
+    chat: Chat, skill_ctx: SkillContext, env: Env
+) -> None:
+    # Regression: after a settings change the tab kept the first registry, so it showed (and
+    # changed) models the popup no longer used.
+    contexts = [skill_ctx]
+    controller = ModelsController(lambda: contexts[-1], env.data_dir / "settings.toml")
+    first = controller.registry
+    assert controller.registry is first  # the same context keeps the same manager
+    fresh = ModelRegistry(first.catalog, [])
+    contexts.append(replace(skill_ctx, extras={**skill_ctx.extras, "models": fresh}))
+    assert controller.registry is fresh
 
 
 class TestRendering:
