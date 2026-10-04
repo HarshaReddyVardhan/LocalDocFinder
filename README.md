@@ -1,123 +1,116 @@
+<div align="center">
+
+<img src="docs/assets/logo.png" alt="LocalDoc Finder logo" width="112" height="112">
+
 # LocalDoc Finder
 
-Local semantic search and chat-with-documents engine for Windows, backed by Ollama.
-Design and build order: [.claude/PLAN.md](.claude/PLAN.md). Working rules: [.claude/CLAUDE.md](.claude/CLAUDE.md).
+**Find anything on your PC by what it says, not what it's called.**
 
-## Install (Windows, no Python needed)
-Download `LocalDocFinder-win-Setup.exe` from the project's GitHub Releases and run it. It installs for
-the current user only (no admin rights), bundles its own Python, and updates itself. Windows may
-show a SmartScreen warning because the build is not code-signed: choose "More info" > "Run anyway".
+Private, on-device search for your documents, scans, images and code, with optional answers and chat about your files. Nothing leaves your computer.
 
-Or install from PowerShell or cmd in one line (downloads the latest release and runs the installer):
+<a href="https://github.com/HarshaReddyVardhan/LocalDocFinder/releases/latest"><img src="https://img.shields.io/badge/Download%20for%20Windows-2563EB?style=for-the-badge&logo=windows&logoColor=white" alt="Download for Windows" height="44"></a>
+
+[![Latest release](https://img.shields.io/github/v/release/HarshaReddyVardhan/LocalDocFinder?label=release&color=2563EB)](https://github.com/HarshaReddyVardhan/LocalDocFinder/releases/latest)
+[![CI](https://github.com/HarshaReddyVardhan/LocalDocFinder/actions/workflows/ci.yml/badge.svg)](https://github.com/HarshaReddyVardhan/LocalDocFinder/actions/workflows/ci.yml)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4)
+![Runs offline](https://img.shields.io/badge/runs-100%25%20on%20device-16A34A)
+
+[Features](#features) · [What it reads](#what-it-reads) · [Requirements](#requirements) · [Install](#install) · [Using it](#using-it) · [Privacy](#privacy-and-security) · [For developers](#for-developers)
+
+</div>
+
+---
+
+## Why LocalDoc Finder
+
+Windows search matches file names. LocalDoc Finder understands content. Ask for *"the lease clause about late rent"* or *"where we retry failed payments"* and it finds the right page of a scanned PDF, the paragraph in a Word file, or the function in your code, even when none of those words is in the file name.
+
+Everything runs on your own PC with open models through [Ollama](https://ollama.com). There is no account, no subscription and no telemetry.
+
+## Features
+
+- **Search by meaning.** Press **Ctrl+Alt+Space** anywhere and type. Results appear instantly, with the matching snippet, page or function.
+- **Reads what other tools skip.** Scanned PDFs, photos of documents, screenshots and pictures inside Word, PowerPoint and RTF files are read with the OCR built into Windows.
+- **You choose what is indexed.** The whole PC or chosen folders, and which kinds of file: documents, notes, images and scans, code, or data.
+- **Ask, Chat and Match (optional).** Get answers with citations to your own files, hold a conversation about a folder, or rank documents against a job description. Switch them on when you want them.
+- **Gentle on your PC.** Indexing waits until the PC is idle and plugged in, never runs on battery, and unloads models as soon as it is done.
+- **Works on any modern PC.** An NVIDIA GPU is used automatically when present; without one, setup picks models sized for your CPU and memory.
+- **Keeps itself up to date.** Updates download in the background and apply on the next restart.
+- **Works with AI coding tools.** A built-in MCP server lets Claude Code, Cursor and similar tools search your files locally.
+
+## What it reads
+
+| Kind | Formats | Notes |
+| --- | --- | --- |
+| Documents | PDF, Word (`.docx`), PowerPoint (`.pptx`), RTF | Text, tables, speaker notes, and the text inside pictures and scanned pages |
+| Text and notes | `.txt`, Markdown, LaTeX | Split by heading so results point to the right section |
+| Images and scans | JPG, PNG, TIFF (multi-page), WebP, BMP, SVG | Text in the image is read with Windows OCR |
+| Source code | Python, JavaScript/TypeScript, C#, Java, Go, Rust, C/C++ and 20+ more | Indexed per function and class |
+| Data and config | JSON, YAML, XML, CSV, SQL, INI, TOML | Large data dumps are skipped |
+
+Pick any combination during setup or later in **Settings → General → File types**. Documents, and text and notes, are on by default.
+
+Some things are never indexed, whatever you choose: Windows and program folders, other users' profiles, build and cache folders, and files that look like passwords or keys.
+
+## Requirements
+
+| | Minimum | Recommended |
+| --- | --- | --- |
+| Operating system | Windows 10 or 11, 64-bit | Windows 11 |
+| Memory | 4 GB RAM (search only) | 8 GB RAM or more (search plus Ask, Chat and Match) |
+| Graphics | Not required | Any NVIDIA GPU with 4 GB+ of video memory, for faster answers |
+| Disk space | About 5 GB for Ollama and a search model | 10 GB+ if you add a larger chat model |
+
+You don't need to install Python or anything else. The installer brings everything it needs, and setup offers to install Ollama for you.
+
+## Install
+
+1. **[Download the latest installer](https://github.com/HarshaReddyVardhan/LocalDocFinder/releases/latest)** (`LocalDocFinder-win-Setup.exe`) and run it.
+   It installs for your Windows account only and needs no administrator rights.
+2. The setup wizard checks your PC, installs Ollama if it is missing (you are asked first), downloads models that suit your hardware, and asks which folders and kinds of file to index.
+3. Press **Ctrl+Alt+Space** and start searching. The first index builds in the background while your PC is idle.
+
+Prefer the command line? This downloads and runs the latest installer:
 
 ```powershell
 irm https://raw.githubusercontent.com/HarshaReddyVardhan/LocalDocFinder/main/scripts/install.ps1 | iex
 ```
 
-```bat
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/HarshaReddyVardhan/LocalDocFinder/main/scripts/install.ps1 | iex"
-```
+> **Windows SmartScreen:** the installer is not code-signed yet, so Windows may warn you the first time. Choose **More info → Run anyway**.
 
-**Releasing:** bump `version` in `pyproject.toml`, commit, then `git tag v<version>` and
-`git push origin v<version>`. The `release` workflow builds and publishes the installer and update
-packages to GitHub Releases (the tag must match the version). Locally:
-`scripts\build.ps1 -RepoUrl https://github.com/HarshaReddyVardhan/LocalDocFinder -Upload`.
+## Using it
 
-On first start a **setup wizard** runs:
-1. It checks your hardware and **Ollama**. If Ollama is missing it offers to download and install
-   it from ollama.com (about 1.2 GB); nothing is downloaded until you tick the box, and the
-   installer's signature (Ollama Inc.) is checked before it runs.
-2. It **picks an embedding model and a chat model that fit your GPU** (8 GB card: `qwen3.5:9b` +
-   `qwen3-embedding:0.6b`; 4 GB: `llama3.2`; no GPU: small CPU models). You can change both, and
-   tick extras (image captions, reranker, ...). It shows download sizes and checks free disk space.
-3. It downloads the models (resumable) and **speed-tests** them one at a time; a model that is too
-   slow on your machine gets a "switch to a smaller one?" offer.
-4. It shows all your settings once (hotkey, folders to index, start with Windows, cloud and
-   privacy, updates), then you are done. Settings are per Windows user, in
-   `%LOCALAPPDATA%\LocalDocFinderData\settings.toml`.
+| Key | Action |
+| --- | --- |
+| **Ctrl+Alt+Space** | Open the search popup from anywhere |
+| **Enter** | Open the selected file |
+| **Ctrl+Enter** | Show it in File Explorer |
+| **Shift+Enter** | Open it in VS Code at the matching line |
+| **Tab** | Switch between Search, Ask, Chat and Match |
+| **Esc** | Hide the popup |
 
-Press **Ctrl+Alt+Space** anywhere: the popup is just a search bar, and results appear below it like
-Explorer's (file icon, name, full path, date and size; the selected row also shows its snippet).
-Enter opens, Ctrl+Enter reveals in Explorer, Shift+Enter opens in VS Code, `?` or Tab switch to Ask,
-Chat and Match. Models, health and every setting live in the tray icon's **Settings** window.
+Narrow a search with filters: `type:pdf`, `type:img`, `type:code`, `ext:docx`, `in:D:\Contracts`, `after:2026-01`, `before:2026-06`.
 
-Choosing models yourself: pick them in the wizard, later in Settings > Models & Health, or from the
-command line: `ldf setup --embed qwen3-embedding:0.6b --chat llama3.2` (add `--dry-run` to preview,
-`--yes` to skip prompts, `--no-install-ollama`, `--skip-bench`, `--extras caption reranker`).
-Switching the embedding model later re-indexes your files (the app tells you before it does).
+Everything else, including folders, file types, models, the hotkey, features, updates and privacy, is in **Settings**: click the gear in the popup, or right-click the tray icon.
 
-Updates: the app checks GitHub Releases at start and then once a day (Settings > Updates, or
-`updates.auto_check = false`), downloads only the changed parts, and offers "Restart to update" in
-the tray menu. Uninstalling removes the app and its startup tasks but keeps your index and
-settings; Settings > About > "Delete my data" removes those too. Ollama and its models are left alone.
+## Privacy and security
 
-## Setup (from source)
-```powershell
-uv sync                                   # creates .venv from uv.lock
-ollama pull qwen3-embedding:0.6b          # embeddings
-.venv\Scripts\pre-commit install
-```
+- **Local by default.** Files, the search index and every model stay on your PC.
+- **Cloud is opt-in.** If you connect a cloud model for answers, passwords, keys and other secrets are never sent, and government and financial ID numbers are masked first.
+- **API keys** are stored in Windows Credential Manager, never in files or logs.
+- **Your data is yours.** The index lives in `%LOCALAPPDATA%\LocalDocFinderData`. Uninstalling keeps it, and **Settings → About → Delete my data** removes it.
 
-## Use
-```powershell
-.venv\Scripts\ldf doctor                   # check the environment
-.venv\Scripts\ldf index --now --path D:\Projects\myapp
-.venv\Scripts\ldf search "where do we retry failed payments"
-.venv\Scripts\ldf search "charge_card type:code proj:billing after:2026-01"
-.venv\Scripts\ldf models                   # installed models, role choices, recommendations
-.venv\Scripts\ldf setup --dry-run         # what first-run setup would download for this PC
-.venv\Scripts\python -m localdoc_finder.app  # hotkey window (Ctrl+Alt+Space) + tray icon
-.venv\Scripts\ldf autostart on            # watcher + UI at logon (or scripts\install_task.ps1)
-```
+## Updating and uninstalling
 
-Search filters: `type:img|code|doc|plan|memory|note|pdf` `ext:py` `proj:name` `in:D:\path` `after:2026-01` `before:2026-06`.
-UI keys: Enter open · Ctrl+Enter reveal in Explorer · Shift+Enter `code -g file:line` · Esc hide.
+LocalDoc Finder checks for updates at start and once a day, downloads only what changed, and offers **Restart to update** from the tray. To remove it, open Windows **Settings → Apps → Installed apps** and uninstall LocalDoc Finder. Ollama and its models are left in place for other apps.
 
-## Use from Claude Code, Cursor and other MCP clients
-`ldf mcp` serves `search`, `ask` and `match` over stdio. Register it once:
-```powershell
-claude mcp add localdoc-finder -- D:\Projects\LocalDocFinder\.venv\Scripts\ldf.exe mcp
-```
-Other clients take the same command in their MCP config. The caller is usually a cloud model, so the server treats everything it returns as outbound: files under the never-send rules (secrets, `.claude` memory) are left out, government/financial IDs are masked, and `ask`/`match` use local models only (never a cloud provider). Tools are read-only, `match` takes its text inline (it cannot read arbitrary files), and nothing is loaded until the first call. `ask` and `match` take the chat lock, so they wait while the desktop app is chatting and unload their model when done.
+## For developers
 
-## How it runs
-| piece | role |
-|---|---|
-| `localdoc_finder.watcher` | always on, light. watchdog events -> SQLite queue (debounced). Starts the worker only on AC power, settled, idle. |
-| `localdoc_finder.worker` | drains the queue: hash diff -> extract -> embed only new chunks -> LanceDB -> unload the model. Checks power before every batch. |
-| `localdoc_finder.cli` | `ldf` command; skill commands are generated from the skill registry. |
-| `localdoc_finder.mcp_server` | `ldf mcp`: MCP front-end for search, ask and match. |
-| `localdoc_finder.app` | PySide6 tray app: the hotkey popup, the Settings window and the setup wizard. |
-| `python -m localdoc_finder <app\|watcher\|worker\|setup>` | one dispatcher for every entry point; the installed `LocalDocFinder.exe` takes the same arguments. |
+LocalDoc Finder is written in Python (PySide6, LanceDB, Ollama) with a strict, fully tested core.
 
-Data lives in `%LOCALAPPDATA%\LocalDocFinderData` (index, queue, logs), apart from the install folder `%LOCALAPPDATA%\LocalDocFinder`, so uninstalling keeps it. Older installs are migrated on first start. Settings: `settings.toml` there, overridable with `VE_*` environment variables (see `.env.example`).
+- **[Contributing guide](CONTRIBUTING.md)**: set up the project, the workflow and how to submit changes.
+- **[Developer guide](docs/DEVELOPER_GUIDE.md)**: architecture, running from source, configuration, testing, building the installer and releasing.
 
-## Development
-```powershell
-.venv\Scripts\python -m pytest            # tests + coverage (>=80%)
-.venv\Scripts\ruff format . ; .venv\Scripts\ruff check . --fix
-.venv\Scripts\mypy
-```
+## License
 
-## Build and release the installer
-Needs the .NET SDK on the build machine (end users need nothing):
-```powershell
-dotnet tool install vpk --tool-path .tools                 # once; or: dotnet tool install -g vpk
-powershell -ExecutionPolicy Bypass -File scripts\build.ps1  # -> Releases\LocalDocFinder-win-Setup.exe
-```
-`scripts\build.ps1` syncs the build dependencies, builds the one-folder app with PyInstaller
-(`packaging\localdoc_finder.spec`: `LocalDocFinder.exe` windowed, `ldf.exe` console), smoke-tests the
-packaged `ldf.exe doctor`, and packs it with Velopack (full package, plus a small delta package when
-an earlier release can be downloaded).
-
-To publish an update: bump `version` in `pyproject.toml`, then
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build.ps1 -RepoUrl https://github.com/OWNER/REPO -Upload
-```
-(`gh auth login` or `GITHUB_TOKEN` first). `-RepoUrl` is baked into the build as the update source;
-users can override it with `updates.repo_url`. Installed apps find the release, download the delta,
-and offer the restart. Unsigned builds trigger SmartScreen; code signing is an optional later step.
-
-Verify on a clean machine (Windows Sandbox, no Python, no Ollama): run Setup.exe, go through the
-wizard, search; publish a newer version and check the app updates itself; uninstall and check that
-the app and its scheduled tasks are gone.
+No open-source license has been granted yet; all rights are reserved by the author. Use of the app is covered by the terms shown during setup.
