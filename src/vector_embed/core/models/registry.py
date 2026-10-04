@@ -92,6 +92,7 @@ class Report:
     resolutions: dict[str, Resolution]
     rows: list[ModelRow] = field(default_factory=list)
     recommendations: list[Recommendation] = field(default_factory=list)
+    candidates: dict[str, list[str]] = field(default_factory=dict)  # role -> models it may use
 
 
 def _canonical(name: str) -> str:
@@ -232,22 +233,38 @@ class ModelRegistry:
             return CAP_VISION in caps
         return CAP_COMPLETION in caps and CAP_EMBEDDING not in caps
 
+    def suits(self, role: str, model: str) -> bool:
+        """Whether ``model`` can do ``role``'s job; a model that is not installed is not judged."""
+        info = self._lookup().get(_canonical(model))
+        return info is None or self._suits_role(role, info)
+
+    def candidates(self, role: str) -> list[str]:
+        """Installed models that can do ``role``'s job (what an override may choose from)."""
+        return [m.name for m in self._installed if self._suits_role(role, m)]
+
     def resolve(self, role: str, hardware: Hardware | None = None) -> Resolution:
         """Best installed model for ``role`` that fits; ``model`` is ``None`` if nothing does."""
         if role not in ROLES:
             raise ValueError(f"unknown role {role!r}")
         hw = hardware or self._probe()
         installed = self._lookup()
-        budget = self._budget(hw)
 
         pinned = self._pinned_embed if role == ROLE_EMBED else None
         chosen = pinned or self._overrides.get(role)
-        if chosen:
-            info = installed.get(_canonical(chosen))
-            if info is not None:
-                return Resolution(role, info.name, "pinned" if pinned else "override")
+        if not chosen:
+            return self._automatic(role, hw, installed)
+        info = installed.get(_canonical(chosen))
+        if info is None:
             return Resolution(role, None, f"{chosen} is configured but not installed")
+        if pinned or self._suits_role(role, info):
+            return Resolution(role, info.name, "pinned" if pinned else "override")
+        # An embedding model cannot chat (Ollama answers 400): ignore the override, not fail.
+        auto = self._automatic(role, hw, installed)
+        return Resolution(role, auto.model, f"{chosen} cannot serve {role}; {auto.reason}")
 
+    def _automatic(self, role: str, hw: Hardware, installed: Mapping[str, ModelInfo]) -> Resolution:
+        """The catalog's first choice that is installed and fits, else the best capable model."""
+        budget = self._budget(hw)
         for name in self._catalog.preferences(role):
             info = installed.get(_canonical(name))
             if info is not None and self._fits(name, info, hw, budget):
@@ -322,7 +339,8 @@ class ModelRegistry:
             if not flags:
                 flags.append(Flag(FLAG_OK, "ok"))
             rows.append(ModelRow(info, roles, tuple(flags)))
-        return Report(hw, resolutions, rows, self.recommendations(resolutions, hw))
+        candidates = {role: self.candidates(role) for role in ROLES}
+        return Report(hw, resolutions, rows, self.recommendations(resolutions, hw), candidates)
 
     # ------------------------------------------------------------------ embed pinning
     def reindex_notice(self, new_model: str, indexed_files: int) -> ReindexNotice | None:

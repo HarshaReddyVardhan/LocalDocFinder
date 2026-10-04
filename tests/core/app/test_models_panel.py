@@ -144,6 +144,23 @@ class TestActions:
         wait_for(qapp, settings_path.exists)
         assert settings_file(env)["models"] == {"overrides": {"summarizer": "deepseek-r1:8b"}}
 
+    def test_role_choices_offer_only_models_that_can_do_the_job(
+        self, qapp: QApplication, panel: tuple[ModelsPanel, list[str], list[str]]
+    ) -> None:
+        widget, _, _ = panel
+        load(qapp, widget)
+        options = {}
+        for row in range(7):
+            combo = widget.roles.cellWidget(row, 3)
+            assert isinstance(combo, QComboBox)
+            options[widget.roles.item(row, 0).text()] = {
+                combo.itemText(i) for i in range(combo.count())
+            }
+        assert "deepseek-r1:8b" in options["chat"]
+        assert not {"qwen3-embedding:0.6b", "mxbai-embed-large"} & options["chat"]
+        assert "mxbai-embed-large" in options["embed"]
+        assert "deepseek-r1:8b" not in options["embed"]
+
     def test_clearing_an_override_goes_back_to_automatic(
         self, qapp: QApplication, panel: tuple[ModelsPanel, list[str], list[str]], env: Env
     ) -> None:

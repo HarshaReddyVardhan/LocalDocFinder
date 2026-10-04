@@ -64,6 +64,12 @@ def test_role_override_is_written_to_settings(world: World) -> None:
     assert world.settings()["models"] == {"overrides": {}}
 
 
+def test_an_embedding_model_is_refused_as_the_chat_model(world: World) -> None:
+    with pytest.raises(ModelChangeError, match="cannot serve chat"):
+        world.manager.set_override("chat", "qwen3-embedding:0.6b")
+    assert not world.path.exists()  # nothing was written
+
+
 def test_unknown_roles_and_the_embed_role_are_refused(world: World) -> None:
     with pytest.raises(ModelChangeError, match="unknown role"):
         world.manager.set_override("poetry", "x")

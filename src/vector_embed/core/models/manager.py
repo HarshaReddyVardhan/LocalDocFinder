@@ -57,6 +57,8 @@ class ModelManager:
             raise ModelChangeError(f"unknown role {role!r}")
         if role == ROLE_EMBED:
             raise ModelChangeError("change the embedder with change_embedder (it needs a re-index)")
+        if model and not self._registry.suits(role, model):
+            raise ModelChangeError(f"{model} cannot serve {role}")
         set_setting(self._settings_path, ["models", "overrides", role], model)
         self._registry.set_override(role, model)
 

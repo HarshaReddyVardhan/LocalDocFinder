@@ -210,14 +210,13 @@ class ModelsPanel(QWidget):
     def _fill_roles(self, report: Report) -> None:
         self._updating = True
         self.roles.setRowCount(len(ROLES))
-        installed = [r.info.name for r in report.rows]
         for row, role in enumerate(ROLES):
             resolution = report.resolutions[role]
             for col, text in enumerate([role, resolution.model or "(none)", resolution.reason]):
                 self.roles.setItem(row, col, QTableWidgetItem(text))
             combo = QComboBox()
             combo.addItem(AUTOMATIC if role != ROLE_EMBED else (resolution.model or AUTOMATIC))
-            for name in installed:
+            for name in report.candidates.get(role, []):  # an embedder cannot chat, and so on
                 if name != resolution.model or role != ROLE_EMBED:
                     combo.addItem(name)
             if resolution.reason == "override" and resolution.model:

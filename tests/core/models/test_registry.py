@@ -167,6 +167,23 @@ class TestResolve:
         assert gone.model is None
         assert "not installed" in gone.reason
 
+    def test_an_embedding_model_override_never_serves_chat(self) -> None:
+        # Regression: chat overridden to the embedder made every chat fail with Ollama's 400.
+        reg = registry([EMBED, LLAMA], overrides={"chat": "qwen3-embedding:0.6b"})
+        chat = reg.resolve("chat")
+        assert chat.model == "llama3.2"
+        assert "qwen3-embedding:0.6b cannot serve chat" in chat.reason
+        assert registry([EMBED], overrides={"chat": EMBED.name}).resolve("chat").model is None
+
+    def test_candidates_are_the_installed_models_that_suit_the_role(self) -> None:
+        reg = registry([EMBED, LLAMA, VISION])
+        assert reg.candidates("chat") == ["llama3.2", "qwen2.5vl:3b"]
+        assert reg.candidates("embed") == ["qwen3-embedding:0.6b"]
+        assert reg.candidates("caption") == ["qwen2.5vl:3b"]
+        assert reg.suits("chat", "llama3.2")
+        assert not reg.suits("chat", EMBED.name)
+        assert reg.suits("chat", "not-installed")  # unknown: nothing to judge it by
+
     def test_embed_is_pinned(self) -> None:
         other = model("bge-m3", (CAP_EMBEDDING,), 1.2)
         reg = registry([EMBED, other], pinned_embed="bge-m3")
