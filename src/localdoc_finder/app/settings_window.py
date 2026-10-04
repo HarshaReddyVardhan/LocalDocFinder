@@ -25,6 +25,11 @@ WINDOW_SIZE = (720, 560)
 MIN_WINDOW_SIZE = (420, 320)  # smaller than any tab's content: a tab scrolls instead of growing
 
 
+def tab_title(text: str) -> str:
+    """Qt reads ``&`` as a keyboard-shortcut marker (shown as ``_``); ``&&`` is a literal one."""
+    return text.replace("&", "&&")
+
+
 def _scrolling(page: QWidget) -> QScrollArea:
     """A tab inside a scroll area, so its content can never force the window wider or taller."""
     area = QScrollArea()
@@ -73,7 +78,7 @@ class SettingsWindow(QWidget):
             ("Advanced", self.advanced),
             ("About", self.about),
         ):
-            self.tabs.addTab(_scrolling(page), title)
+            self.tabs.addTab(_scrolling(page), tab_title(title))
             self._pages.append(page)
             page.message.connect(self._show_status)
         self.general.hotkey_changed.connect(self.hotkey_changed)

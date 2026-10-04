@@ -207,7 +207,8 @@ def window(
 
 
 def test_window_has_the_expected_tabs(window: SettingsWindow) -> None:
-    titles = [window.tabs.tabText(i) for i in range(window.tabs.count())]
+    # Regression: a bare & was read as a shortcut marker and shown as "Models _Health".
+    titles = [window.tabs.tabText(i).replace("&&", "&") for i in range(window.tabs.count())]
     assert titles == [
         "General",
         "Features",

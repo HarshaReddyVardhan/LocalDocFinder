@@ -1,11 +1,12 @@
 """Models tab (installed models, role choices, one-click pull) and Health tab (dashboard)."""
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, SignalInstance
-from PySide6.QtGui import QHideEvent, QShowEvent, QWheelEvent
+from PySide6.QtGui import QHideEvent, QPalette, QShowEvent, QWheelEvent
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from localdoc_finder.app.models_controller import ModelsController
+from localdoc_finder.app.theme import secondary_text
 from localdoc_finder.core.models.catalog import (
     ROLE_CAPTION,
     ROLE_CHAT,
@@ -38,28 +40,36 @@ from localdoc_finder.core.providers.base import ProviderError
 
 logger = logging.getLogger(__name__)
 
-AUTOMATIC = "(automatic)"
+AUTOMATIC = "Automatic"
 HEALTH_REFRESH_MS = 15_000  # the dashboard is a glance, not a monitor
-MODEL_HEADERS = ["Model", "Size", "Used as", "Status"]
-ROLE_HEADERS = ["Role", "Used for", "Model in use", "Why", "Choose"]
-ROLE_COLUMN, MODEL_COLUMN, CHOICE_COLUMN = 0, 2, 4
-# What each role is called here and which feature asks for it, so the table says what runs where.
+MODEL_HEADERS = ["Model", "Size", "Used for", "Status"]
+ROLE_HEADERS = ["Job", "Model", "Note"]
+ROLE_COLUMN, CHOICE_COLUMN, NOTE_COLUMN = 0, 1, 2
+# Each role as the job it does in the app, plus a tooltip that says where that job shows up.
 ROLE_LABELS: dict[str, tuple[str, str]] = {
-    ROLE_EMBED: ("Embeddings", "Search"),
-    ROLE_CHAT: ("Chat", "Ask, Chat, Match verdict"),
-    ROLE_MATCH_SCORER: ("Match scoring", "Match requirements"),
-    ROLE_CODE_CHAT: ("Code chat", "Ask and Chat about code"),
-    ROLE_CAPTION: ("Image captions", "Not used yet"),
-    ROLE_SUMMARIZER: ("Summaries", "Not used yet"),
-    ROLE_RERANKER: ("Reranker", "Not used yet"),
+    ROLE_EMBED: (
+        "Search",
+        "Reads documents and queries for Search; changing it rebuilds the index",
+    ),
+    ROLE_CHAT: ("Answers", "Writes the answers in Ask and Chat, and the Match verdict"),
+    ROLE_MATCH_SCORER: ("Match scoring", "Scores each requirement in Match"),
+    ROLE_CODE_CHAT: ("Answers about code", "Ask and Chat when the question is about code"),
+    ROLE_CAPTION: ("Image captions", "Not used by any feature yet"),
+    ROLE_SUMMARIZER: ("Summaries", "Not used by any feature yet"),
+    ROLE_RERANKER: ("Reranking", "Not used by any feature yet"),
 }
+# Jobs no feature asks for yet: hidden unless asked for, so the table shows only what runs.
+UNUSED_ROLES = frozenset({ROLE_CAPTION, ROLE_SUMMARIZER, ROLE_RERANKER})
 # The registry's short reasons, said in words a user knows.
 REASON_LABELS = {
-    "pinned": "the index uses it",
+    "pinned": "changing it rebuilds the index",
     "override": "you chose it",
-    "preferred": "automatic",
+    "preferred": "best fit for this PC",
+    "fallback: best installed model with the capability": "best installed model that can do it",
 }
+HINT_STRENGTH = 0.6  # how far the explanation under a heading fades toward the background
 _GB = 1024**3
+_MB_PER_GB = 1024
 _KNOWN_ERRORS = (ProviderError, RuntimeError, OSError, ValueError)
 
 
@@ -100,8 +110,38 @@ def reason_text(reason: str) -> str:
 
 
 def recommendation_text(role: str, model: str, reason: str) -> str:
-    text = f"{role_label(role)}: {model} would be a better fit"
+    text = f"For {role_label(role)}: {model} would be a better fit"
     return text if reason == BETTER_OPTION else f"{text} ({reason})"
+
+
+def used_for_text(roles: Sequence[str]) -> str:
+    """The jobs a model does; a job no feature asks for yet says so."""
+    names = [
+        f"{role_label(role)} (not used yet)" if role in UNUSED_ROLES else role_label(role)
+        for role in roles
+    ]
+    return ", ".join(names) or "—"
+
+
+def automatic_text(role: str, model: str | None, reason: str) -> str:
+    """The first combo entry: automatic, naming the model it picks when automatic is in charge."""
+    if role == ROLE_EMBED:
+        return model or AUTOMATIC  # the index is built with one model: there is no "automatic"
+    if model and reason not in ("override", "pinned"):
+        return f"{AUTOMATIC} ({model})"
+    return AUTOMATIC
+
+
+def hardware_text(report: Report) -> str:
+    hw = report.hardware
+    gpu = (
+        f"{hw.gpu_name}: {hw.vram_free_mb / _MB_PER_GB:.1f} of "
+        f"{hw.vram_total_mb / _MB_PER_GB:.1f} GB video memory free"
+        if hw.has_gpu
+        else "No NVIDIA GPU (models run on the CPU)"
+    )
+    power = "plugged in" if hw.on_ac else "on battery"
+    return f"{gpu} · {hw.ram_free_mb / _MB_PER_GB:.1f} GB RAM free · {power}"
 
 
 class _ChoiceBox(QComboBox):
@@ -111,14 +151,39 @@ class _ChoiceBox(QComboBox):
         event.ignore()
 
 
-def _fit_columns(table: QTableWidget, stretch: int) -> None:
-    """Columns as wide as their text (names are never cut off); ``stretch`` takes the rest."""
+def _plain_table(headers: list[str]) -> QTableWidget:
+    """A read-only table whose columns the user can drag wider; the last one fills the rest."""
+    table = QTableWidget(0, len(headers))
+    table.setHorizontalHeaderLabels(headers)
     header = table.horizontalHeader()
-    header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-    header.setSectionResizeMode(stretch, QHeaderView.ResizeMode.Stretch)
+    header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+    header.setStretchLastSection(True)
     table.verticalHeader().setVisible(False)
     table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+    table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
     table.setWordWrap(False)
+    return table
+
+
+def _fit_to_text(table: QTableWidget) -> None:
+    """Size each column to its text once, after filling; the user may still drag it after."""
+    for column in range(table.columnCount() - 1):  # the last one stretches
+        table.resizeColumnToContents(column)
+
+
+def _heading(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setStyleSheet("font-weight:600; margin-top:6px;")
+    return label
+
+
+def _hint(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setWordWrap(True)
+    palette = label.palette()
+    palette.setColor(QPalette.ColorRole.WindowText, secondary_text(palette, HINT_STRENGTH))
+    label.setPalette(palette)
+    return label
 
 
 def _confirm_with_dialog(message: str) -> bool:
@@ -163,15 +228,14 @@ class ModelsPanel(QWidget):
         top.addWidget(self.hardware, 1)
         top.addWidget(self.refresh_button)
 
-        self.roles = QTableWidget(0, len(ROLE_HEADERS))
-        self.roles.setHorizontalHeaderLabels(ROLE_HEADERS)
-        _fit_columns(self.roles, stretch=3)
-        # All seven roles at once: this table answers "which model does what" at a glance.
+        self.roles = _plain_table(ROLE_HEADERS)
+        # Every job at once: this table answers "which model does what" without scrolling.
         self.roles.setSizeAdjustPolicy(QTableWidget.SizeAdjustPolicy.AdjustToContents)
         self.roles.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        self.models = QTableWidget(0, len(MODEL_HEADERS))
-        self.models.setHorizontalHeaderLabels(MODEL_HEADERS)
-        _fit_columns(self.models, stretch=3)
+        self.show_unused = QCheckBox("Show jobs no feature uses yet")
+        self.show_unused.toggled.connect(self._show_unused_roles)
+        self.models = _plain_table(MODEL_HEADERS)
+        self._fitted: set[QTableWidget] = set()  # sized to text once; then the user's widths stay
         self.recommendations = QVBoxLayout()
         self.progress = QProgressBar()
         self.progress.setVisible(False)
@@ -179,11 +243,18 @@ class ModelsPanel(QWidget):
         models_tab = QWidget()
         layout = QVBoxLayout(models_tab)
         layout.addLayout(top)
-        layout.addWidget(QLabel("Which model does what"))
+        layout.addWidget(_heading("Which model does each job"))
+        layout.addWidget(
+            _hint(
+                "Automatic picks the best installed model that fits this PC. "
+                "Pick a model to override it; hover a job to see where it is used."
+            )
+        )
         layout.addWidget(self.roles)
-        layout.addWidget(QLabel("Installed models"))
+        layout.addWidget(self.show_unused)
+        layout.addWidget(_heading("Installed models"))
         layout.addWidget(self.models, 2)
-        layout.addWidget(QLabel("Recommendations"))
+        layout.addWidget(_heading("Suggested downloads"))
         layout.addLayout(self.recommendations)
         layout.addWidget(self.progress)
 
@@ -244,19 +315,16 @@ class ModelsPanel(QWidget):
         self.health_view.setPlainText(f"could not read the health report: {message}")
 
     def _show_report(self, report: Report) -> None:
-        hw = report.hardware
-        gpu = (
-            f"{hw.gpu_name}: {hw.vram_free_mb}/{hw.vram_total_mb} MB VRAM free"
-            if hw.has_gpu
-            else "no NVIDIA GPU"
-        )
-        self.hardware.setText(
-            f"{gpu} · {hw.ram_free_mb} MB RAM free · {'AC' if hw.on_ac else 'battery'}"
-        )
+        self.hardware.setText(hardware_text(report))
         self._fill_models(report)
         self._fill_roles(report)
         self._fill_recommendations(report)
         self.status_changed.emit(f"{len(report.rows)} models installed")
+
+    def _fit_once(self, table: QTableWidget) -> None:
+        if table not in self._fitted and table.rowCount():
+            _fit_to_text(table)
+            self._fitted.add(table)
 
     def _fill_models(self, report: Report) -> None:
         self.models.setRowCount(len(report.rows))
@@ -265,43 +333,59 @@ class ModelsPanel(QWidget):
             cells = [
                 item.info.name,
                 f"{(item.info.size_bytes or 0) / _GB:.1f} GB",
-                ", ".join(role_label(role) for role in item.roles) or "—",
+                used_for_text(item.roles),
                 status,
             ]
             for col, text in enumerate(cells):
                 cell = QTableWidgetItem(text)
                 cell.setToolTip(text)
                 self.models.setItem(row, col, cell)
+        self._fit_once(self.models)
 
     def _fill_roles(self, report: Report) -> None:
         self._updating = True
         self.roles.setRowCount(len(ROLES))
         for row, role in enumerate(ROLES):
             resolution = report.resolutions[role]
-            title, used_for = ROLE_LABELS.get(role, (role, ""))
-            cells = [
-                title,
-                used_for,
-                resolution.model or "(none)",
-                reason_text(resolution.reason),
-            ]
-            for col, text in enumerate(cells):
-                item = QTableWidgetItem(text)
-                item.setToolTip(text)
-                if col == ROLE_COLUMN:
-                    item.setData(Qt.ItemDataRole.UserRole, role)  # the id, for code and tests
-                self.roles.setItem(row, col, item)
-            combo = _ChoiceBox()
-            combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-            combo.addItem(AUTOMATIC if role != ROLE_EMBED else (resolution.model or AUTOMATIC))
-            for name in report.candidates.get(role, []):  # an embedder cannot chat, and so on
-                if name != resolution.model or role != ROLE_EMBED:
-                    combo.addItem(name)
-            if resolution.reason == "override" and resolution.model:
-                combo.setCurrentText(resolution.model)
-            combo.currentTextChanged.connect(lambda text, r=role: self._on_role_choice(r, text))
-            self.roles.setCellWidget(row, CHOICE_COLUMN, combo)
+            title, where = ROLE_LABELS.get(role, (role, ""))
+            job = QTableWidgetItem(title)
+            job.setToolTip(where)
+            job.setData(Qt.ItemDataRole.UserRole, role)  # the id, for code and tests
+            self.roles.setItem(row, ROLE_COLUMN, job)
+            note = reason_text(resolution.reason)
+            if role in UNUSED_ROLES:
+                note = "not used by any feature yet"
+            note_item = QTableWidgetItem(note)
+            note_item.setToolTip(note)
+            self.roles.setItem(row, NOTE_COLUMN, note_item)
+            self.roles.setCellWidget(row, CHOICE_COLUMN, self._choice_box(role, report))
+        self._show_unused_roles(self.show_unused.isChecked())
+        self._fit_once(self.roles)
         self._updating = False
+
+    def _choice_box(self, role: str, report: Report) -> QComboBox:
+        resolution = report.resolutions[role]
+        combo = _ChoiceBox()
+        combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        combo.addItem(automatic_text(role, resolution.model, resolution.reason))
+        for name in report.candidates.get(role, []):  # an embedder cannot chat, and so on
+            if name != resolution.model or role != ROLE_EMBED:
+                combo.addItem(name)
+        if resolution.reason == "override" and resolution.model:
+            combo.setCurrentText(resolution.model)
+        combo.currentIndexChanged.connect(
+            lambda index, r=role, box=combo: self._on_role_choice(
+                r, AUTOMATIC if index == 0 and r != ROLE_EMBED else box.itemText(index)
+            )
+        )
+        return combo
+
+    def _show_unused_roles(self, show: bool) -> None:
+        for row in range(self.roles.rowCount()):
+            item = self.roles.item(row, ROLE_COLUMN)
+            role = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+            self.roles.setRowHidden(row, role in UNUSED_ROLES and not show)
+        self.roles.updateGeometry()  # the fixed-height table grows and shrinks with its rows
 
     def _fill_recommendations(self, report: Report) -> None:
         while self.recommendations.count():

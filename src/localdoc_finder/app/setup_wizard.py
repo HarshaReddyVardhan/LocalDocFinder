@@ -430,7 +430,7 @@ class SettingsPage(QWizardPage):
         self.updates = UpdatesTab(controller)
         self.tabs = QTabWidget()
         self.tabs.addTab(self.general, "General")
-        self.tabs.addTab(self.cloud, "Cloud & Privacy")
+        self.tabs.addTab(self.cloud, "Cloud && Privacy")  # && shows one &, not a shortcut
         self.tabs.addTab(self.updates, "Updates")
         self.status = _label()
         for tab in (self.general, self.cloud, self.updates):

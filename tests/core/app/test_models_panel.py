@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
-from PySide6.QtWidgets import QApplication, QComboBox, QPushButton
+from PySide6.QtWidgets import QApplication, QComboBox, QHeaderView, QPushButton
 from tests.core.app.test_app import FakeService
 from tests.core.app.test_modes import FakeAssistant
 from tests.core.conftest import Chat, Env
@@ -17,11 +17,13 @@ from localdoc_finder.app.models_controller import ModelsController
 from localdoc_finder.app.models_panel import (
     AUTOMATIC,
     CHOICE_COLUMN,
-    MODEL_COLUMN,
+    NOTE_COLUMN,
     ROLE_COLUMN,
     ModelsPanel,
+    automatic_text,
     reason_text,
     recommendation_text,
+    used_for_text,
 )
 from localdoc_finder.app.window import Mode, SearchWindow
 from localdoc_finder.core.models.hardware import Hardware, Load
@@ -118,11 +120,37 @@ class TestRendering:
         assert "RTX 2070" in widget.hardware.text()
         assert widget.roles.rowCount() == 7
         chat_row = role_row(widget, "chat")
-        assert widget.roles.item(chat_row, ROLE_COLUMN).text() == "Chat"
-        assert widget.roles.item(chat_row, MODEL_COLUMN).text() == "qwen3.5:9b"
-        assert "Ask" in widget.roles.item(chat_row, 1).text()  # says which features use it
-        assert widget.roles.item(chat_row, 3).text() == "automatic"
+        assert widget.roles.item(chat_row, ROLE_COLUMN).text() == "Answers"
+        assert "Ask" in widget.roles.item(chat_row, ROLE_COLUMN).toolTip()  # where it is used
+        # The model shows once, in the choice itself, instead of in a column of its own.
+        assert choice(widget, "chat").currentText() == "Automatic (qwen3.5:9b)"
+        assert widget.roles.item(chat_row, NOTE_COLUMN).text() == "best fit for this PC"
         assert any("models installed" in m for m in messages)
+
+    def test_jobs_no_feature_uses_are_hidden_until_asked_for(
+        self, qapp: QApplication, panel: tuple[ModelsPanel, list[str], list[str]]
+    ) -> None:
+        widget, _, _ = panel
+        load(qapp, widget)
+        reranker, chat = role_row(widget, "reranker"), role_row(widget, "chat")
+        assert widget.roles.isRowHidden(reranker)
+        assert not widget.roles.isRowHidden(chat)
+        widget.show_unused.setChecked(True)
+        assert not widget.roles.isRowHidden(reranker)
+        assert "not used" in widget.roles.item(reranker, NOTE_COLUMN).text()
+
+    def test_columns_can_be_resized_and_keep_their_width(
+        self, qapp: QApplication, panel: tuple[ModelsPanel, list[str], list[str]]
+    ) -> None:
+        # Regression: every column was sized to its text, so none could be dragged wider.
+        widget, _, _ = panel
+        load(qapp, widget)
+        for table in (widget.roles, widget.models):
+            header = table.horizontalHeader()
+            assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Interactive
+        widget.models.horizontalHeader().resizeSection(0, 333)
+        widget._show_report(widget._controller.report())  # a refresh keeps the dragged width
+        assert widget.models.horizontalHeader().sectionSize(0) == 333
 
     def test_health_tab_shows_the_dashboard_text(
         self, qapp: QApplication, panel: tuple[ModelsPanel, list[str], list[str]]
@@ -372,14 +400,26 @@ def test_the_mouse_wheel_never_changes_a_role_choice(
 def test_reasons_are_said_in_words() -> None:
     assert reason_text("override") == "you chose it"
     assert reason_text("qwen3-embedding:0.6b cannot serve chat; preferred") == (
-        "qwen3-embedding:0.6b cannot serve chat; automatic"
+        "qwen3-embedding:0.6b cannot serve chat; best fit for this PC"
     )
     assert reason_text("no installed model fits") == "no installed model fits"
 
 
+def test_automatic_names_the_model_it_picks() -> None:
+    assert automatic_text("chat", "qwen3.5:9b", "preferred") == "Automatic (qwen3.5:9b)"
+    assert automatic_text("chat", "deepseek-r1:8b", "override") == AUTOMATIC
+    assert automatic_text("chat", None, "no installed model fits") == AUTOMATIC
+    assert automatic_text("embed", "bge-m3", "pinned") == "bge-m3"  # the index has one model
+
+
+def test_used_for_marks_jobs_no_feature_uses() -> None:
+    assert used_for_text(["chat", "reranker"]) == "Answers, Reranking (not used yet)"
+    assert used_for_text([]) == "—"
+
+
 def test_recommendations_name_the_role_in_words() -> None:
     assert recommendation_text("chat", "llama3.2", BETTER_OPTION) == (
-        "Chat: llama3.2 would be a better fit"
+        "For Answers: llama3.2 would be a better fit"
     )
     assert recommendation_text("embed", "bge-m3", "pull it; re-index required").endswith(
         "(pull it; re-index required)"
