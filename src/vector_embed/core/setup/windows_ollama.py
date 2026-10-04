@@ -18,7 +18,7 @@ _CHUNK_BYTES = 256 * 1024
 _PING_TIMEOUT_SECONDS = 2.0
 _TIMEOUT_SECONDS = 60.0  # per read, so a big download is fine as long as bytes keep arriving
 _SIGNATURE_TIMEOUT_SECONDS = 60
-_DETACHED_PROCESS = 0x00000008
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
 _CREATE_NO_WINDOW = 0x08000000
 _SIGNATURE_PATH_ENV = "VE_SIGNATURE_PATH"
 _INSTALLER_TIMEOUT_SECONDS = 15 * 60
@@ -126,12 +126,16 @@ class WindowsOllamaSystem:
             return _INSTALLER_TIMED_OUT
 
     def spawn_server(self, executable: Path) -> None:
-        subprocess.Popen(  # noqa: S603  # detached on purpose: Ollama outlives this process
+        # Not DETACHED_PROCESS: it overrides CREATE_NO_WINDOW and leaves the server with no console,
+        # so every model runner it starts (llama-server.exe) would flash its own console window.
+        # With a hidden console the runners inherit it. A new process group keeps Ollama running
+        # after this process exits.
+        subprocess.Popen(  # noqa: S603  # outlives this process on purpose
             [str(executable), "serve"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=_DETACHED_PROCESS | _CREATE_NO_WINDOW,
+            creationflags=_CREATE_NO_WINDOW | _CREATE_NEW_PROCESS_GROUP,
         )
 
     def models_dir(self) -> Path:

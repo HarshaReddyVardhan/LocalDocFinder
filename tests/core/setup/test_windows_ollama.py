@@ -104,7 +104,10 @@ def test_run_installer_returns_exit_code(monkeypatch: pytest.MonkeyPatch) -> Non
     assert captured == [["setup.exe", "/VERYSILENT"]]
 
 
-def test_spawn_server_launches_detached(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_spawn_server_keeps_a_hidden_console_for_its_runners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DETACHED_PROCESS would drop the console, and each model runner would flash a window."""
     calls: list[tuple[list[str], dict[str, object]]] = []
     monkeypatch.setattr(
         windows_ollama.subprocess, "Popen", lambda argv, **kw: calls.append((argv, kw))
@@ -112,7 +115,10 @@ def test_spawn_server_launches_detached(monkeypatch: pytest.MonkeyPatch) -> None
     system_with().spawn_server(Path("ollama.exe"))
     argv, kwargs = calls[0]
     assert argv == ["ollama.exe", "serve"]
-    assert kwargs["creationflags"] == 0x00000008 | 0x08000000
+    flags = kwargs["creationflags"]
+    assert isinstance(flags, int)
+    assert flags & 0x08000000  # CREATE_NO_WINDOW
+    assert not flags & 0x00000008  # DETACHED_PROCESS
 
 
 def test_signature_non_object_json_is_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
