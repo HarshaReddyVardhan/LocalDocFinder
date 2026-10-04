@@ -101,6 +101,14 @@ def test_confirmed_embedder_change_rewrites_settings_and_schedules_a_rescan(
     )  # the one thing that allows a wipe
 
 
+def test_an_embedder_change_frees_the_old_embedder(world: World) -> None:
+    # Regression: the old embedder stayed resident beside the new one until keep_alive ran out.
+    world.client.loaded = ["qwen3-embedding:0.6b"]
+    world.manager.change_embedder("bge-m3", confirmed=True)
+    unloads = [c[1] for c in world.client.calls if c[0] == "embed" and c[1]["keep_alive"] == 0]
+    assert [u["model"] for u in unloads] == ["qwen3-embedding:0.6b"]
+
+
 def test_an_unconfirmed_change_leaves_no_approval(world: World) -> None:
     with pytest.raises(ModelChangeError):
         world.manager.change_embedder("bge-m3")

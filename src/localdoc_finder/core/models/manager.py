@@ -73,6 +73,8 @@ class ModelManager:
             return None
         if not confirmed:
             raise ModelChangeError(notice.message + " Confirm to continue.")
+        # The provider still holds the old model; left loaded it sits beside the new one in VRAM.
+        self._provider.unload_embedder()
         set_setting(self._settings_path, ["embedding", "model"], new_model)
         self._registry.set_pinned_embed(new_model)
         self._state.set_meta(EMBEDDER_APPROVED_KEY, new_model)  # the only way the index is wiped
