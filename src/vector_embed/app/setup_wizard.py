@@ -4,7 +4,7 @@ The wizard only collects choices and shows progress; ``SetupFlow`` (via ``SetupC
 does the work, so ``ve setup`` and the wizard behave the same.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -25,6 +25,7 @@ from vector_embed.app.settings_controller import SettingsController
 from vector_embed.app.settings_tabs import CloudTab, GeneralTab, UpdatesTab
 from vector_embed.app.setup_controller import SetupController
 from vector_embed.app.theme import scheme_in_use, style_check_boxes
+from vector_embed.core.features import FEATURE_TITLES, FEATURES, enabled_features
 from vector_embed.core.models.benchmark import Verdict, judge
 from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_EMBED, Catalog
 from vector_embed.core.models.fit import budget_mb, fits
@@ -194,6 +195,7 @@ class ModelsPage(QWizardPage):
         controller: SetupController,
         catalog: Catalog,
         hardware: Hardware,
+        initial_features: Collection[str] = (),
     ) -> None:
         super().__init__()
         self.setTitle("Models")
@@ -204,6 +206,15 @@ class ModelsPage(QWizardPage):
         self._filled = False
         self.embed = QComboBox()
         self.chat = QComboBox()
+        self.features = {name: QCheckBox(title) for name, title in FEATURE_TITLES.items()}
+        for name, box in self.features.items():
+            box.setChecked(name in initial_features)
+        self.features_note = _label(
+            "Search is always included. Ask, Chat and Match answer with a chat model, which is "
+            "a larger download, so it is only fetched if you pick one of them. You can turn "
+            "them on later in Settings."
+        )
+        self.chat_label = QLabel("Chat model (answers questions)")
         self.extras = {
             role: QCheckBox(f"Also download a {role.replace('_', ' ')} model")
             for role in EXTRA_ROLES
@@ -214,7 +225,10 @@ class ModelsPage(QWizardPage):
         layout.addWidget(self.installed_note)
         layout.addWidget(QLabel("Embedding model (finds your files)"))
         layout.addWidget(self.embed)
-        layout.addWidget(QLabel("Chat model (answers questions)"))
+        layout.addWidget(self.features_note)
+        for box in self.features.values():
+            layout.addWidget(box)
+        layout.addWidget(self.chat_label)
         layout.addWidget(self.chat)
         for box in self.extras.values():
             layout.addWidget(box)
@@ -223,8 +237,9 @@ class ModelsPage(QWizardPage):
         self.setCommitPage(True)  # downloading starts after this page, so there is no way back
         for combo in (self.embed, self.chat):
             combo.currentIndexChanged.connect(self._update_disk)
-        for box in self.extras.values():
+        for box in (*self.extras.values(), *self.features.values()):
             box.toggled.connect(self._update_disk)
+        self._show_chat_picker()
         self._controller.probed.connect(self._on_probed)
 
     def _installed(self) -> set[str]:
@@ -292,24 +307,38 @@ class ModelsPage(QWizardPage):
             return
         self._filling = True
         self._describe_installed()
-        plan = preview.plan
-        embed, chat = plan.model_for(ROLE_EMBED), plan.model_for(ROLE_CHAT)
+        embed = preview.plan.model_for(ROLE_EMBED)
+        # The chat model is auto-picked even while no feature is ticked, so ticking one is ready.
+        with_chat = self._controller.preview(SetupChoices(features=FEATURES))
+        chat = with_chat.plan.model_for(ROLE_CHAT) if with_chat else None
         self._fill(self.embed, ROLE_EMBED, embed.model if embed else None)
         self._fill(self.chat, ROLE_CHAT, chat.model if chat else None)
         self._filling = False
         self._filled = True
         self._update_disk()
 
+    def _chosen_features(self) -> tuple[str, ...]:
+        return tuple(name for name, box in self.features.items() if box.isChecked())
+
+    def _show_chat_picker(self) -> None:
+        """The chat model is only relevant (and only downloaded) when a feature uses it."""
+        wanted = bool(self._chosen_features())
+        self.chat_label.setVisible(wanted)
+        self.chat.setVisible(wanted)
+
     def choices(self) -> SetupChoices:
+        features = self._chosen_features()
         return SetupChoices(
             embed=self.embed.currentData(),
-            chat=self.chat.currentData(),
+            chat=self.chat.currentData() if features else None,
             extras=tuple(role for role, box in self.extras.items() if box.isChecked()),
+            features=features,
         )
 
     def _update_disk(self) -> None:
         if self._filling:
             return
+        self._show_chat_picker()
         preview = self._controller.preview(self.choices())
         self._preview = preview
         if preview is None:
@@ -452,7 +481,9 @@ class SetupWizard(QWizard):
         self.terms = TermsPage(record_terms)
         self.scope = ScopePage(settings_controller)
         self.ollama = OllamaPage(controller)
-        self.models = ModelsPage(controller, catalog, hardware)
+        self.models = ModelsPage(
+            controller, catalog, hardware, enabled_features(settings_controller.settings())
+        )
         self.download = DownloadPage()
         self.speed = SpeedTestPage()
         self.settings_page = SettingsPage(settings_controller)

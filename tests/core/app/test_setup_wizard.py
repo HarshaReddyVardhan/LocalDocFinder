@@ -1,5 +1,5 @@
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 
 import pytest
@@ -14,10 +14,12 @@ from vector_embed.app import main as app_main
 from vector_embed.app.settings_controller import SettingsController
 from vector_embed.app.setup_controller import SetupController
 from vector_embed.app.setup_wizard import ModelsPage, SetupWizard, TermsPage
+from vector_embed.core.features import FEATURES
 from vector_embed.core.models.benchmark import BenchKind
 from vector_embed.core.models.catalog import load_catalog
 from vector_embed.core.models.hardware import Hardware
 from vector_embed.core.settings import Settings
+from vector_embed.core.settings_io import set_settings
 from vector_embed.core.setup.flow import (
     SETUP_COMPLETED_KEY,
     SetupEvent,
@@ -33,6 +35,7 @@ from vector_embed.core.terms import accept_terms, terms_accepted
 
 GPU4 = Hardware("GTX 1650", 4096, 3500, 16000, 8000, 8, True)
 NO_GPU = Hardware(None, 0, 0, 16000, 8000, 8, True)
+EVERYTHING = SetupOptions(choices=SetupChoices(features=FEATURES))  # search plus Ask/Chat/Match
 
 
 @pytest.fixture
@@ -57,8 +60,13 @@ def controller_for(harness: Harness, hardware: Hardware = GPU8) -> SetupControll
 
 
 def wizard_for(
-    harness: Harness, hardware: Hardware = GPU8, ask: Callable[[SlowOffer], bool] | None = None
+    harness: Harness,
+    hardware: Hardware = GPU8,
+    ask: Callable[[SlowOffer], bool] | None = None,
+    features: Collection[str] = FEATURES,
 ) -> SetupWizard:
+    """A wizard whose feature boxes start as ``features`` (as if switched on before a re-run)."""
+    set_settings(harness.settings_path, [(["features", n], n in features) for n in FEATURES])
     settings_controller = SettingsController(harness.settings_path, harness.state, FakeKeys())
     return SetupWizard(
         controller_for(harness, hardware),
@@ -77,7 +85,7 @@ def test_controller_runs_the_flow_and_reports(qapp: QApplication, harness: Harne
     results: list[SetupResult] = []
     controller.progressed.connect(events.append)
     controller.finished.connect(results.append)
-    controller.start(SetupOptions())
+    controller.start(EVERYTHING)
     wait_for(qapp, lambda: bool(results))
     assert results[0].chat_model == "qwen3.5:9b"
     assert Stage.PULL in {e.stage for e in events}
@@ -105,12 +113,12 @@ def test_controller_reports_failures_and_can_retry(qapp: QApplication, harness: 
     results: list[SetupResult] = []
     controller.failed.connect(failures.append)
     controller.finished.connect(results.append)
-    controller.start(SetupOptions())
+    controller.start(EVERYTHING)
     wait_for(qapp, lambda: bool(failures))
     assert "network down" in failures[0]
     harness.host.fail_on = None
     wait_for(qapp, lambda: not controller.running)
-    controller.start(SetupOptions())
+    controller.start(EVERYTHING)
     wait_for(qapp, lambda: bool(results))
     assert results[0].chat_model == "qwen3.5:9b"
 
@@ -143,7 +151,7 @@ def test_downgrade_question_round_trips_through_the_gui_thread(
     controller.downgrade_offered.connect(answer)
     results: list[SetupResult] = []
     controller.finished.connect(results.append)
-    controller.start(SetupOptions())
+    controller.start(EVERYTHING)
     wait_for(qapp, lambda: bool(results))
     assert [o.alternative for o in offers] == ["qwen3:8b"]
     assert results[0].chat_model == "qwen3:8b"
@@ -207,9 +215,37 @@ def test_models_page_is_prefilled_with_the_auto_picks(qapp: QApplication, harnes
     assert page.embed.currentData() == "qwen3-embedding:0.6b"
     assert page.chat.currentData() == "qwen3.5:9b"
     assert page.chat.currentText() == "qwen3.5:9b - needs download, 6100 MB"
-    assert page.choices() == SetupChoices("qwen3-embedding:0.6b", "qwen3.5:9b", ())
+    assert page.choices() == SetupChoices("qwen3-embedding:0.6b", "qwen3.5:9b", (), FEATURES)
     assert "To download: 6740 MB" in page.disk.text()
     assert page.isComplete()
+
+
+def test_models_page_defaults_to_search_only(qapp: QApplication, harness: Harness) -> None:
+    wizard = wizard_for(harness, features=())
+    page = wizard.models
+    load_models_page(qapp, page)
+    assert not any(box.isChecked() for box in page.features.values())
+    assert page.chat.isHidden()
+    assert page.choices() == SetupChoices("qwen3-embedding:0.6b", None, (), ())
+    assert "To download: 640 MB" in page.disk.text()
+    page.features["ask"].setChecked(True)  # the chat model is offered once a feature needs it
+    assert not page.chat.isHidden()
+    assert page.choices().chat == "qwen3.5:9b"
+    assert "To download: 6740 MB" in page.disk.text()
+
+
+def test_search_only_wizard_downloads_just_the_embedder(
+    qapp: QApplication, harness: Harness
+) -> None:
+    wizard = wizard_for(harness, features=())
+    wizard.restart()
+    wizard.next()
+    wizard.terms.accept_box.setChecked(True)
+    for _page in range(4):  # to What to index, Ollama, Models, then commit
+        wizard.next()
+    wait_for(qapp, wizard.speed.isComplete)
+    assert harness.host.pulled == ["qwen3-embedding:0.6b"]
+    assert harness.saved()["features"] == {"ask": False, "chat": False, "match": False}
 
 
 def test_models_page_lists_every_catalog_model_and_flags_misfits(
@@ -526,7 +562,7 @@ def test_cancelling_answers_a_pending_downgrade_question_with_no(
         controller.cancel()  # the user closes the wizard instead of answering
 
     controller.downgrade_offered.connect(question)
-    controller.start(SetupOptions())
+    controller.start(EVERYTHING)
     wait_for(qapp, lambda: bool(cancelled) or bool(results))
     assert asked
     assert "qwen3:8b" not in harness.host.pulled  # the smaller model was not downloaded
