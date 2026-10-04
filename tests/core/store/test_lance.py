@@ -361,6 +361,20 @@ class TestSearchColumnsMigration:
             "D:\\billing\\retryPayments.py"
         ]
 
+    def test_the_content_floor_filters_new_indexes_and_is_ignored_on_old_ones(
+        self, tmp_path: Path, state: StateDb
+    ) -> None:
+        query = np.asarray([0, 1, 0, 0], np.float32)
+        build_v1_index(tmp_path, state, self.ROWS)
+        reader = LanceStore(tmp_path, state, "m1", dim=None)
+        assert len(reader.vector_search(lc.CHUNKS, query, ["path"], min_content_chars=5)) == 2
+        LanceStore(tmp_path, state, "m1", dim=DIM)  # the worker upgrades it
+        upgraded = LanceStore(tmp_path, state, "m1", dim=None)
+        kept = upgraded.vector_search(
+            lc.CHUNKS, query, ["path"], "kind = 'code'", 10, min_content_chars=5
+        )
+        assert [r["path"] for r in kept] == ["D:\\billing\\retryPayments.py"]  # the scan is gone
+
     def test_v1_index_gains_backfilled_columns_and_stemmed_search(
         self, tmp_path: Path, state: StateDb
     ) -> None:

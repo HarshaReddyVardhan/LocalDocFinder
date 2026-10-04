@@ -13,18 +13,27 @@ Writer = Callable[[str, str | bytes], Path]
 
 
 class FakeOcr:
-    """Returns canned text and counts calls."""
+    """Returns canned text and counts calls.
+
+    ``pages`` gives each successive call its own text (then falls back to ``text``), for scans
+    whose pages must differ: a line on every page is a header and is stripped.
+    """
 
     def __init__(self, text: str = "diagram of the OAuth login flow") -> None:
         self.text = text
+        self.pages: list[str] = []
         self.calls = 0
 
     def available(self) -> bool:
         return True
 
     def ocr_image(self, image: Image.Image) -> str:
+        return " ".join(self.ocr_lines(image))
+
+    def ocr_lines(self, image: Image.Image) -> list[str]:
         self.calls += 1
-        return self.text
+        text = self.pages[self.calls - 1] if self.calls <= len(self.pages) else self.text
+        return text.splitlines()
 
 
 def png_bytes(size: tuple[int, int] = (300, 300), color: str = "white") -> bytes:

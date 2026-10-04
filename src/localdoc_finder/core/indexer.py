@@ -153,7 +153,7 @@ class Indexer:
                     "chunk_hash": digest,
                     "model_id": self.store.model_id,
                     "mtime": prepared.mtime,
-                    "content_chars": content_chars(chunk.text),
+                    "content_chars": 0 if chunk.low_content else content_chars(chunk.text),
                     "name": file_name(path),
                     "search_text": search_text(path, chunk.text),
                 }

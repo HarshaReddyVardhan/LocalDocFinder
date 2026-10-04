@@ -6,6 +6,7 @@ import pymupdf
 import pytest
 from tests.core.extractors.conftest import FakeOcr, Writer, png_bytes
 
+from localdoc_finder.core.extractors import pdf as pdf_mod
 from localdoc_finder.core.extractors.base import ExtractError, ExtractorSet
 from localdoc_finder.core.settings import ChunkingSettings, ImageSettings
 
@@ -86,6 +87,7 @@ class TestPdf:
         self, build_with_ocr: Build, tmp_path: Path, ocr: FakeOcr
     ) -> None:
         colours = ["red", "green", "blue", "gray", "black"]
+        ocr.pages = [f"clause {n} of the {c} contract" for n, c in enumerate(colours, 1)]
         pdf = make_pdf(
             tmp_path / "long-scan.pdf",
             [""] * 5,
@@ -161,6 +163,92 @@ class TestPdf:
         pdf = make_pdf(tmp_path / "logo.pdf", ["text " * 10], images={1: png_bytes((40, 40))})
         build_with_ocr().extract(pdf)
         assert ocr.calls == 0
+
+    def scans(self, tmp_path: Path, count: int, name: str = "scan.pdf") -> Path:
+        colours = ["red", "green", "blue", "gray", "black"]
+        return make_pdf(
+            tmp_path / name,
+            [""] * count,
+            images={n: png_bytes((600, 800), colours[n - 1]) for n in range(1, count + 1)},
+        )
+
+    def test_a_watermark_on_every_page_is_stripped(
+        self, build_with_ocr: Build, tmp_path: Path, ocr: FakeOcr
+    ) -> None:
+        ocr.pages = [
+            "RESIDENTIAL LEASE AGREEMENT between the landlord and the tenant\n"
+            "Scanned with CamScanner\nPage 1 of 2",
+            "The tenant pays a monthly rent of 1450 dollars on the first day\n"
+            "Scanned with CamScanner\nPage 2 of 2",
+        ]
+        chunks = build_with_ocr().extract(self.scans(tmp_path, 2))
+        assert [c.page for c in chunks] == [1, 2]
+        assert all("CamScanner" not in c.text and "Page" not in c.text for c in chunks)
+        assert not any(c.low_content for c in chunks)
+
+    def test_a_junk_scan_keeps_only_a_low_content_name_chunk(
+        self, build_with_ocr: Build, tmp_path: Path, ocr: FakeOcr
+    ) -> None:
+        ocr.text = "Scanned with CamScanner"  # every page: nothing but the watermark
+        chunks = build_with_ocr().extract(self.scans(tmp_path, 3, "scan_0042.pdf"))
+        assert len(chunks) == 1
+        assert chunks[0].low_content
+        assert chunks[0].text == "PDF file: scan_0042.pdf (3 pages)"
+
+    @pytest.mark.parametrize(
+        ("text", "low"),
+        [
+            ("' . , i l | ~ - ii ;: .. ' ' Il 1 l. , lll iiii | ~~", True),  # dust read as text
+            ("Scanned with CamScanner", True),  # too little to say anything
+            ("This lease is made between the landlord and the tenant for twelve months", False),
+        ],
+    )
+    def test_a_scanned_page_with_little_real_text_is_low_content(
+        self, build_with_ocr: Build, tmp_path: Path, ocr: FakeOcr, text: str, low: bool
+    ) -> None:
+        ocr.text = text
+        chunks = build_with_ocr().extract(self.scans(tmp_path, 1))
+        assert [c.low_content for c in chunks] == [low]
+
+    def test_scanned_pages_past_the_ocr_allowance_are_low_content(
+        self, build_with_ocr: Build, tmp_path: Path, ocr: FakeOcr
+    ) -> None:
+        ocr.text = "This lease is made between the landlord and the tenant for twelve months"
+        # Each page carries a scrap of real text (a stamp), too short to skip OCR.
+        colours = ["red", "green", "blue"]
+        pdf = make_pdf(
+            tmp_path / "stamped.pdf",
+            ["Ref A1", "Note B2", "Memo C3"],
+            images={n: png_bytes((600, 800), c) for n, c in enumerate(colours, 1)},
+        )
+        chunks = build_with_ocr(ImageSettings(max_scanned_pages=1)).extract(pdf)
+        assert [(c.page, c.low_content) for c in chunks] == [(1, False), (2, True), (3, True)]
+        assert "Note B2" in chunks[1].text  # still there for keyword search
+
+    def test_title_and_subject_go_into_the_first_page(
+        self, extractors: ExtractorSet, tmp_path: Path
+    ) -> None:
+        pdf = make_pdf(tmp_path / "t.pdf", ["first page text " * 5, "second page text " * 5])
+        doc = pymupdf.open(pdf)
+        doc.set_metadata({"title": "Quarterly Budget", "subject": "Finance review"})
+        doc.saveIncr()
+        doc.close()
+        chunks = extractors.extract(pdf)
+        assert chunks[0].text.startswith("Title: Quarterly Budget\nSubject: Finance review\n")
+        assert "Title:" not in chunks[1].text
+
+    def test_a_scanner_title_does_not_make_a_blank_scan_count(
+        self, build_with_ocr: Build, tmp_path: Path, ocr: FakeOcr
+    ) -> None:
+        ocr.text = "' . , i l | ~"
+        pdf = self.scans(tmp_path, 1)
+        doc = pymupdf.open(pdf)
+        doc.set_metadata({"title": "CamScanner 01-02-2026 10.30 document scan of the office"})
+        doc.saveIncr()
+        doc.close()
+        chunks = build_with_ocr().extract(pdf)
+        assert [c.low_content for c in chunks] == [True]
+        assert "CamScanner 01-02-2026" in chunks[0].text  # still findable by its title
 
     def test_encrypted_pdf_is_rejected(self, extractors: ExtractorSet, tmp_path: Path) -> None:
         doc = pymupdf.open()
@@ -296,3 +384,24 @@ class TestPptx:
     def test_corrupt_pptx_is_rejected(self, extractors: ExtractorSet, write: Writer) -> None:
         with pytest.raises(ExtractError, match="cannot open pptx"):
             extractors.extract(write("bad.pptx", b"not a zip"))
+
+
+class TestRepeatedLines:
+    def test_lines_on_most_pages_are_furniture(self) -> None:
+        pages = [
+            ["Acme Corp", "Intro text", "Page 1 of 3"],
+            ["Acme Corp", "Middle text", "Page 2 of 3"],
+            ["Body only", "Page 3 of 3"],
+        ]
+        assert pdf_mod.repeated_lines(pages) == {"acme corp", "page # of #"}
+
+    def test_two_pages_must_share_a_line(self) -> None:
+        assert pdf_mod.repeated_lines([["only once"], ["something else"]]) == set()
+        assert pdf_mod.repeated_lines([["Same  Header"], ["same header"]]) == {"same header"}
+
+    def test_a_single_page_has_no_furniture(self) -> None:
+        assert pdf_mod.repeated_lines([["Title", "Title"]]) == set()
+
+    def test_a_line_twice_on_one_page_counts_once(self) -> None:
+        pages = [["x", "x"], ["y"], ["z"], ["w"]]
+        assert pdf_mod.repeated_lines(pages) == set()

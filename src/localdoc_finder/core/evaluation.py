@@ -362,7 +362,10 @@ class Evaluator:
 
     def _vector_leg(self, store: LanceStore, embedder: EvalEmbedder, text: str) -> _VectorRun:
         vector = embedder.embed([text], kind="query")[0]
-        rows = store.vector_search(CHUNKS, vector, ["path"], "", self._settings.search.candidates)
+        cfg = self._settings.search
+        rows = store.vector_search(
+            CHUNKS, vector, ["path"], "", cfg.candidates, min_content_chars=cfg.min_content_chars
+        )
         best: dict[str, float] = {}
         for row in rows:  # nearest first, so the first row of a file is its best chunk
             best.setdefault(row["path"], 1.0 - float(row["_distance"]))

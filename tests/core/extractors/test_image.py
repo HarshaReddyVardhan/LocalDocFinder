@@ -85,6 +85,54 @@ def blank_caption(_image: Image.Image) -> str:
     return ""
 
 
+def test_a_photo_without_text_is_low_content_but_keeps_its_name_chunk(
+    extractors: ExtractorSet, write: Writer
+) -> None:
+    chunks = extractors.extract(write("passport.png", png_bytes()))
+    assert [(c.text, c.low_content) for c in chunks] == [
+        ("Image file: passport.png (300x300)", True)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("ocr_text", "low"),
+    [
+        ("lll iiii | ~~ -- I1l rn", True),  # texture read as letters
+        ("EXIT", True),  # real, but too little to say what the picture is about
+        ("SPRINT PLANNING migrate billing database to postgres by Friday", False),
+    ],
+)
+def test_an_image_is_judged_by_its_ocr_text(
+    build_with_ocr: Build, write: Writer, ocr: FakeOcr, ocr_text: str, low: bool
+) -> None:
+    ocr.text = ocr_text
+    chunks = build_with_ocr().extract(write("board.png", png_bytes()))
+    assert [c.low_content for c in chunks] == [low]
+
+
+def test_a_caption_makes_an_image_count(build_with_ocr: Build, write: Writer, ocr: FakeOcr) -> None:
+    ocr.text = ""
+
+    def captioner(_image: Image.Image) -> str:
+        return "a dog on a beach"
+
+    settings = ImageSettings(enable_captions=True)
+    chunks = build_with_ocr(settings, captioner).extract(write("dog.png", png_bytes()))
+    assert [c.low_content for c in chunks] == [False]
+
+
+def test_a_tiff_scan_summary_is_low_content_and_its_pages_are_judged(
+    build_with_ocr: Build, write: Writer, ocr: FakeOcr
+) -> None:
+    ocr.pages = ["This contract is made between the buyer and the seller", "' . , i l |", ""]
+    chunks = build_with_ocr().extract(write("contract.tif", tiff_pages(3)))
+    assert [(c.symbol, c.low_content) for c in chunks] == [
+        ("contract.tif", True),
+        ("page 1", False),
+        ("page 2", True),
+    ]
+
+
 def test_captions_only_when_enabled_and_provided(build_with_ocr: Build, write: Writer) -> None:
     def captioner(_image: Image.Image) -> str:
         return "a login screen"
@@ -213,11 +261,18 @@ class TestOcrModule:
         engine = ocr_mod.WindowsOcr()
         monkeypatch.setattr(engine, "_get_engine", object)
 
-        async def fake(_png: bytes) -> str:
-            return "a\n  b\t c"
+        async def fake(_png: bytes) -> list[str]:
+            return ["Lease  agreement", "   ", "rent\t$1,450"]
 
         monkeypatch.setattr(engine, "_recognize", fake)
-        assert engine.ocr_image(Image.new("RGB", (10, 10))) == "a b c"
+        image = Image.new("RGB", (10, 10))
+        assert engine.ocr_lines(image) == ["Lease agreement", "rent $1,450"]
+        assert engine.ocr_image(image) == "Lease agreement rent $1,450"
+
+    def test_unavailable_engine_reads_no_lines(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        engine = ocr_mod.WindowsOcr()
+        monkeypatch.setattr(engine, "_get_engine", lambda: None)
+        assert engine.ocr_lines(Image.new("RGB", (10, 10))) == []
 
     def test_real_windows_ocr_reads_rendered_text(self) -> None:
         engine = ocr_mod.WindowsOcr()

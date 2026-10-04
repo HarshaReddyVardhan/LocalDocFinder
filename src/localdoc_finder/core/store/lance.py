@@ -415,17 +415,35 @@ class LanceStore:
         rows: list[Row] = query.select(columns).limit(limit).to_list()
         return rows
 
+    def has_column(self, name: str, column: str) -> bool:
+        table = self.table(name)
+        return table is not None and column in table.schema.names
+
     def vector_search(
-        self, name: str, vector: np.ndarray, columns: list[str], where: str = "", limit: int = 50
+        self,
+        name: str,
+        vector: np.ndarray,
+        columns: list[str],
+        where: str = "",
+        limit: int = 50,
+        *,
+        min_content_chars: int = 0,
     ) -> list[Row]:
         """Nearest rows, each with its cosine ``_distance``; ``[]`` while the stored vectors
-        belong to another embedder (comparing across models would rank at random)."""
+        belong to another embedder (comparing across models would rank at random).
+
+        ``min_content_chars`` leaves out chunks with less readable text than that (ignored on an
+        index from before the column existed).
+        """
         table = self.table(name)
         if table is None:
             return []
         if not self.vectors_current():
             logger.info("lance: vectors are from another embedder; skipping the vector search")
             return []
+        if min_content_chars and self.has_column(name, "content_chars"):
+            floor = f"content_chars >= {int(min_content_chars)}"
+            where = f"({where}) AND {floor}" if where else floor
         column = CHUNK_VECTOR if name == CHUNKS else DOC_VECTOR
         query = table.search(vector, vector_column_name=column).metric("cosine")
         if where:

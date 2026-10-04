@@ -10,7 +10,7 @@ from localdoc_finder.core.power import PowerGate
 from localdoc_finder.core.providers.base import ProviderError
 from localdoc_finder.core.settings import SearchSettings
 from localdoc_finder.core.skills.base import QueryEmbedder
-from localdoc_finder.core.store.lance import LanceStore, Row
+from localdoc_finder.core.store.lance import CHUNKS, LanceStore, Row
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,9 @@ def hybrid_candidates(
         else:
             cpu = force_cpu or power.search_on_cpu()
             vector = embedder.embed([text], kind="query", cpu=cpu)[0]
-        for rank, row in enumerate(store.vector_search(table, vector, columns, where, n), 1):
+        floor = cfg.min_content_chars if table == CHUNKS else 0
+        rows = store.vector_search(table, vector, columns, where, n, min_content_chars=floor)
+        for rank, row in enumerate(rows, 1):
             found = hit(row)
             found.similarity, found.vector_rank = 1.0 - float(row["_distance"]), rank
     except ProviderError:

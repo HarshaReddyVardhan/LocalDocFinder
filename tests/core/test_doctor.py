@@ -31,6 +31,9 @@ class Ocr:
     def ocr_image(self, image: object) -> str:
         return ""
 
+    def ocr_lines(self, image: object) -> list[str]:
+        return []
+
 
 def registry(models: list[ModelInfo]) -> ModelRegistry:
     return ModelRegistry(load_catalog(), [Provider(models)], hardware_probe=lambda: GPU)

@@ -245,6 +245,9 @@ class TestEvaluator:
             def ocr_image(self, image: object) -> str:
                 return "a photo of tomato plants in the garden"
 
+            def ocr_lines(self, image: object) -> list[str]:
+                return [self.ocr_image(image)]
+
         Image.new("RGB", (400, 300), (40, 160, 60)).save(corpus / "IMG_1.jpg")
         settings, scope = settings_and_scope()
         evaluator = Evaluator(

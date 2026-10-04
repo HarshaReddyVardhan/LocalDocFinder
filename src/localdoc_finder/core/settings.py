@@ -565,6 +565,10 @@ class SearchSettings(_Section):
     filename_exact_boost: float = Field(default=6.0, ge=1)  # query is the file name (or its stem)
     hotkey: str = "ctrl+alt+space"  # Alt+Space belongs to Windows and PowerToys Run
     vector_index_min_rows: int = Field(default=100_000, gt=0)  # flat search below, IVF_PQ above
+    # Chunks with fewer letters and digits than this (a blank scan, a photo with no text) are
+    # left out of the vector leg: their embedding is near the average and matched everything.
+    # They are still found by keyword and by file name.
+    min_content_chars: int = Field(default=20, ge=0)
 
 
 class AppSettings(_Section):

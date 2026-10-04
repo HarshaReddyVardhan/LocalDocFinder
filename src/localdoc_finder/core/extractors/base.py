@@ -31,6 +31,9 @@ class Chunk:
     start_line: int = 0  # 1-based, 0 = not applicable
     end_line: int = 0
     page: int = 0  # PDF page / slide number, 0 = not applicable
+    # Too little readable text to mean anything (a scan OCR could not read, a photo without
+    # text): found by name and keyword, never by the embedder.
+    low_content: bool = False
 
 
 class ExtractError(Exception):
@@ -42,6 +45,10 @@ class OcrEngine(Protocol):
 
     def ocr_image(self, image: "Image.Image") -> str:
         """Recognised text, or ``""`` when OCR is unavailable or finds nothing."""
+        ...
+
+    def ocr_lines(self, image: "Image.Image") -> list[str]:
+        """Recognised lines top to bottom, or ``[]`` when OCR is unavailable or finds nothing."""
         ...
 
 
@@ -57,6 +64,9 @@ class NullOcr:
 
     def ocr_image(self, image: "Image.Image") -> str:
         return ""
+
+    def ocr_lines(self, image: "Image.Image") -> list[str]:
+        return []
 
 
 @dataclass(frozen=True)

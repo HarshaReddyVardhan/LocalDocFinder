@@ -22,10 +22,13 @@ from localdoc_finder.core.extractors.base import (
     Untyped,
     register_extractor,
 )
+from localdoc_finder.core.extractors.ocr import is_low_content
 
 logger = logging.getLogger(__name__)
 
 _MIN_OCR_TEXT = 4
+_TEXT_LABEL = "Text in image: "
+_CAPTION_LABEL = "Caption: "
 _CAPTION_SIZE = (896, 896)
 _CAPTION_PROMPT = (
     "Describe this image in one or two sentences, mentioning any visible text, "
@@ -145,12 +148,20 @@ def describe(ctx: ExtractContext, image: Image.Image, with_caption: bool = True)
     parts: list[str] = []
     text = ctx.ocr.ocr_image(image)
     if len(text) >= _MIN_OCR_TEXT:
-        parts.append(f"Text in image: {text}")
+        parts.append(f"{_TEXT_LABEL}{text}")
     if with_caption and ctx.images.enable_captions and ctx.captioner is not None:
         caption = ctx.captioner(image)
         if caption:
-            parts.append(f"Caption: {caption}")
+            parts.append(f"{_CAPTION_LABEL}{caption}")
     return "\n".join(parts)
+
+
+def says_little(body: str) -> bool:
+    """A ``describe`` result too thin to mean anything: no caption, and OCR text that is short or
+    mostly noise (a photo of a wall read as "l1 |")."""
+    if any(line.startswith(_CAPTION_LABEL) for line in body.splitlines()):
+        return False
+    return is_low_content(body.removeprefix(_TEXT_LABEL))
 
 
 def image_key(data: bytes) -> str:
@@ -215,12 +226,13 @@ class ImageExtractor(Extractor):
         body = self._described(image)
         # Even with no text, the file name makes the image findable by name.
         text = f"Image file: {path.name} ({width}x{height})\n{body}".strip()
-        return [Chunk(text, KIND_IMAGE, path.name)]
+        return [Chunk(text, KIND_IMAGE, path.name, low_content=says_little(body))]
 
     def _pages(self, path: Path, image: Image.Image) -> list[Chunk]:
         """A multi-page scan: one chunk per page, like a scanned PDF."""
         pages = min(getattr(image, "n_frames", 1), self.ctx.images.max_scanned_pages)
-        chunks = [Chunk(f"Scanned document: {path.name} ({pages} pages)", KIND_IMAGE, path.name)]
+        summary = f"Scanned document: {path.name} ({pages} pages)"
+        chunks = [Chunk(summary, KIND_IMAGE, path.name, low_content=True)]
         for number in range(1, pages + 1):
             try:
                 image.seek(number - 1)
@@ -230,7 +242,8 @@ class ImageExtractor(Extractor):
                 break
             text = describe(self.ctx, image, with_caption=False)
             if text:
-                chunks.append(Chunk(text, KIND_DOC, f"page {number}", page=number))
+                low = says_little(text)
+                chunks.append(Chunk(text, KIND_DOC, f"page {number}", page=number, low_content=low))
         return chunks
 
     def _described(self, image: Image.Image) -> str:
