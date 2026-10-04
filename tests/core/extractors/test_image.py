@@ -25,6 +25,44 @@ def test_image_file_gets_name_and_ocr_text(
     assert ocr.calls == 1
 
 
+def tiff_pages(count: int) -> bytes:
+    colours = ["white", "gray", "silver", "beige", "ivory"]
+    pages = [Image.new("RGB", (600, 800), colours[i % len(colours)]) for i in range(count)]
+    buffer = io.BytesIO()
+    pages[0].save(buffer, format="TIFF", save_all=True, append_images=pages[1:])
+    return buffer.getvalue()
+
+
+def test_every_page_of_a_multi_page_tiff_scan_is_read(
+    build_with_ocr: Build, write: Writer, ocr: FakeOcr
+) -> None:
+    chunks = build_with_ocr().extract(write("contract.tif", tiff_pages(3)))
+    assert chunks[0].text == "Scanned document: contract.tif (3 pages)"
+    assert [(c.kind, c.symbol, c.page) for c in chunks[1:]] == [
+        ("doc", "page 1", 1),
+        ("doc", "page 2", 2),
+        ("doc", "page 3", 3),
+    ]
+    assert ocr.calls == 3
+
+
+def test_a_tiff_scan_stops_at_the_page_allowance(
+    build_with_ocr: Build, write: Writer, ocr: FakeOcr
+) -> None:
+    images = ImageSettings(max_scanned_pages=2)
+    chunks = build_with_ocr(images).extract(write("long.tiff", tiff_pages(4)))
+    assert "(2 pages)" in chunks[0].text
+    assert ocr.calls == 2
+
+
+def test_a_single_page_tiff_is_an_ordinary_image(
+    build_with_ocr: Build, write: Writer, ocr: FakeOcr
+) -> None:
+    chunks = build_with_ocr().extract(write("photo.tif", tiff_pages(1)))
+    assert len(chunks) == 1
+    assert chunks[0].text.startswith("Image file: photo.tif")
+
+
 def test_image_without_text_is_still_findable_by_name(
     extractors: ExtractorSet, write: Writer
 ) -> None:

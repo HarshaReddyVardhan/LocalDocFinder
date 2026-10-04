@@ -13,6 +13,7 @@ import xxhash
 from PIL import Image
 
 from vector_embed.core.extractors.base import (
+    KIND_DOC,
     KIND_IMAGE,
     Chunk,
     ExtractContext,
@@ -35,6 +36,7 @@ _LOOK_CACHE_SIZE = 256  # images remembered by appearance within one extractor
 _JPEG_QUALITY = 85
 _CAPTION_KEEP_ALIVE = "5m"  # between images of one pass; released explicitly after it
 _THUMB_QUALITY = 80
+_MULTI_PAGE_EXTS = frozenset({".tif", ".tiff"})  # scanners save documents as these
 
 
 class OllamaCaptioner:
@@ -208,10 +210,28 @@ class ImageExtractor(Extractor):
             raise ExtractError("image too small")
         key = thumbnail_key(path, info.st_mtime_ns, info.st_size)
         make_thumbnail(self.ctx, image, key)
+        if path.suffix.lower() in _MULTI_PAGE_EXTS and getattr(image, "n_frames", 1) > 1:
+            return self._pages(path, image)
         body = self._described(image)
         # Even with no text, the file name makes the image findable by name.
         text = f"Image file: {path.name} ({width}x{height})\n{body}".strip()
         return [Chunk(text, KIND_IMAGE, path.name)]
+
+    def _pages(self, path: Path, image: Image.Image) -> list[Chunk]:
+        """A multi-page scan: one chunk per page, like a scanned PDF."""
+        pages = min(getattr(image, "n_frames", 1), self.ctx.images.max_scanned_pages)
+        chunks = [Chunk(f"Scanned document: {path.name} ({pages} pages)", KIND_IMAGE, path.name)]
+        for number in range(1, pages + 1):
+            try:
+                image.seek(number - 1)
+                image.load()
+            except (OSError, EOFError, ValueError):  # a damaged page ends the readable part
+                logger.debug("image: cannot read page %d of %s", number, path.name)
+                break
+            text = describe(self.ctx, image, with_caption=False)
+            if text:
+                chunks.append(Chunk(text, KIND_DOC, f"page {number}", page=number))
+        return chunks
 
     def _described(self, image: Image.Image) -> str:
         """OCR and caption, reusing the result for an image that looks identical to one seen."""

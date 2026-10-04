@@ -232,7 +232,7 @@ class ScopeSettings(_Section):
     )
 
     max_text_size_mb: float = Field(default=15, gt=0)
-    max_doc_size_mb: float = Field(default=50, gt=0)
+    max_doc_size_mb: float = Field(default=200, gt=0)  # scanned PDFs are large
     max_image_size_mb: float = Field(default=100, gt=0)
 
     # Generated-file heuristics, applied by extractors once content is read.
@@ -327,7 +327,9 @@ class ImageSettings(_Section):
     enable_captions: bool = False  # off by default; runs only during idle indexing
     caption_model: str = "qwen2.5vl:3b"
     min_pixels: int = Field(default=150, gt=0)  # skip icons/logos below this on both sides
-    max_per_doc: int = Field(default=50, gt=0)  # a 500-page scan must not stall the queue
+    max_per_doc: int = Field(default=50, gt=0)  # pictures inside one document
+    # Whole scanned pages (PDF pages without text, TIFF pages) read with OCR per document.
+    max_scanned_pages: int = Field(default=500, gt=0)
     max_decode_pixels: int = Field(default=200_000_000, gt=0)  # decompression-bomb guard
     thumbnail_size: int = Field(default=480, gt=0)
     ocr_max_dimension: int = Field(default=4000, gt=0)

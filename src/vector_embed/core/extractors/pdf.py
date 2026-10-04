@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 pymupdf.TOOLS.mupdf_display_errors(False)
 
 _SCANNED_PAGE_MIN_CHARS = 30
-_SCAN_DPI = 150
+_SCAN_DPI = 200  # small print needs it; a letter page stays under the OCR limit
 
 
 def _page_chunks(ctx: ExtractContext, text: str, page_no: int) -> list[Chunk]:
@@ -44,6 +44,11 @@ def _page_chunks(ctx: ExtractContext, text: str, page_no: int) -> list[Chunk]:
             text.splitlines(), 1, cfg.target_chunk_chars * 2, cfg.line_overlap
         )
     ]
+
+
+def _has_picture(page: Untyped) -> bool:
+    """Any picture on the page, inline ones included (scanners often write those)."""
+    return bool(page.get_image_info())
 
 
 def _ocr_scanned_page(ctx: ExtractContext, page: Untyped) -> str:
@@ -120,12 +125,12 @@ class PdfExtractor(Extractor):
         ctx = self.ctx
         chunks: list[Chunk] = []
         # Separate allowances: a long scanned document must not leave its figures un-read.
-        page_budget = ctx.images.max_per_doc  # whole-page OCR
+        page_budget = ctx.images.max_scanned_pages  # whole-page OCR
         budget = ctx.images.max_per_doc  # embedded figures
         seen: set[str] = set()
         for page_no, page in enumerate(doc, 1):
             text = page.get_text("text", sort=True)
-            scanned = len(text.strip()) < _SCANNED_PAGE_MIN_CHARS and bool(page.get_images())
+            scanned = len(text.strip()) < _SCANNED_PAGE_MIN_CHARS and _has_picture(page)
             if scanned:
                 if page_budget > 0:
                     page_budget -= 1

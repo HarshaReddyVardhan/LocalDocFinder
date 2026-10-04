@@ -67,6 +67,34 @@ class TestPdf:
         assert [(c.kind, c.page) for c in chunks] == [("doc", 1)]
         assert "clause seven" in chunks[0].text
 
+    def test_a_scan_drawn_as_an_inline_image_is_ocrd(
+        self,
+        build_with_ocr: Build,
+        tmp_path: Path,
+        ocr: FakeOcr,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ocr.text = "inline scanned page"
+        pdf = make_pdf(tmp_path / "inline.pdf", [""], images={1: png_bytes((600, 800))})
+        # An inline image is drawn by the page itself and missing from get_images().
+        monkeypatch.setattr(pymupdf.Page, "get_images", lambda self, full=False: [])
+        chunks = build_with_ocr().extract(pdf)
+        assert [(c.kind, c.page) for c in chunks] == [("doc", 1)]
+        assert "inline scanned page" in chunks[0].text
+
+    def test_a_long_scan_is_read_past_the_picture_allowance(
+        self, build_with_ocr: Build, tmp_path: Path, ocr: FakeOcr
+    ) -> None:
+        colours = ["red", "green", "blue", "gray", "black"]
+        pdf = make_pdf(
+            tmp_path / "long-scan.pdf",
+            [""] * 5,
+            images={n: png_bytes((600, 800), c) for n, c in enumerate(colours, 1)},
+        )
+        chunks = build_with_ocr(ImageSettings(max_per_doc=2)).extract(pdf)
+        assert ocr.calls == 5
+        assert [c.page for c in chunks] == [1, 2, 3, 4, 5]
+
     def test_ocr_budget_limits_work(
         self, build_with_ocr: Build, tmp_path: Path, ocr: FakeOcr
     ) -> None:
@@ -78,7 +106,7 @@ class TestPdf:
                 for n, c in enumerate(["red", "green", "blue", "gray", "black"], 1)
             },
         )
-        build_with_ocr(ImageSettings(max_per_doc=2)).extract(pdf)
+        build_with_ocr(ImageSettings(max_scanned_pages=2)).extract(pdf)
         assert ocr.calls == 2
 
     def test_scanned_pages_do_not_use_up_the_allowance_for_figures(
@@ -96,7 +124,7 @@ class TestPdf:
         target = tmp_path / "mixed.pdf"
         doc.save(target)
         doc.close()
-        chunks = build_with_ocr(ImageSettings(max_per_doc=2)).extract(target)
+        chunks = build_with_ocr(ImageSettings(max_per_doc=2, max_scanned_pages=2)).extract(target)
         assert any(c.kind == "image" and c.page == 3 for c in chunks)  # the figure was still read
         assert ocr.calls == 3
 
