@@ -120,7 +120,7 @@ def test_a_new_skill_becomes_a_window_mode(
     for _ in range(3):  # Search -> Ask -> Chat -> Shout
         QTest.keyClick(window.input, Qt.Key.Key_Tab)
     assert window.mode == shout
-    assert window.mode_label.text() == "SHOUT"
+    assert window.mode_bar.current_title() == "Shout"
     assert "capitals" in window.input.placeholderText()
 
     window.input.setText("make it loud")

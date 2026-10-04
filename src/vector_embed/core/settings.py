@@ -454,7 +454,7 @@ class SearchSettings(_Section):
 
 class AppSettings(_Section):
     start_with_windows: bool = True  # register the watcher and tray app with Task Scheduler
-    theme: Literal["system", "light", "dark"] = "system"  # system follows the Windows setting
+    theme: Literal["system", "light", "dark"] = "light"  # "system" follows the Windows setting
 
 
 class UpdateSettings(_Section):

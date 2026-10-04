@@ -14,7 +14,7 @@ from vector_embed.app import controller, hotkey
 from vector_embed.app import main as app_main
 from vector_embed.app.controller import Launcher, SearchOutcome, SearchService
 from vector_embed.app.result_delegate import ROW_ROLE
-from vector_embed.app.window import COMPACT_HEIGHT, EXPANDED_HEIGHT, Mode, SearchWindow
+from vector_embed.app.window import EXPANDED_HEIGHT, Mode, SearchWindow
 from vector_embed.core.skills.base import SkillContext
 from vector_embed.core.skills.search import SearchResult
 from vector_embed.core.terms import accept_terms
@@ -306,9 +306,9 @@ class TestWindow:
     ) -> None:
         win, service, _ = window
         win.show()
-        assert win.height() == COMPACT_HEIGHT
+        assert win.height() == win.compact_height() < EXPANDED_HEIGHT
         assert win.body.isHidden()
-        assert win.mode_label.isHidden()
+        assert win.mode_bar.current_title() == "Search"
         assert win.answer.isHidden()
         win.show_results(SearchOutcome(service.results, 1.0))
         assert not win.body.isHidden()
@@ -317,7 +317,7 @@ class TestWindow:
         win.input.clear()
         win.run_search()
         assert win.body.isHidden()
-        assert win.height() == COMPACT_HEIGHT
+        assert win.height() == win.compact_height() < EXPANDED_HEIGHT
 
     def test_other_modes_show_their_label_and_answer_pane(
         self, qapp: QApplication, tmp_path: Path
@@ -332,11 +332,11 @@ class TestWindow:
         )
         win.show()
         win.set_mode(Mode.ASK)
-        assert not win.mode_label.isHidden()
+        assert win.mode_bar.current_title() == "Ask"
         assert not win.answer.isHidden()
         assert win.height() == EXPANDED_HEIGHT
         win.set_mode(Mode.SEARCH)
-        assert win.mode_label.isHidden()
+        assert win.mode_bar.current_title() == "Search"
         assert win.answer.isHidden()
 
     def test_no_results_shows_the_message(

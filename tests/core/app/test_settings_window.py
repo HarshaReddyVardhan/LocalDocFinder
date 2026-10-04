@@ -669,12 +669,12 @@ def test_theme_is_saved_and_validated(env: Env, controller: SettingsController) 
 def test_theme_combo_saves_and_shows_the_choice(
     env: Env, window: SettingsWindow, controller: SettingsController
 ) -> None:
-    assert window.general.theme.currentData() == "system"
-    window.general.theme.setCurrentIndex(window.general.theme.findData("light"))
+    assert window.general.theme.currentData() == "light"  # the default
+    window.general.theme.setCurrentIndex(window.general.theme.findData("dark"))
     window.general.theme.activated.emit(window.general.theme.currentIndex())
-    assert saved(env)["app"]["theme"] == "light"  # type: ignore[index]  # TOML table
+    assert saved(env)["app"]["theme"] == "dark"  # type: ignore[index]  # TOML table
     window.general.refresh()
-    assert window.general.theme.currentData() == "light"
+    assert window.general.theme.currentData() == "dark"
 
 
 def test_apply_theme_pins_a_light_or_dark_palette(qapp: QApplication) -> None:

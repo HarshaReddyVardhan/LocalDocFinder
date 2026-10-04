@@ -7,10 +7,11 @@ the app pins the Fusion style and its own palette. The user picks ``system`` (fo
 
 import enum
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPalette, QPen, QPixmap
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPalette, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QCheckBox, QRadioButton, QStyleFactory, QWidget
 
 THEME_CHOICES = ("system", "light", "dark")
@@ -66,6 +67,7 @@ _FRAME_SHADES: dict[Scheme, dict[QPalette.ColorRole, str]] = {
 }
 _DISABLED_TEXT = {Scheme.LIGHT: "#9a9da8", Scheme.DARK: "#6b6e78"}
 _TICK_SIZE = 15
+_CHEVRON_SIZE = 20  # drawn at 2x and shown at 10 px, so it stays sharp on high-DPI screens
 _TICK_FILE = "vector_embed_tick.png"
 # Fusion can paint a check box's frame the same colour as its background, so draw it ourselves.
 # Applied to each check box itself: a style sheet on a window would also reset its palette.
@@ -88,40 +90,141 @@ QRadioButton::indicator:disabled {{ border-color:{disabled_frame}; background:{b
 _CHECKBOX_FRAME = {Scheme.LIGHT: "#7a7d88", Scheme.DARK: "#8a8f9c"}
 _CHECKBOX_DISABLED_FRAME = {Scheme.LIGHT: "#c4c6cc", Scheme.DARK: "#3b3e47"}
 
-# The search popup's own sheet: big input, flat result list. Colours come from the scheme.
+# The search popup: a rounded, softly shadowed card (painted by the window, see ``CardColours``)
+# whose controls are styled here. Launcher conventions: a large borderless field, rounded
+# selection, pills for the mode, thin scroll bars, key hints in the footer.
 _POPUP_COLOURS = {
-    Scheme.DARK: {
-        "bg": "#1e1f24",
-        "fg": "#e6e6e6",
-        "input": "#2a2c33",
-        "edge": "#3b3e47",
-        "row": "#2a2c33",
-        "selected": "#33405a",
-        "answer": "#17181c",
-        "muted": "#8a8f9c",
-    },
     Scheme.LIGHT: {
-        "bg": "#f6f6f9",
-        "fg": "#1b1b1f",
-        "input": "#ffffff",
-        "edge": "#c9cbd3",
-        "row": "#e4e5ea",
-        "selected": "#d5e0ff",
-        "answer": "#ffffff",
-        "muted": "#5f6370",
+        "fg": "#1c2030",
+        "muted": "#687085",
+        "accent": "#3b6cf6",
+        "accent_hover": "#2f5be0",
+        "field": "#eef1f6",
+        "field_focus": "#ffffff",
+        "focus_edge": "#b8c8fb",
+        "edge": "#e3e7ef",
+        "surface": "#fbfcfe",
+        "hover": "#f1f3f8",
+        "selected": "#e6edff",
+        "button": "#f3f5f9",
+        "button_hover": "#e9edf5",
+        "button_down": "#dfe5f1",
+        "scroll": "#c5cbd8",
+        "menu": "#ffffff",
+    },
+    Scheme.DARK: {
+        "fg": "#e8eaf0",
+        "muted": "#9097a8",
+        "accent": "#5b84ff",
+        "accent_hover": "#7097ff",
+        "field": "#1b1d24",
+        "field_focus": "#16181e",
+        "focus_edge": "#3f5596",
+        "edge": "#363a46",
+        "surface": "#1d1f26",
+        "hover": "#2c2f39",
+        "selected": "#2f3b5c",
+        "button": "#2c2f39",
+        "button_hover": "#353946",
+        "button_down": "#3d4252",
+        "scroll": "#4a4f5e",
+        "menu": "#25272f",
     },
 }
 _POPUP_STYLE = """
-QWidget {{ background:{bg}; color:{fg}; font-size:13px; }}
-QLineEdit {{ background:{input}; border:1px solid {edge}; border-radius:6px;
-            padding:9px 12px; font-size:16px; }}
-QListWidget {{ background:{bg}; border:none; outline:0; }}
-QListWidget::item {{ padding:6px 8px; border-bottom:1px solid {row}; }}
-QListWidget::item:selected {{ background:{selected}; }}
-QTextBrowser {{ background:{answer}; border:1px solid {row}; font-size:13px; }}
-QLabel#status {{ color:{muted}; padding:2px 6px; }}
-QLabel#mode {{ color:#4c7dff; font-weight:bold; padding:0 8px; }}
+* {{ font-family:"Segoe UI Variable Text","Segoe UI",sans-serif; font-size:13px; color:{fg}; }}
+QFrame#card {{ background:transparent; }}
+QLineEdit#query {{ background:{field}; border:1px solid {edge}; border-radius:12px;
+    padding:10px 14px 10px 6px; font-size:17px; selection-background-color:{accent};
+    selection-color:#ffffff; }}
+QLineEdit#query:focus {{ background:{field_focus}; border-color:{focus_edge}; }}
+QPushButton#modePill {{ background:transparent; border:1px solid transparent; border-radius:13px;
+    padding:4px 13px; color:{muted}; font-size:12px; font-weight:600; }}
+QPushButton#modePill:hover {{ background:{hover}; color:{fg}; }}
+QPushButton#modePill:checked {{ background:{accent}; color:#ffffff; }}
+QPushButton#close {{ background:transparent; border:1px solid transparent; border-radius:12px;
+    color:{muted}; font-size:12px; padding:0; min-width:24px; min-height:24px; }}
+QPushButton#close:hover {{ background:{hover}; color:{fg}; }}
+QLabel#modeHint, QLabel#status, QLabel#hints {{ color:{muted}; font-size:12px; }}
+QListWidget {{ background:transparent; border:none; outline:0; }}
+QListWidget::item {{ padding:6px 8px; margin:1px 0; border-radius:10px; }}
+QListWidget::item:hover {{ background:{hover}; }}
+QListWidget::item:selected {{ background:{selected}; color:{fg}; }}
+QTextBrowser {{ background:{surface}; border:1px solid {edge}; border-radius:12px;
+    padding:8px 10px; font-size:13.5px; }}
+QPushButton {{ background:{button}; border:1px solid {edge}; border-radius:9px;
+    padding:5px 12px; }}
+QPushButton:hover {{ background:{button_hover}; }}
+QPushButton:pressed {{ background:{button_down}; }}
+QPushButton:disabled {{ color:{muted}; }}
+QComboBox {{ background:{button}; border:1px solid {edge}; border-radius:9px;
+    padding:4px 8px 4px 10px; }}
+QComboBox:hover {{ background:{button_hover}; }}
+QComboBox::drop-down {{ border:none; width:22px; }}
+QComboBox::down-arrow {{ image:url({chevron}); width:10px; height:10px; }}
+QComboBox QAbstractItemView {{ background:{menu}; border:1px solid {edge};
+    selection-background-color:{selected}; selection-color:{fg}; outline:0; }}
+QTableWidget {{ background:{surface}; border:1px solid {edge}; border-radius:12px;
+    gridline-color:{edge}; selection-background-color:{selected}; selection-color:{fg}; }}
+QHeaderView {{ background:transparent; }}
+QHeaderView::section {{ background:transparent; color:{muted}; border:none;
+    border-bottom:1px solid {edge}; padding:6px 8px; font-weight:600; }}
+QTableCornerButton::section {{ background:transparent; border:none; }}
+QSplitter::handle {{ background:transparent; }}
+QScrollBar:vertical {{ background:transparent; width:10px; margin:2px; }}
+QScrollBar:horizontal {{ background:transparent; height:10px; margin:2px; }}
+QScrollBar::handle {{ background:{scroll}; border-radius:3px; min-height:28px; min-width:28px; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ width:0; height:0; }}
+QScrollBar::add-page, QScrollBar::sub-page {{ background:transparent; }}
+QMenu {{ background:{menu}; border:1px solid {edge}; padding:4px; }}
+QMenu::item {{ padding:6px 14px; border-radius:6px; }}
+QMenu::item:selected {{ background:{selected}; }}
+QToolTip {{ background:{menu}; color:{fg}; border:1px solid {edge}; padding:4px 6px; }}
 """
+
+
+@dataclass(frozen=True)
+class CardColours:
+    """What the popup paints itself: a glossy top-to-bottom gradient, a hairline and a shadow."""
+
+    top: QColor
+    bottom: QColor
+    edge: QColor
+    highlight: QColor  # the 1px sheen along the top edge
+    shadow: QColor  # the darkest shadow ring; outer rings fade from it
+
+
+_CARD = {
+    Scheme.LIGHT: ("#ffffff", "#f5f7fb", (20, 28, 48, 30), (255, 255, 255, 255), (16, 24, 40, 34)),
+    Scheme.DARK: ("#2b2e37", "#23252d", (255, 255, 255, 22), (255, 255, 255, 18), (0, 0, 0, 90)),
+}
+
+
+def card_colours(scheme: Scheme) -> CardColours:
+    top, bottom, edge, highlight, shadow = _CARD[scheme]
+    return CardColours(
+        QColor(top), QColor(bottom), QColor(*edge), QColor(*highlight), QColor(*shadow)
+    )
+
+
+def search_icon(scheme: Scheme, size: int = 18) -> QIcon:
+    """A magnifier drawn at the screen's resolution, so it stays crisp at any scaling."""
+    screen = QGuiApplication.primaryScreen()
+    ratio = screen.devicePixelRatio() if screen is not None else 1.0
+    pixmap = QPixmap(round(size * ratio), round(size * ratio))
+    pixmap.setDevicePixelRatio(ratio)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(_POPUP_COLOURS[scheme]["muted"]), 1.8)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(pen)
+    painter.drawEllipse(QRectF(2.5, 2.5, size * 0.55, size * 0.55))
+    end = size - 2.5
+    start = 2.5 + size * 0.55 * 0.85
+    painter.drawLine(QPointF(start, start), QPointF(end, end))
+    painter.end()
+    return QIcon(pixmap)
 
 
 def system_scheme() -> Scheme:
@@ -163,7 +266,31 @@ def scheme_in_use() -> Scheme:
 
 
 def popup_style(scheme: Scheme) -> str:
-    return _POPUP_STYLE.format(**_POPUP_COLOURS[scheme])
+    colours = _POPUP_COLOURS[scheme]
+    return _POPUP_STYLE.format(**colours, chevron=_chevron_image(scheme, colours["muted"]))
+
+
+def _chevron_image(scheme: Scheme, colour: str) -> str:
+    """A small down chevron for combo boxes (a styled combo box draws no arrow of its own)."""
+    path = Path(tempfile.gettempdir()) / f"vector_embed_chevron_{scheme.value}.png"
+    pixmap = QPixmap(_CHEVRON_SIZE, _CHEVRON_SIZE)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(colour), 2.4)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(pen)
+    third = _CHEVRON_SIZE / 3
+    painter.drawPolyline(
+        [
+            QPointF(third * 0.6, third * 1.1),
+            QPointF(_CHEVRON_SIZE / 2, third * 2.1),
+            QPointF(_CHEVRON_SIZE - third * 0.6, third * 1.1),
+        ]
+    )
+    painter.end()
+    pixmap.save(str(path))
+    return path.as_posix()
 
 
 def secondary_text(palette: QPalette, strength: float) -> QColor:

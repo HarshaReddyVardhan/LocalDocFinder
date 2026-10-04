@@ -119,7 +119,6 @@ class MatchPanel(QWidget):
         for button in self.buttons.values():
             bar.addWidget(button)
         bar.addStretch(1)
-        bar.addWidget(self.redact)
 
         self.candidates = QTableWidget(0, len(CANDIDATE_HEADERS))
         self.candidates.setHorizontalHeaderLabels(CANDIDATE_HEADERS)
@@ -140,7 +139,10 @@ class MatchPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(bar)
         layout.addWidget(self.pages, 1)
-        layout.addWidget(self.footer)
+        footer = QHBoxLayout()
+        footer.addWidget(self.footer, 1)
+        footer.addWidget(self.redact)  # on its own line: the button bar is full
+        layout.addLayout(footer)
 
         self.candidates.itemChanged.connect(self._candidate_edited)
         self.checklist.itemChanged.connect(self._checklist_edited)

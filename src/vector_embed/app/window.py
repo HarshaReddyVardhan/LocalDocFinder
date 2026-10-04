@@ -4,8 +4,10 @@ Search : type; Enter opens, Ctrl+Enter reveals, Shift+Enter opens in VS Code, Ct
 Ask    : start with ``?`` or press Tab; Enter asks; answers stream with clickable [n] citations
 Chat   : Tab again, or Ctrl+T on a result; Ctrl+V pastes long text as a scratch document
 Match  : Tab again; paste a job description to rank your documents
-Esc closes the window and unloads the model; Tab cycles the modes. The mode label and the answer
-pane appear only outside Search. Models, health and settings live in the Settings window.
+Esc closes the window and unloads the model; Tab (or a click on a pill) switches the mode. The
+window is a rounded card that can be dragged anywhere and resized; Search hides when it loses the
+focus, the other modes stay until Esc so an answer can be read beside another app. Models, health
+and settings live in the Settings window.
 """
 
 import enum
@@ -21,6 +23,9 @@ from PySide6.QtCore import (
     QEvent,
     QMimeData,
     QObject,
+    QPoint,
+    QPointF,
+    QRectF,
     QRunnable,
     Qt,
     QThreadPool,
@@ -29,15 +34,25 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import (
+    QColor,
+    QCursor,
     QDragEnterEvent,
     QDropEvent,
     QGuiApplication,
     QHideEvent,
     QKeySequence,
+    QLinearGradient,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPaintEvent,
+    QPen,
+    QResizeEvent,
     QShortcut,
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -45,6 +60,8 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QPushButton,
+    QSizeGrip,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QTextBrowser,
@@ -72,17 +89,29 @@ from vector_embed.app.controller import (
 )
 from vector_embed.app.match_controller import MatchController
 from vector_embed.app.match_panel import MatchPanel
+from vector_embed.app.mode_bar import ModeBar
 from vector_embed.app.result_delegate import ROW_ROLE, ResultDelegate
-from vector_embed.app.theme import Scheme, popup_style, scheme_in_use
+from vector_embed.app.theme import (
+    Scheme,
+    card_colours,
+    popup_style,
+    scheme_in_use,
+    search_icon,
+    style_check_boxes,
+)
 from vector_embed.core.documents import DocumentError
 from vector_embed.core.rag import CODE_KINDS, Source
 from vector_embed.core.skills.base import panel_skills
 from vector_embed.core.skills.chat import SessionSummary
 from vector_embed.core.skills.search import SearchResult
 
-COMPACT_HEIGHT = 84  # just the search bar and the status line
-EXPANDED_HEIGHT = 520
-POPUP_WIDTH = 820
+SHADOW = 18  # transparent margin around the card that the soft shadow is painted into
+SHADOW_RINGS = 9  # rings of fading shadow; more is smoother and costs nothing noticeable
+CARD_RADIUS = 14  # px; Windows 11 uses 8 for flyouts, launchers go a little rounder
+EXPANDED_HEIGHT = 580  # including the shadow margin
+POPUP_WIDTH = 860
+MIN_WIDTH = 560
+TOP_FRACTION = 0.18  # the card opens this far down the screen, where launchers sit
 DEBOUNCE_MS = 180
 _T = TypeVar("_T")
 RENDER_MS = 80  # streamed text is re-rendered at most this often
@@ -95,6 +124,17 @@ PLACEHOLDERS = {
     "chat": "Chat about the pinned documents…  (Enter to send, Ctrl+V pastes a document)",
     "match": "Paste a job description (Ctrl+V) and press Enter to rank your documents…",
 }
+KEY_HINTS = {
+    "search": "↵ open   Ctrl+↵ reveal   Shift+↵ VS Code   Ctrl+T chat   Esc close",
+    "ask": "↵ ask   Ctrl+↵ open source   Esc close",
+    "chat": "↵ send   Ctrl+V paste a document   drop files to pin   Esc close",
+    "match": "Ctrl+V paste   ↵ find matches   Esc close",
+}
+SKILL_KEY_HINTS = "↵ run   Esc close"
+ANSWER_PLACEHOLDERS = {
+    "ask": "Answers appear here, with [n] links to the files they came from.",
+    "chat": "Drop files here, or press Ctrl+T on a search result, to chat about them.",
+}
 
 
 class Mode(enum.Enum):
@@ -102,6 +142,10 @@ class Mode(enum.Enum):
     ASK = "ask"
     CHAT = "chat"
     MATCH = "match"
+
+    @property
+    def title(self) -> str:
+        return self.value.capitalize()
 
 
 @dataclass(frozen=True)
@@ -344,18 +388,27 @@ class SearchWindow(QWidget):
 
     def apply_scheme(self, scheme: Scheme) -> None:
         """Restyle the popup for light or dark (the Settings theme choice changed)."""
+        self._scheme = scheme
         self.setStyleSheet(popup_style(scheme))
+        style_check_boxes(self, scheme)  # the Match panel's check box
+        if hasattr(self, "input"):
+            self.input.removeAction(self._search_action)
+            self._add_search_icon()
+        self.update()
 
     def _build_ui(self) -> None:
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)  # the card has round corners
+        self._scheme = scheme_in_use()
+        self._placed = False  # the user dragged the card somewhere: summon keeps it there
+        self._drag_from: QPoint | None = None
+        self._fitting = False  # a resize of our own, not the user's grip
+        self._expanded_height = EXPANDED_HEIGHT
         self.setWindowTitle("Vector Embed")
-        self.resize(POPUP_WIDTH, COMPACT_HEIGHT)
-        self.apply_scheme(scheme_in_use())
+        self.setMinimumWidth(MIN_WIDTH)
+        self.resize(POPUP_WIDTH, EXPANDED_HEIGHT)
         self.input = QLineEdit()
-        self.mode_label = QLabel("SEARCH")
-        self.mode_label.setObjectName("mode")
-        top = QHBoxLayout()
-        top.addWidget(self.input, 1)
-        top.addWidget(self.mode_label)
+        self.input.setObjectName("query")
+        self._add_search_icon()
         self.list = QListWidget()
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list.setItemDelegate(ResultDelegate(self._thumbs_dir, self.list))
@@ -365,12 +418,12 @@ class SearchWindow(QWidget):
         self.answer.anchorClicked.connect(self._on_link)
         self.input.setAcceptDrops(False)  # dropped files go to the window: they pin to a chat
         self.setAcceptDrops(True)
-        bottom = self._build_bottom_bar()
 
         split = QSplitter()
+        split.setHandleWidth(10)
         split.addWidget(self.list)
         split.addWidget(self.answer)
-        split.setSizes([520, 480])
+        split.setSizes([320, 680])  # outside Search the answer matters most
         self.panel: MatchPanel | None = None
         self.body = QStackedWidget()
         self.body.addWidget(split)
@@ -383,16 +436,51 @@ class SearchWindow(QWidget):
             self.panel.chat_requested.connect(self._chat_from_match)
             self.panel.status_changed.connect(self._set_status)
             self.body.addWidget(self.panel)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 6)
-        layout.addLayout(top)
-        layout.addWidget(self.body, 1)
-        layout.addLayout(bottom)
+        self._card = card = QFrame()
+        card.setObjectName("card")
+        inner = QVBoxLayout(card)
+        inner.setContentsMargins(14, 10, 14, 8)
+        inner.setSpacing(8)
+        inner.addLayout(self._build_header())
+        inner.addWidget(self.input)
+        inner.addWidget(self.body, 1)
+        inner.addLayout(self._build_bottom_bar())
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(SHADOW, SHADOW, SHADOW, SHADOW)
+        outer.addWidget(card)
+        self.apply_scheme(self._scheme)
+
+    def _add_search_icon(self) -> None:
+        self._search_action = self.input.addAction(
+            search_icon(self._scheme), QLineEdit.ActionPosition.LeadingPosition
+        )
+
+    def _build_header(self) -> QHBoxLayout:
+        """Mode pills (the current mode is always visible), a Tab hint and a close button."""
+        self.mode_bar = ModeBar()
+        self.mode_bar.chosen.connect(self._choose_mode)
+        hint = QLabel("Tab to switch")
+        hint.setObjectName("modeHint")
+        close = QPushButton("✕")
+        close.setObjectName("close")
+        close.setToolTip("Close (Esc)")
+        close.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        close.clicked.connect(self.dismiss)
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        header.addWidget(self.mode_bar)
+        header.addStretch(1)  # empty header space is where the card is dragged from
+        header.addWidget(hint)
+        header.addWidget(close)
+        return header
 
     def _build_bottom_bar(self) -> QHBoxLayout:
-        """Status line plus the "Answer better" button (hidden unless a cloud is configured)."""
+        """Status, the chat history and "Answer better" buttons, key hints and a resize grip."""
         self.status = QLabel("")
         self.status.setObjectName("status")
+        self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.hints = QLabel("")
+        self.hints.setObjectName("hints")
         self.cloud_button = QPushButton("Answer better ☁")
         self.cloud_button.setVisible(False)
         self.cloud_button.clicked.connect(self.answer_better)
@@ -400,11 +488,81 @@ class SearchWindow(QWidget):
         self.history_button.setToolTip("Reopen an earlier conversation")
         self.history_button.setVisible(False)
         self.history_button.clicked.connect(self.show_history)
+        grip = QSizeGrip(self)
         bottom = QHBoxLayout()
+        bottom.setSpacing(8)
         bottom.addWidget(self.status, 1)
         bottom.addWidget(self.history_button)
         bottom.addWidget(self.cloud_button)
+        bottom.addWidget(self.hints)
+        bottom.addWidget(grip, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
         return bottom
+
+    # ------------------------------------------------------------------ the card
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
+        """A soft shadow, then the card: a faint top-to-bottom gloss, a hairline, a sheen."""
+        colours = card_colours(self._scheme)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        card = QRectF(self.rect()).adjusted(SHADOW, SHADOW, -SHADOW, -SHADOW)
+        painter.setPen(Qt.PenStyle.NoPen)
+        for ring in range(SHADOW_RINGS, 0, -1):  # outermost and faintest first
+            spread = ring * SHADOW / SHADOW_RINGS
+            shade = QColor(colours.shadow)
+            shade.setAlphaF(colours.shadow.alphaF() * (1 - ring / (SHADOW_RINGS + 1)) / 3)
+            painter.setBrush(shade)
+            ring_rect = card.adjusted(-spread, -spread * 0.6, spread, spread * 1.2)
+            painter.drawRoundedRect(ring_rect, CARD_RADIUS + spread, CARD_RADIUS + spread)
+        gloss = QLinearGradient(card.topLeft(), card.bottomLeft())
+        gloss.setColorAt(0, colours.top)
+        gloss.setColorAt(1, colours.bottom)
+        path = QPainterPath()
+        path.addRoundedRect(card, CARD_RADIUS, CARD_RADIUS)
+        painter.fillPath(path, gloss)
+        painter.setPen(QPen(colours.edge, 1))
+        painter.drawPath(path)
+        painter.setPen(QPen(colours.highlight, 1))
+        inset = CARD_RADIUS * 0.8
+        sheen = card.top() + 1
+        painter.drawLine(QPointF(card.left() + inset, sheen), QPointF(card.right() - inset, sheen))
+        painter.end()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        """A press on the card itself (not on a control) drags the window."""
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(event)
+            return
+        # Moved by hand: Windows' move loop (startSystemMove) ignores this frameless tool window.
+        self._placed = True
+        self._drag_from = event.globalPosition().toPoint() - self.pos()
+        event.accept()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._drag_from is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_from)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        self._drag_from = None
+        super().mouseReleaseEvent(event)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if not self._fitting and self.body.isVisible():  # the user's grip: remember the height
+            self._expanded_height = self.height()
+
+    def _place(self) -> None:
+        """Centred near the top of the screen under the mouse, unless the user moved it."""
+        if self._placed:
+            return
+        screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        area = screen.availableGeometry()
+        self.move(
+            area.center().x() - self.width() // 2,
+            area.top() + round(area.height() * TOP_FRACTION) - SHADOW,
+        )
 
     # ------------------------------------------------------------------ modes
     @property
@@ -422,6 +580,14 @@ class SearchWindow(QWidget):
     def _next_mode(self) -> AnyMode:
         modes = self.available_modes()
         return modes[(modes.index(self._mode) + 1) % len(modes)]
+
+    def _choose_mode(self, value: str) -> None:
+        """A pill was clicked."""
+        mode = next((m for m in self.available_modes() if m.value == value), None)
+        if mode is not None:
+            self.set_mode(mode)
+        self.mode_bar.set_current(self._mode.value)  # a refused switch keeps the old pill lit
+        self.input.setFocus()
 
     def set_mode(self, mode: AnyMode) -> None:
         if mode is self._mode:
@@ -445,14 +611,21 @@ class SearchWindow(QWidget):
 
     def _apply_mode(self) -> None:
         searching = self._mode is Mode.SEARCH
-        self.mode_label.setText(self._mode.value.upper())
-        self.mode_label.setVisible(not searching)
         mode = self._mode
-        hint = mode.hint if isinstance(mode, SkillMode) else PLACEHOLDERS[mode.value]
-        self.input.setPlaceholderText(hint)
+        self.mode_bar.set_modes([(m.value, m.title) for m in self.available_modes()])
+        self.mode_bar.set_current(mode.value)
+        self.status.clear()  # the last mode's message would read as this one's
+        if isinstance(mode, SkillMode):
+            self.input.setPlaceholderText(mode.hint)
+            self.hints.setText(SKILL_KEY_HINTS)
+        else:
+            self.input.setPlaceholderText(PLACEHOLDERS[mode.value])
+            self.hints.setText(KEY_HINTS[mode.value])
         self.body.setCurrentIndex(self._body_index())
         self._check_cloud_async()
+        self.list.setVisible(searching)  # elsewhere it lists sources, once there are some
         self.answer.setVisible(not searching)
+        self.answer.setPlaceholderText(ANSWER_PLACEHOLDERS.get(mode.value, ""))
         self.history_button.setVisible(mode is Mode.CHAT)
         self.answer.clear()
         self._answer_text = ""
@@ -463,9 +636,20 @@ class SearchWindow(QWidget):
         """Search shows only the bar until there is something to list; other modes need room."""
         expanded = self._mode is not Mode.SEARCH or bool(self._results)
         self.body.setVisible(expanded)
-        if (layout := self.layout()) is not None:
-            layout.activate()  # drop the stale minimum height before shrinking
-        self.resize(self.width(), EXPANDED_HEIGHT if expanded else COMPACT_HEIGHT)
+        for layout in (self._card.layout(), self.layout()):  # inner first: the outer reads it
+            if layout is not None:
+                layout.activate()  # drop the stale minimum height before shrinking
+        height = self._expanded_height if expanded else self.compact_height()
+        self._fitting = True
+        try:
+            self.resize(self.width(), height)
+        finally:
+            self._fitting = False
+
+    def compact_height(self) -> int:
+        """Just the pills, the search bar and the status line (with the body hidden)."""
+        layout = self.layout()
+        return layout.sizeHint().height() if layout is not None else EXPANDED_HEIGHT
 
     def _check_cloud_async(self) -> None:
         """The cloud button shows in Ask/Chat when a provider with a key is configured.
@@ -538,6 +722,7 @@ class SearchWindow(QWidget):
     # ------------------------------------------------------------------ show / hide
     def summon(self) -> None:
         self._project = guess_project(foreground_title())
+        self._place()
         self.show()
         self.raise_()
         self.activateWindow()
@@ -577,7 +762,11 @@ class SearchWindow(QWidget):
 
     def _hide_if_inactive(self) -> None:
         # A dialog opened from here (cloud preview, file picker) takes the focus: the popup must
-        # not vanish from under it.
+        # not vanish from under it. Only Search behaves like a launcher; an answer, a chat or a
+        # match is read beside other windows (copying a job description from a browser), so those
+        # stay until Esc.
+        if self._mode is not Mode.SEARCH:
+            return
         if self.isActiveWindow() or self._dialogs or QApplication.activeModalWidget() is not None:
             return
         self.hide()  # the chat session (if any) stays; idle timeout unloads it later
@@ -774,6 +963,7 @@ class SearchWindow(QWidget):
             scrollbar = self.answer.verticalScrollBar()
             scrollbar.setValue(scrollbar.maximum())
         self.list.clear()
+        self.list.setVisible(bool(event.sources))
         for source in event.sources:
             where = f" ({source.location})" if source.location else ""
             label = f"[{source.n}] {Path(source.path).name}{where}\n{source.path}"

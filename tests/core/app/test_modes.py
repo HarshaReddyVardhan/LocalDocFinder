@@ -4,15 +4,16 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton
 from tests.core.app.test_app import FakeService, result
 
 from vector_embed.app.assistant import ChatState, Delta, Event, Failed, Finished
 from vector_embed.app.controller import Launcher
-from vector_embed.app.window import Mode, SearchWindow, _Signals, _StreamJob
+from vector_embed.app.theme import Scheme
+from vector_embed.app.window import EXPANDED_HEIGHT, Mode, SearchWindow, _Signals, _StreamJob
 from vector_embed.core.rag import Source
 
 
@@ -120,16 +121,105 @@ class TestModeSwitching:
         window.input.setText("?how do retries work")
         assert window.mode is Mode.ASK
         assert window.input.text() == "how do retries work"
-        assert window.mode_label.text() == "ASK"
+        assert window.mode_bar.current_title() == "Ask"
 
     def test_mode_labels_and_placeholders_follow_the_mode(
         self, parts: tuple[SearchWindow, FakeAssistant, list]
     ) -> None:
         window, _, _ = parts
         window.set_mode(Mode.CHAT)
-        assert window.mode_label.text() == "CHAT"
+        assert window.mode_bar.current_title() == "Chat"
         assert "pinned" in window.input.placeholderText()
+        assert "send" in window.hints.text()
         window.set_mode(Mode.CHAT)  # same mode: nothing happens
+
+    def test_the_mode_pills_show_every_mode_and_a_click_switches(
+        self, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, _, _ = parts
+        pills = window.mode_bar.findChildren(QPushButton, "modePill")
+        assert [pill.text() for pill in pills] == ["Search", "Ask", "Chat", "Match"][: len(pills)]
+        assert window.mode_bar.current_title() == "Search"  # visible in Search mode too
+        next(pill for pill in pills if pill.text() == "Ask").click()
+        assert window.mode is Mode.ASK
+        assert window.mode_bar.current_title() == "Ask"
+
+    def test_a_pill_for_an_unknown_mode_changes_nothing(
+        self, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, _, _ = parts
+        window._choose_mode("nope")
+        assert window.mode is Mode.SEARCH
+        assert window.mode_bar.current_title() == "Search"
+
+
+class TestWindowChrome:
+    def test_only_search_hides_when_the_focus_moves_away(
+        self, qapp: QApplication, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, _, _ = parts
+        window.show()
+        window.isActiveWindow = lambda: False  # type: ignore[method-assign]  # a browser took it
+        window.set_mode(Mode.ASK)
+        window._hide_if_inactive()
+        assert window.isVisible()  # reading an answer beside another app
+        window.set_mode(Mode.SEARCH)
+        window._hide_if_inactive()
+        assert not window.isVisible()
+
+    def test_summon_centres_the_card_until_the_user_moves_it(
+        self, qapp: QApplication, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, _, _ = parts
+        window.summon()
+        screen = QGuiApplication.screenAt(window.geometry().center())
+        assert screen is not None
+        assert abs(window.geometry().center().x() - screen.availableGeometry().center().x()) <= 1
+        window.dismiss()
+        window._placed = True  # dragged somewhere
+        window.move(window.x() + 40, window.y() + 30)
+        moved = window.pos()
+        window.summon()
+        assert window.pos() == moved
+
+    def test_dragging_the_card_moves_the_window(
+        self, qapp: QApplication, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, _, _ = parts
+        window.show()
+        start = window.pos()
+        grab = QPoint(window.width() // 2, 30)  # the header's empty middle
+        QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=grab)
+        QTest.mouseMove(window, grab + QPoint(60, 40))
+        QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=grab + QPoint(60, 40))
+        assert window.pos() == start + QPoint(60, 40)
+        assert window._placed  # the next summon leaves it there
+
+    def test_a_height_set_with_the_grip_is_kept_for_expanded_modes(
+        self, qapp: QApplication, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, _, _ = parts
+        window.show()
+        window.set_mode(Mode.ASK)
+        window.resize(window.width(), EXPANDED_HEIGHT + 120)  # the user drags the grip
+        qapp.processEvents()
+        window.set_mode(Mode.SEARCH)
+        assert window.height() == window.compact_height()
+        window.set_mode(Mode.CHAT)
+        assert window.height() == EXPANDED_HEIGHT + 120
+
+    def test_the_card_paints_in_both_schemes(
+        self, qapp: QApplication, parts: tuple[SearchWindow, FakeAssistant, list]
+    ) -> None:
+        window, _, _ = parts
+        for scheme in Scheme:
+            window.apply_scheme(scheme)
+            image = window.grab().toImage()
+            centre = image.pixelColor(image.width() // 2, image.height() // 2)
+            assert centre.alpha() == 255  # the card is opaque; only the shadow margin is not
+            assert (centre.lightness() > 128) is (scheme is Scheme.LIGHT)
+        corner = window.grab().toImage().pixelColor(0, 0)
+        assert corner.alpha() < 40  # outside the rounded card: (nearly) transparent shadow
 
 
 class TestAsk:
