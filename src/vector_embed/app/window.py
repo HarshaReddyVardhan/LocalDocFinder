@@ -408,6 +408,7 @@ class SearchWindow(QWidget):
         self.resize(POPUP_WIDTH, EXPANDED_HEIGHT)
         self.input = QLineEdit()
         self.input.setObjectName("query")
+        self.input.setClearButtonEnabled(True)  # the ✕ at the end empties the box in one click
         self._add_search_icon()
         self.list = QListWidget()
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
