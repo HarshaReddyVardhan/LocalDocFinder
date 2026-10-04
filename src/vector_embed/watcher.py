@@ -254,7 +254,7 @@ class Watcher:
         self.scope = scope
         self._clock = clock
         self.roots = [r for r in (roots or resolve_roots(settings.scope)) if Path(r).is_dir()]
-        self._scope_key = (tuple(self.roots), settings.scope.file_types)
+        self._scope_key = (tuple(self.roots), settings.scope.enabled_kinds())
         self.observer = Observer()
         self.handle: WorkerHandle | None = None
         self.next_spawn = 0.0
@@ -396,10 +396,7 @@ class Watcher:
             logger.warning("watcher: settings are unreadable; keeping the current folders")
             return False
         roots = [r for r in resolve_roots(fresh.scope) if Path(r).is_dir()]
-        scope_key = (
-            tuple(roots),
-            fresh.scope.file_types,
-        )  # a new file type list needs a re-scan too
+        scope_key = (tuple(roots), fresh.scope.enabled_kinds())  # new file kinds need a re-scan
         if scope_key == self._scope_key:
             return False
         self._scope_key = scope_key

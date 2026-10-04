@@ -18,6 +18,7 @@ from collections.abc import Callable, Iterable
 from enum import StrEnum
 from pathlib import Path
 
+from vector_embed.core.file_kinds import FileKind
 from vector_embed.core.protection import SystemProtection
 from vector_embed.core.settings import ScopeSettings
 
@@ -113,6 +114,8 @@ class ScopePolicy:
         }
         self._transcript_re = glob_to_regex(settings.ai_transcript_glob)
         self._secret_path_res = tuple(glob_to_regex(glob) for glob in settings.secret_path_globs)
+        self._kind_by_ext = {ext: kind for kind, exts in settings.kind_exts.items() for ext in exts}
+        self._kinds = settings.enabled_kinds()
         # Never index the app's own data folder (index, queue, logs, chat history).
         self._blocked_roots = tuple(_normalised(root) for root in blocked_roots)
         # The folders the user chose to index: a blocked name only counts *below* one of them.
@@ -156,6 +159,15 @@ class ScopePolicy:
         if parts and parts[-1] in self._s.agent_rule_files:
             return AiNoteSource.AGENT_RULES
         return None
+
+    # ------------------------------------------------------------------ file kinds
+    def file_kind(self, path: str | Path) -> FileKind | None:
+        """The kind a file belongs to; extension-less config files (``Dockerfile``) are code."""
+        name = Path(path).name.lower()
+        kind = self._kind_by_ext.get(Path(name).suffix)
+        if kind is None and name in self._s.text_filenames:
+            return FileKind.CODE
+        return kind
 
     # ------------------------------------------------------------------ directories
     def _in_blocked_root(self, path: str | Path) -> bool:
@@ -202,15 +214,11 @@ class ScopePolicy:
         if self.is_secret(path) or self.is_noise(name):
             return False
 
-        is_text = ext in cfg.text_exts or name in cfg.text_filenames
+        is_transcript_candidate = cfg.index_ai_transcripts and ext == ".jsonl"
+        if self.file_kind(path) not in self._kinds and not is_transcript_candidate:
+            return False
         is_doc = ext in cfg.doc_exts
         is_image = ext in cfg.image_exts
-        if cfg.file_types == "documents":  # no code, data files or images
-            listed = ext in cfg.document_exts
-            is_text, is_doc, is_image = is_text and listed, is_doc and listed, False
-        is_transcript_candidate = cfg.index_ai_transcripts and ext == ".jsonl"
-        if not (is_text or is_doc or is_image or is_transcript_candidate):
-            return False
 
         if (
             self._protection.is_protected(path)

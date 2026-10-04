@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from vector_embed.core.file_kinds import FileKind
 from vector_embed.core.protection import SystemProtection
 from vector_embed.core.scope import ScopePolicy
 from vector_embed.core.scope_roots import resolve_roots
@@ -175,6 +176,46 @@ def test_everything_adds_code_and_images(tmp_path: Path) -> None:
     (tmp_path / "i.png").write_bytes(b"x")
     assert scope.is_valid_file(tmp_path / "g.py")
     assert scope.is_valid_file(tmp_path / "i.png")
+
+
+def test_custom_indexes_only_the_chosen_kinds(tmp_path: Path) -> None:
+    settings = ScopeSettings(
+        coverage="chosen",
+        roots=(str(tmp_path),),
+        file_types="custom",
+        custom_kinds=frozenset({FileKind.IMAGES, FileKind.CODE}),
+        blocked_dirs=frozenset({"windows"}),
+    )
+    scope = ScopePolicy(settings, protection=SystemProtection(ENV, Path.home()))
+    for name in ("a.pdf", "b.md", "c.py", "d.jpg", "e.json", "Dockerfile"):
+        (tmp_path / name).write_text("x")
+    kept = sorted(f.name for f in tmp_path.iterdir() if scope.is_valid_file(f))
+    assert kept == ["Dockerfile", "c.py", "d.jpg"]
+
+
+def test_custom_without_kinds_is_invalid() -> None:
+    with pytest.raises(ValueError, match="no kinds"):
+        ScopeSettings(file_types="custom", custom_kinds=frozenset())
+
+
+def test_presets_name_their_kinds() -> None:
+    assert ScopeSettings().enabled_kinds() == {FileKind.DOCUMENTS, FileKind.NOTES}
+    assert ScopeSettings(file_types="everything").enabled_kinds() == set(FileKind)
+
+
+def test_every_kind_extension_has_an_extractor_route() -> None:
+    cfg = ScopeSettings()
+    offered = set().union(*cfg.kind_exts.values())
+    assert offered == cfg.text_exts | cfg.doc_exts | cfg.image_exts
+    assert set(cfg.kind_exts) == set(FileKind)
+
+
+def test_file_kind_classifies_by_extension_and_name() -> None:
+    scope = ScopePolicy(ScopeSettings(), protection=SystemProtection(ENV, HOME))
+    assert scope.file_kind(r"D:\a\Scan.TIFF") is FileKind.IMAGES
+    assert scope.file_kind(r"D:\a\Makefile") is FileKind.CODE
+    assert scope.file_kind(r"D:\a\sheet.csv") is FileKind.DATA
+    assert scope.file_kind(r"D:\a\movie.mp4") is None
 
 
 def test_listed_folders_without_a_coverage_mean_a_choice() -> None:

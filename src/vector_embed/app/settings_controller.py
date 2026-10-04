@@ -1,6 +1,6 @@
 """Qt-free logic behind the Settings window: every change goes through ``set_setting``."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
@@ -8,6 +8,7 @@ from pathlib import Path
 from vector_embed.app.hotkey import parse_hotkey
 from vector_embed.app.theme import THEME_CHOICES
 from vector_embed.core.features import FEATURES
+from vector_embed.core.file_kinds import PRESET_CUSTOM, FileKind
 from vector_embed.core.lifecycle import (
     ensure_data_folder,
     schedule_data_deletion,
@@ -88,10 +89,12 @@ class SettingsController:
         roots: list[str],
         file_types: str,
         protection: SystemProtection | None = None,
+        custom_kinds: Iterable[str] = (),
     ) -> None:
         """Save what to index: the whole PC or chosen folders/drives, and which file types.
 
         System folders are refused by name here (and skipped regardless in the scan).
+        ``custom_kinds`` (``core.file_kinds.FileKind`` values) only counts for "custom".
         """
         protection = protection or SystemProtection()
         chosen = list(dict.fromkeys(roots))
@@ -101,12 +104,19 @@ class SettingsController:
             reason = protection.reason(root)
             if reason:
                 raise SettingsError(f"{root} is {reason}; it is never indexed")
+        kinds = sorted(set(custom_kinds)) if file_types == PRESET_CUSTOM else []
+        if file_types == PRESET_CUSTOM and not kinds:
+            raise SettingsError("choose at least one kind of file to index")
+        unknown = [kind for kind in kinds if kind not in set(FileKind)]
+        if unknown:
+            raise SettingsError(f"unknown kind of file {unknown[0]!r}")
         set_settings(
             self._path,
             [
                 (["scope", "coverage"], coverage),
                 (["scope", "roots"], chosen or None),
                 (["scope", "file_types"], file_types),
+                (["scope", "custom_kinds"], kinds or None),
             ],
         )
         self._on_changed()

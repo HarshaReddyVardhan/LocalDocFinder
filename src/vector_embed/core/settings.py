@@ -21,8 +21,9 @@ from pydantic_settings import (
 )
 
 from vector_embed.core.data_migration import migrate_legacy_data
+from vector_embed.core.file_kinds import PRESET_KINDS, FileKind
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 APP_DIR_NAME = "VectorEmbed"  # the Velopack install folder; uninstall deletes all of it
 DATA_DIR_NAME = "VectorEmbedData"  # a sibling, so uninstalling never takes the index with it
 SETTINGS_FILENAME = "settings.toml"
@@ -37,8 +38,16 @@ def _keep_optional_features_on(raw: RawSettings) -> RawSettings:
     return {**raw, "features": {**features, **raw.get("features", {})}}
 
 
+def _drop_document_exts(raw: RawSettings) -> RawSettings:
+    """v2 -> v3: the "documents" list became the kinds in ``scope.kind_exts``."""
+    scope = raw.get("scope", {})
+    if "document_exts" not in scope:
+        return raw
+    return {**raw, "scope": {k: v for k, v in scope.items() if k != "document_exts"}}
+
+
 # Maps "from version" -> function producing the next version's layout.
-MIGRATIONS: dict[int, Migration] = {1: _keep_optional_features_on}
+MIGRATIONS: dict[int, Migration] = {1: _keep_optional_features_on, 2: _drop_document_exts}
 
 
 class SettingsError(ValueError):
@@ -67,6 +76,16 @@ class _Section(BaseModel):
 
 
 # --------------------------------------------------------------------------- scope
+_CODE_KIND_EXTS = frozenset(
+    {
+        ".c", ".h", ".cpp", ".hpp", ".cc", ".cxx", ".rs", ".go", ".dart", ".java", ".cs", ".kt",
+        ".kts", ".scala", ".swift", ".gradle", ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+        ".vue", ".svelte", ".php", ".rb", ".lua", ".r", ".sh", ".bash", ".ps1", ".bat", ".cmd",
+        ".ipynb", ".html", ".htm", ".css", ".scss", ".sass", ".less",
+    }
+)  # fmt: skip
+
+
 class ScopeSettings(_Section):
     """What is indexed. Rule order is documented in ``vector_embed.core.scope``."""
 
@@ -74,13 +93,26 @@ class ScopeSettings(_Section):
     # extra ``roots``. "chosen": only ``roots``. Either way, system folders are never indexed
     # (core.protection).
     coverage: Literal["entire_pc", "chosen"] = "entire_pc"
-    # "documents": PDF, Word, PowerPoint, text and Markdown only. "everything" adds code,
-    # data files and images.
-    file_types: Literal["documents", "everything"] = "documents"
+    # A preset of file kinds (core.file_kinds.PRESET_KINDS), or "custom" for ``custom_kinds``.
+    file_types: Literal["documents", "everything", "custom"] = "documents"
+    custom_kinds: frozenset[FileKind] = PRESET_KINDS["documents"]
     roots: tuple[str, ...] = ()  # extra folders/drives ("entire_pc") or the only ones ("chosen")
-    document_exts: frozenset[str] = frozenset(
-        {".pdf", ".docx", ".pptx", ".txt", ".md", ".markdown", ".rtf"}
-    )
+    # What each kind covers. Every extension here needs an extractor (see ``text_exts`` etc.).
+    kind_exts: dict[FileKind, frozenset[str]] = {
+        FileKind.DOCUMENTS: frozenset({".pdf", ".docx", ".pptx", ".rtf"}),
+        FileKind.NOTES: frozenset({".txt", ".md", ".markdown", ".mdc", ".tex"}),
+        FileKind.IMAGES: frozenset(
+            {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".svg"}
+        ),
+        FileKind.CODE: _CODE_KIND_EXTS,
+        FileKind.DATA: frozenset(
+            {".json", ".yaml", ".yml", ".toml", ".xml", ".ini", ".cfg", ".sql", ".csv", ".tsv"}
+        ),
+    }
+
+    def enabled_kinds(self) -> frozenset[FileKind]:
+        """The kinds of file indexed under the current choice."""
+        return self.custom_kinds if self.file_types == "custom" else PRESET_KINDS[self.file_types]
 
     @model_validator(mode="before")
     @classmethod
@@ -94,6 +126,8 @@ class ScopeSettings(_Section):
     def _a_choice_needs_folders(self) -> "ScopeSettings":
         if self.coverage == "chosen" and not self.roots:
             raise ValueError("coverage is 'chosen' but no folders are listed in roots")
+        if self.file_types == "custom" and not self.custom_kinds:
+            raise ValueError("file_types is 'custom' but no kinds are listed in custom_kinds")
         return self
 
     blocked_dirs: frozenset[str] = frozenset(
@@ -176,7 +210,7 @@ class ScopeSettings(_Section):
             ".mjs", ".cjs", ".vue", ".svelte", ".php", ".rb", ".lua", ".r", ".sh", ".bash",
             ".ps1", ".bat", ".cmd", ".html", ".htm", ".css", ".scss", ".sass", ".less", ".svg",
             ".sql", ".json", ".yaml", ".yml", ".toml", ".xml", ".ini", ".cfg", ".ipynb", ".md",
-            ".mdc", ".markdown", ".txt", ".rtf", ".tex",
+            ".mdc", ".markdown", ".txt", ".rtf", ".tex", ".csv", ".tsv",
         }
     )  # fmt: skip
     # Parsed into function/class chunks with tree-sitter; others are chunked by lines/paragraphs.
@@ -190,7 +224,7 @@ class ScopeSettings(_Section):
     # Machine-written / data-ish formats: skipped above ``ChunkingSettings.max_data_file_kb``.
     data_exts: frozenset[str] = frozenset(
         {".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".sql", ".html", ".htm",
-         ".css", ".scss", ".sass", ".less"}
+         ".css", ".scss", ".sass", ".less", ".csv", ".tsv"}
     )  # fmt: skip
     doc_exts: frozenset[str] = frozenset({".pdf", ".docx", ".pptx"})
     image_exts: frozenset[str] = frozenset(

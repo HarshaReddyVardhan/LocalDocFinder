@@ -104,6 +104,13 @@ def test_migrate_applies_chain_up_to_current(monkeypatch: pytest.MonkeyPatch) ->
     assert out["schema_version"] == 3
 
 
+def test_v2_settings_lose_the_old_document_list() -> None:
+    raw = {"schema_version": 2, "scope": {"file_types": "documents", "document_exts": [".pdf"]}}
+    out = s.migrate(raw)
+    assert out["scope"] == {"file_types": "documents"}
+    assert s.migrate({"schema_version": 2})["schema_version"] == s.SCHEMA_VERSION
+
+
 def test_migrate_missing_step_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(s, "SCHEMA_VERSION", 2)
     with pytest.raises(s.SettingsError, match="no migration"):

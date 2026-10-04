@@ -90,6 +90,22 @@ def test_system_folders_cannot_be_chosen(env: Env, controller: SettingsControlle
         controller.set_scope("chosen", [system], "documents")
 
 
+def test_custom_kinds_are_saved_and_cleared(controller: SettingsController) -> None:
+    controller.set_scope("entire_pc", [], "custom", custom_kinds=["images", "code"])
+    scope = controller.settings().scope
+    assert (scope.file_types, scope.custom_kinds) == ("custom", {"images", "code"})
+    controller.set_scope("entire_pc", [], "everything", custom_kinds=["images"])
+    assert controller.settings().scope.file_types == "everything"
+
+
+@pytest.mark.parametrize(("kinds", "message"), [([], "at least one"), (["videos"], "unknown")])
+def test_bad_custom_kinds_are_refused(
+    controller: SettingsController, kinds: list[str], message: str
+) -> None:
+    with pytest.raises(SettingsError, match=message):
+        controller.set_scope("entire_pc", [], "custom", custom_kinds=kinds)
+
+
 def test_extra_folders_are_kept_on_top_of_the_whole_pc(
     env: Env, controller: SettingsController
 ) -> None:
