@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QApplication
 from tests.core.setup.fakes import Harness
 
 from vector_embed.app.scope_editor import ScopeEditor
+from vector_embed.core.file_kinds import FileKind
 from vector_embed.core.protection import SystemProtection
 from vector_embed.core.settings import ScopeSettings
 
@@ -84,6 +85,57 @@ def test_load_shows_saved_settings_and_remove_works(qapp: QApplication) -> None:
     box.folders.setCurrentRow(0)
     box.remove_folder.click()
     assert box.roots() == ["E:\b"]
+
+
+def test_a_preset_names_what_it_includes_and_hides_the_checklist(qapp: QApplication) -> None:
+    box = editor()
+    assert box.types_summary.text() == "Includes: Documents, Text and notes"
+    assert box.kinds_panel.isHidden()
+    box.types.setCurrentIndex(box.types.findData("everything"))
+    assert "Source code" in box.types_summary.text()
+    assert box.choice().kinds == ()
+
+
+def test_custom_shows_every_kind_ticked_from_the_last_preset(qapp: QApplication) -> None:
+    box = editor()
+    box.types.setCurrentIndex(box.types.findData("custom"))
+    assert not box.kinds_panel.isHidden()
+    assert box.types_summary.isHidden()
+    assert set(box.kind_boxes) == set(FileKind)
+    assert box.choice().kinds == ("documents", "notes")
+    box.kind_boxes[FileKind.CODE].setChecked(True)
+    box.kind_boxes[FileKind.NOTES].setChecked(False)
+    assert box.choice().kinds == ("documents", "code")
+
+
+def test_custom_needs_at_least_one_kind(qapp: QApplication) -> None:
+    box = editor()
+    box.types.setCurrentIndex(box.types.findData("custom"))
+    for check in box.kind_boxes.values():
+        check.setChecked(False)
+    assert not box.is_valid()
+    assert "at least one kind" in box.warning.text()
+
+
+def test_load_ticks_the_saved_custom_kinds(qapp: QApplication) -> None:
+    box = editor()
+    box.load(ScopeSettings(file_types="custom", custom_kinds=frozenset({FileKind.IMAGES})))
+    assert box.types.currentData() == "custom"
+    assert box.choice().kinds == ("images",)
+
+
+def test_the_wizard_saves_custom_kinds(qapp: QApplication, tmp_path: Path) -> None:
+    from tests.core.app.test_setup_wizard import wizard_for
+
+    harness = Harness(tmp_path)
+    wizard = wizard_for(harness)
+    page = wizard.scope
+    page.initializePage()
+    page.editor.types.setCurrentIndex(page.editor.types.findData("custom"))
+    page.editor.kind_boxes[FileKind.CODE].setChecked(True)
+    assert page.validatePage()
+    assert harness.saved()["scope"]["file_types"] == "custom"
+    assert harness.saved()["scope"]["custom_kinds"] == ["code", "documents", "notes"]
 
 
 def test_the_wizard_saves_the_choice_when_leaving_the_page(

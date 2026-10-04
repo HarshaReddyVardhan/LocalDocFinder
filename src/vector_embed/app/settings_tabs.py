@@ -143,7 +143,9 @@ class GeneralTab(SettingsTab):
     def _save_scope(self) -> None:
         choice = self.scope.choice()
         self._guard(
-            lambda: self._controller.set_scope(choice.coverage, choice.roots, choice.file_types),
+            lambda: self._controller.set_scope(
+                choice.coverage, choice.roots, choice.file_types, custom_kinds=choice.kinds
+            ),
             "saved; the watcher re-scans within a minute, and files outside the new scope "
             "leave the index",
         )

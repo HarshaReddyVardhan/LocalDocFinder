@@ -133,7 +133,9 @@ class ScopePage(QWizardPage):
     def validatePage(self) -> bool:  # noqa: N802
         choice = self.editor.choice()
         try:
-            self._controller.set_scope(choice.coverage, choice.roots, choice.file_types)
+            self._controller.set_scope(
+                choice.coverage, choice.roots, choice.file_types, custom_kinds=choice.kinds
+            )
         except SettingsError as exc:
             self.status.setText(str(exc))
             return False
