@@ -40,6 +40,7 @@ _SECONDS_PER_FILE = 0.5  # rough embedding throughput used for the re-index esti
 FLAG_OK = "ok"
 FLAG_WARNING = "warning"
 FLAG_UNUSED = "unused"
+BETTER_OPTION = "better option available"
 
 
 class Discoverable(Protocol):
@@ -311,7 +312,7 @@ class ModelRegistry:
                 reason = (
                     "pull it; re-index required (embeddings are model-specific)"
                     if role == ROLE_EMBED
-                    else "better option available"
+                    else BETTER_OPTION
                 )
                 out.append(Recommendation(role, name, reason))
                 break

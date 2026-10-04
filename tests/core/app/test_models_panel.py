@@ -5,6 +5,8 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import QApplication, QComboBox, QPushButton
 from tests.core.app.test_app import FakeService
 from tests.core.app.test_modes import FakeAssistant
@@ -12,10 +14,18 @@ from tests.core.conftest import Chat, Env
 
 from vector_embed.app.controller import Launcher
 from vector_embed.app.models_controller import ModelsController
-from vector_embed.app.models_panel import AUTOMATIC, ModelsPanel
+from vector_embed.app.models_panel import (
+    AUTOMATIC,
+    CHOICE_COLUMN,
+    MODEL_COLUMN,
+    ROLE_COLUMN,
+    ModelsPanel,
+    reason_text,
+    recommendation_text,
+)
 from vector_embed.app.window import Mode, SearchWindow
 from vector_embed.core.models.hardware import Hardware
-from vector_embed.core.models.registry import ModelRegistry
+from vector_embed.core.models.registry import BETTER_OPTION, ModelRegistry
 from vector_embed.core.skills.base import SkillContext
 
 GPU = Hardware("RTX 2070", 8192, 7000, 32000, 16000, 8, True)
@@ -60,6 +70,19 @@ def load(qapp: QApplication, widget: ModelsPanel) -> None:
     wait_for(qapp, lambda: widget.models.rowCount() > 0 and widget.health_view.toPlainText() != "")
 
 
+def role_row(widget: ModelsPanel, role: str) -> int:
+    rows = range(widget.roles.rowCount())
+    return next(
+        r for r in rows if widget.roles.item(r, ROLE_COLUMN).data(Qt.ItemDataRole.UserRole) == role
+    )
+
+
+def choice(widget: ModelsPanel, role: str) -> QComboBox:
+    combo = widget.roles.cellWidget(role_row(widget, role), CHOICE_COLUMN)
+    assert isinstance(combo, QComboBox)
+    return combo
+
+
 def settings_file(env: Env) -> dict[str, object]:
     with (env.data_dir / "settings.toml").open("rb") as handle:
         return tomllib.load(handle)
@@ -92,8 +115,11 @@ class TestRendering:
         assert widget.models.item(names["qwen3.5:9b"], 3).text() == "ok"
         assert "RTX 2070" in widget.hardware.text()
         assert widget.roles.rowCount() == 7
-        chat_row = next(r for r in range(7) if widget.roles.item(r, 0).text() == "chat")
-        assert widget.roles.item(chat_row, 1).text() == "qwen3.5:9b"
+        chat_row = role_row(widget, "chat")
+        assert widget.roles.item(chat_row, ROLE_COLUMN).text() == "Chat"
+        assert widget.roles.item(chat_row, MODEL_COLUMN).text() == "qwen3.5:9b"
+        assert "Ask" in widget.roles.item(chat_row, 1).text()  # says which features use it
+        assert widget.roles.item(chat_row, 3).text() == "automatic"
         assert any("models installed" in m for m in messages)
 
     def test_health_tab_shows_the_dashboard_text(
@@ -152,9 +178,7 @@ class TestActions:
     ) -> None:
         widget, _, _ = panel
         load(qapp, widget)
-        row = next(r for r in range(7) if widget.roles.item(r, 0).text() == "summarizer")
-        combo = widget.roles.cellWidget(row, 3)
-        assert isinstance(combo, QComboBox)
+        combo = choice(widget, "summarizer")
         combo.setCurrentText("deepseek-r1:8b")
         settings_path = env.data_dir / "settings.toml"
         wait_for(qapp, settings_path.exists)
@@ -166,12 +190,9 @@ class TestActions:
         widget, _, _ = panel
         load(qapp, widget)
         options = {}
-        for row in range(7):
-            combo = widget.roles.cellWidget(row, 3)
-            assert isinstance(combo, QComboBox)
-            options[widget.roles.item(row, 0).text()] = {
-                combo.itemText(i) for i in range(combo.count())
-            }
+        for role in ("chat", "embed"):
+            combo = choice(widget, role)
+            options[role] = {combo.itemText(i) for i in range(combo.count())}
         assert "deepseek-r1:8b" in options["chat"]
         assert not {"qwen3-embedding:0.6b", "mxbai-embed-large"} & options["chat"]
         assert "mxbai-embed-large" in options["embed"]
@@ -183,9 +204,7 @@ class TestActions:
         widget, _, _ = panel
         widget._controller.set_override("summarizer", "deepseek-r1:8b")
         load(qapp, widget)
-        row = next(r for r in range(7) if widget.roles.item(r, 0).text() == "summarizer")
-        combo = widget.roles.cellWidget(row, 3)
-        assert isinstance(combo, QComboBox)
+        combo = choice(widget, "summarizer")
         assert combo.currentText() == "deepseek-r1:8b"
         combo.setCurrentText(AUTOMATIC)
         wait_for(qapp, lambda: settings_file(env)["models"] == {"overrides": {}})
@@ -197,9 +216,7 @@ class TestActions:
         widget, messages, asked = panel
         env.state.manifest_set("a", 1, 1, "h")
         load(qapp, widget)
-        row = next(r for r in range(7) if widget.roles.item(r, 0).text() == "embed")
-        combo = widget.roles.cellWidget(row, 3)
-        assert isinstance(combo, QComboBox)
+        combo = choice(widget, "embed")
         combo.setCurrentText("mxbai-embed-large")
         assert asked and "re-indexing" in asked[0]
         assert settings_file(env)["embedding"] == {"model": "mxbai-embed-large"}
@@ -326,3 +343,42 @@ def test_models_live_in_settings_not_in_the_popup(qapp: QApplication, tmp_path: 
     )
     assert "models" not in {mode.value for mode in Mode}
     assert window.available_modes() == [Mode.SEARCH, Mode.ASK, Mode.CHAT]
+
+
+def test_the_mouse_wheel_never_changes_a_role_choice(
+    qapp: QApplication, panel: tuple[ModelsPanel, list[str], list[str]]
+) -> None:
+    widget, _, _ = panel
+    load(qapp, widget)
+    combo = choice(widget, "chat")
+    before = combo.currentText()
+    wheel = QWheelEvent(
+        QPointF(5, 5),
+        QPointF(5, 5),
+        QPoint(0, 0),
+        QPoint(0, -120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    QApplication.sendEvent(combo, wheel)
+    assert combo.currentText() == before
+    assert not wheel.isAccepted()  # handed on, so the table scrolls instead
+
+
+def test_reasons_are_said_in_words() -> None:
+    assert reason_text("override") == "you chose it"
+    assert reason_text("qwen3-embedding:0.6b cannot serve chat; preferred") == (
+        "qwen3-embedding:0.6b cannot serve chat; automatic"
+    )
+    assert reason_text("no installed model fits") == "no installed model fits"
+
+
+def test_recommendations_name_the_role_in_words() -> None:
+    assert recommendation_text("chat", "llama3.2", BETTER_OPTION) == (
+        "Chat: llama3.2 would be a better fit"
+    )
+    assert recommendation_text("embed", "bge-m3", "pull it; re-index required").endswith(
+        "(pull it; re-index required)"
+    )
