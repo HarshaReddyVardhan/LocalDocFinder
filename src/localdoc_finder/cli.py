@@ -27,6 +27,7 @@ from localdoc_finder.core.evaluation import (
     EvalSpec,
     EvaluationError,
     Evaluator,
+    format_calibration,
     format_results,
     load_spec,
 )
@@ -179,7 +180,7 @@ def cmd_models(settings: Settings, args: argparse.Namespace) -> int:
 
 
 def cmd_eval(settings: Settings, args: argparse.Namespace) -> int:
-    """Compare embedding models on your own queries (recall@10, MRR, speed)."""
+    """Compare embedding models on your own queries (recall, precision, speed)."""
     spec_path = Path(args.spec)
     spec = load_spec(spec_path)
     models = tuple(args.models) if args.models else spec.models
@@ -187,6 +188,11 @@ def cmd_eval(settings: Settings, args: argparse.Namespace) -> int:
         raise EvaluationError("name at least one model with --models or in the spec")
     if args.corpus:
         spec = EvalSpec(tuple(Path(c) for c in args.corpus), spec.models, spec.queries)
+    # The corpus was picked on purpose: index every kind of file in it, whatever the user's
+    # file-type preset. Secret and blocked-folder rules still apply.
+    settings = settings.model_copy(
+        update={"scope": settings.scope.model_copy(update={"file_types": "everything"})}
+    )
 
     def factory(model: str) -> OllamaProvider:
         return OllamaProvider(
@@ -199,12 +205,16 @@ def cmd_eval(settings: Settings, args: argparse.Namespace) -> int:
         factory,
         settings.storage.data_dir / "eval",
         exclude=[spec_path],
+        ocr=WindowsOcr(settings.images.ocr_max_dimension),
     )
     results = []
     for model in models:
         err(f"evaluating {model} ...")
         results.append(evaluator.evaluate(model, spec, reuse=args.reuse))
     out(format_results(results))
+    if args.calibrate:
+        out("")
+        out(format_calibration(results))
     return EXIT_OK if all(not r.error for r in results) else EXIT_ERROR
 
 
@@ -280,6 +290,11 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--models", nargs="+", help="models to compare (default: the spec's)")
     evaluate.add_argument("--corpus", nargs="+", help="directories to index instead of the spec's")
     evaluate.add_argument("--reuse", action="store_true", help="reuse indexes from a previous run")
+    evaluate.add_argument(
+        "--calibrate",
+        action="store_true",
+        help="print cosine-similarity percentiles of true hits vs. negatives",
+    )
     add_cloud_parsers(sub)
     add_setup_parser(sub)
     autostart = sub.add_parser("autostart", help="start the watcher and tray app with Windows")

@@ -2,13 +2,20 @@
 #   corpus : directories to index for the comparison (relative paths are relative to this file)
 #   models : embedding models to compare (each needs `ollama pull <name>`)
 #   expect : any of these substrings in a result's path counts as a hit
-# The queries below are about this repo itself, so the harness works out of the box.
+#   expect_none : true for a question nothing in the corpus answers (any top-5 result is a
+#                 false positive)
+#   not    : path substrings that must stay out of the top 5
+# The queries below are about this repo itself plus a small corpus of scanned documents and
+# photos (tests/fixtures/eval_corpus, made by scripts/make_eval_fixtures.py), so the harness
+# works out of the box. scan_0042.pdf and blank_scan.pdf hold nothing but a scanner watermark
+# and dust: they must never rank for a real query.
 corpus:
   - ../src
+  - ../tests/fixtures/eval_corpus
 models:
   - qwen3-embedding:0.6b
+  - qwen3-embedding:4b
   - bge-m3
-  - nomic-embed-text
 
 queries:
   - q: where is the list of secret file patterns like .env and pem keys
@@ -39,3 +46,40 @@ queries:
     expect: [doctypes/base.py]
   - q: chunk python code by function and class with tree-sitter
     expect: [extractors/code.py]
+
+  # Scanned documents and photos: found by their OCR text, never by being "average".
+  - q: monthly rent and security deposit for the apartment
+    expect: [lease_agreement_scan.pdf]
+    not: [scan_0042.pdf, blank_scan.pdf]
+  - q: is a pet allowed in the rented flat
+    expect: [lease_agreement_scan.pdf]
+    not: [scan_0042.pdf, blank_scan.pdf]
+  - q: migrate the billing database to postgres
+    expect: [whiteboard_photo.jpg]
+    not: [scan_0042.pdf, blank_scan.pdf, IMG_2041.jpg]
+  - q: sprint planning deadline friday
+    expect: [whiteboard_photo.jpg]
+    not: [scan_0042.pdf, blank_scan.pdf]
+  - q: passport photo
+    expect: [passport.jpg]
+    not: [scan_0042.pdf]
+
+  # The junk scan must not show up for queries about code either.
+  - q: open the vector store and create the full text index
+    expect: [store/lance.py]
+    not: [scan_0042.pdf, blank_scan.pdf, IMG_2041.jpg]
+  - q: parse search filters like type and ext from the query
+    expect: [skills/search.py]
+    not: [scan_0042.pdf, blank_scan.pdf]
+
+  # Nothing in the corpus answers these: every result is a false positive.
+  - q: chocolate chip cookie recipe with brown butter
+    expect_none: true
+  - q: flight booking confirmation to Tokyo in April
+    expect_none: true
+  - q: quarterly sales figures for the european region
+    expect_none: true
+  - q: my doctor's appointment next tuesday
+    expect_none: true
+  - q: zebra migration across the serengeti
+    expect_none: true
