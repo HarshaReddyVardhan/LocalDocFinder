@@ -42,7 +42,7 @@ COVERAGE_CHOSEN = "chosen"
 MIN_COMBO_CHARS = 20
 PRESETS = (
     ("Documents (recommended)", PRESET_DOCUMENTS),
-    ("Everything", PRESET_EVERYTHING),
+    ("All supported kinds: documents, images, code and data", PRESET_EVERYTHING),
     ("Custom: choose the kinds of file", PRESET_CUSTOM),
 )
 DETAIL_STRENGTH = 0.6  # how far a kind's description fades toward the background
