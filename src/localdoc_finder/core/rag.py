@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from localdoc_finder.core.extractors.base import KIND_OUTLINE
 from localdoc_finder.core.prompt_safety import Fence, fence_for
 from localdoc_finder.core.providers.base import Message
 from localdoc_finder.core.retrieval import Candidate
@@ -70,7 +71,13 @@ class _Piece:
     text: str
 
     def touches(self, other: "_Piece") -> bool:
-        """True if ``other`` is on the same page or in adjacent/overlapping lines."""
+        """True if ``other`` is on the same page or in adjacent/overlapping lines.
+
+        A file outline spans the file's lines but is a summary, not those lines; merging it by
+        line numbers would drop the real code it overlaps.
+        """
+        if KIND_OUTLINE in (self.kind, other.kind):
+            return False
         if self.page or other.page:
             return bool(self.page) and self.page == other.page
         if not self.end_line or not other.start_line:

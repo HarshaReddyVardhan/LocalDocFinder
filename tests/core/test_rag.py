@@ -63,6 +63,15 @@ class TestBuildSources:
             (2, "other page"),
         ]
 
+    def test_a_file_outline_never_swallows_the_code_it_summarises(self) -> None:
+        # The outline spans the whole file's lines but is a summary, not those lines: merging by
+        # line numbers used to drop every line of the real chunk.
+        outline = row("a.py", 1, 3, "File: a.py\nSymbols: retry", kind="outline")
+        code = row("a.py", 1, 3, "def retry():\n    # retry the charge\n    return 1")
+        sources = build_sources([outline, code], 1000)
+        assert [s.kind for s in sources] == ["outline", "code"]
+        assert "retry the charge" in sources[1].text
+
     def test_chunks_without_line_numbers_do_not_merge(self) -> None:
         sources = build_sources(
             [row("i.png", 0, 0, "a", kind="image"), row("i.png", 0, 0, "b")], 5000
