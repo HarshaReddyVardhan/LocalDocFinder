@@ -206,6 +206,30 @@ def test_read_only_sees_tables_built_by_writer(tmp_path: Path, state: StateDb) -
     assert LanceStore(tmp_path, state, "m1", dim=None).count() == 1
 
 
+def test_vectors_from_another_embedder_are_never_searched(tmp_path: Path, state: StateDb) -> None:
+    writer = LanceStore(tmp_path, state, "m1", dim=DIM)
+    writer.replace_rows(["a.py"], [chunk("a.py", "x", [1, 0, 0, 0])])
+    query = np.asarray([1, 0, 0, 0], np.float32)
+    same = LanceStore(tmp_path, state, "M1:latest", dim=None)  # the same model, spelled out
+    assert same.vectors_current()
+    assert len(same.vector_search(lc.CHUNKS, query, ["path"])) == 1
+    same.require_current_vectors()
+
+    switched = LanceStore(tmp_path, state, "m2", dim=None)  # embedder changed, not rebuilt yet
+    assert not switched.vectors_current()
+    assert switched.vector_search(lc.CHUNKS, query, ["path"]) == []
+    assert switched.fts_search(lc.CHUNKS, "x", ["path"]) is not None  # keywords still work
+    with pytest.raises(lc.IndexRebuildingError, match="being rebuilt for m2"):
+        switched.require_current_vectors()
+
+    state.set_meta("model_id", "m2")  # the worker's rebuild has started over with m2
+    assert switched.vectors_current()
+
+
+def test_an_index_with_no_recorded_model_counts_as_current(tmp_path: Path, state: StateDb) -> None:
+    assert LanceStore(tmp_path, state, "anything", dim=None).vectors_current()
+
+
 def test_maintain_builds_vector_index_when_large(tmp_path: Path, state: StateDb) -> None:
     store = LanceStore(tmp_path, state, "m1", dim=DIM, vector_index_min_rows=1)
     rng = np.random.default_rng(0)

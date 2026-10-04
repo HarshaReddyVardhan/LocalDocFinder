@@ -14,6 +14,7 @@ from typing import Any, TypeAlias, TypeVar
 import numpy as np
 import pyarrow as pa
 
+from localdoc_finder.core.model_names import same_model
 from localdoc_finder.core.store.sqlite import StateDb
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,11 @@ def document_schema(dim: int) -> pa.Schema:
 
 class ModelMismatchError(RuntimeError):
     """The index was built with another embedding model or dimension than the one configured."""
+
+
+class IndexRebuildingError(RuntimeError):
+    """The configured embedder differs from the one that built the index; until the rebuild
+    replaces the old vectors, a query vector cannot be compared with them."""
 
 
 class IndexSchemaError(RuntimeError):
@@ -251,6 +257,22 @@ class LanceStore:
             else:
                 return
 
+    def vectors_current(self) -> bool:
+        """Whether the stored vectors come from the configured embedder.
+
+        Read on every call: a long-lived search front-end must notice the worker finishing (or
+        starting) a rebuild. An index with no recorded model has nothing to mix up.
+        """
+        stored = self._state.get_meta("model_id")
+        return not stored or same_model(stored, self.model_id)
+
+    def require_current_vectors(self) -> None:
+        if not self.vectors_current():
+            raise IndexRebuildingError(
+                f"the index is being rebuilt for {self.model_id}; search works again once "
+                "the first indexing pass has finished"
+            )
+
     def table(self, name: str) -> LanceTable | None:
         """The named table, or ``None`` if the index has not been built yet."""
         if name not in self._tables:
@@ -356,8 +378,13 @@ class LanceStore:
     def vector_search(
         self, name: str, vector: np.ndarray, columns: list[str], where: str = "", limit: int = 50
     ) -> list[Row]:
+        """Nearest rows by cosine distance; ``[]`` while the stored vectors belong to another
+        embedder (comparing across models would rank at random)."""
         table = self.table(name)
         if table is None:
+            return []
+        if not self.vectors_current():
+            logger.info("lance: vectors are from another embedder; skipping the vector search")
             return []
         column = CHUNK_VECTOR if name == CHUNKS else DOC_VECTOR
         query = table.search(vector, vector_column_name=column).metric("cosine")

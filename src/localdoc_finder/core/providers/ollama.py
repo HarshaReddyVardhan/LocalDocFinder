@@ -177,8 +177,8 @@ class OllamaProvider:
         """Embed ``texts`` with the model's query/document prefix, in size-bounded batches."""
         if not texts:
             return np.zeros((0, self.dim), dtype=np.float32)
-        prefixes = self._embedding.prefixes_for()
-        prefix = prefixes.query if kind == "query" else prefixes.document
+        profile = self._embedding.profile_for()
+        prefix = profile.query if kind == "query" else profile.document
         prepared = [prefix + t for t in texts]
         out: list[np.ndarray] = []
         batch: list[str] = []

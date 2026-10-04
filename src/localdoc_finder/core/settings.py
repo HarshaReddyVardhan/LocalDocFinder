@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     DotEnvSettingsSource,
@@ -22,8 +22,9 @@ from pydantic_settings import (
 
 from localdoc_finder.core.data_migration import migrate_legacy_data, rename_data_dir
 from localdoc_finder.core.file_kinds import PRESET_KINDS, FileKind
+from localdoc_finder.core.model_names import model_family, same_model
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 APP_DIR_NAME = "LocalDocFinder"  # the Velopack install folder; uninstall deletes all of it
 DATA_DIR_NAME = "LocalDocFinderData"  # a sibling, so uninstalling never takes the index with it
 # Names from before the app was called LocalDoc Finder; their data is moved on first start.
@@ -49,8 +50,21 @@ def _drop_document_exts(raw: RawSettings) -> RawSettings:
     return {**raw, "scope": {k: v for k, v in scope.items() if k != "document_exts"}}
 
 
+def _prefixes_to_profiles(raw: RawSettings) -> RawSettings:
+    """v3 -> v4: ``embedding.prefixes`` became ``embedding.profiles`` (prefixes plus a floor)."""
+    embedding = raw.get("embedding", {})
+    if "prefixes" not in embedding:
+        return raw
+    renamed = {("profiles" if k == "prefixes" else k): v for k, v in embedding.items()}
+    return {**raw, "embedding": renamed}
+
+
 # Maps "from version" -> function producing the next version's layout.
-MIGRATIONS: dict[int, Migration] = {1: _keep_optional_features_on, 2: _drop_document_exts}
+MIGRATIONS: dict[int, Migration] = {
+    1: _keep_optional_features_on,
+    2: _drop_document_exts,
+    3: _prefixes_to_profiles,
+}
 
 
 class SettingsError(ValueError):
@@ -284,17 +298,41 @@ class IdleSettings(_Section):
 
 
 # --------------------------------------------------------------------------- models
-class ModelPrefixes(_Section):
-    """Per-model task prefixes; queries and indexed chunks are embedded differently."""
+class EmbeddingProfile(_Section):
+    """How one embedding model family is used.
+
+    Queries and indexed chunks are embedded with different task prefixes. ``min_similarity`` is
+    the cosine similarity below which a vector-only match is probably unrelated; every model
+    has its own scale, so the floor is measured per family with ``ldf eval --calibrate``.
+    """
 
     query: str = ""
     document: str = ""
+    min_similarity: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 _QWEN3_QUERY_PREFIX = (
     "Instruct: Given a search query, retrieve relevant code and text passages "
     "that answer the query\nQuery: "
 )
+# Keyed by family (any tag) or by a full name (that tag only, checked first). The floors sit just
+# above the best match of queries nothing in the eval corpus answers, and below nearly every
+# true hit (ldf eval --calibrate, October 2026).
+DEFAULT_EMBEDDING_PROFILES: dict[str, EmbeddingProfile] = {
+    "qwen3-embedding": EmbeddingProfile(query=_QWEN3_QUERY_PREFIX, min_similarity=0.50),
+    "bge-m3": EmbeddingProfile(min_similarity=0.53),
+    "nomic-embed-text": EmbeddingProfile(
+        query="search_query: ", document="search_document: ", min_similarity=0.60
+    ),
+    "mxbai-embed-large": EmbeddingProfile(
+        query="Represent this sentence for searching relevant passages: ", min_similarity=0.54
+    ),
+    "embeddinggemma": EmbeddingProfile(
+        query="task: search result | query: ",
+        document="title: none | text: ",
+        min_similarity=0.30,
+    ),
+}
 
 
 class EmbeddingSettings(_Section):
@@ -305,19 +343,32 @@ class EmbeddingSettings(_Section):
     num_ctx: int = Field(default=8192, gt=0)
     batch_size: int = Field(default=32, gt=0)
     keep_alive: str = "5m"
-    prefixes: dict[str, ModelPrefixes] = {
-        "qwen3-embedding:0.6b": ModelPrefixes(query=_QWEN3_QUERY_PREFIX),
-        "qwen3-embedding:4b": ModelPrefixes(query=_QWEN3_QUERY_PREFIX),
-        "nomic-embed-text": ModelPrefixes(query="search_query: ", document="search_document: "),
-        "bge-m3": ModelPrefixes(),
-        "mxbai-embed-large": ModelPrefixes(
-            query="Represent this sentence for searching relevant passages: "
-        ),
-    }
+    # Merged over the defaults, so a settings file can tune one family without losing the rest.
+    profiles: dict[str, EmbeddingProfile] = Field(
+        default_factory=lambda: dict(DEFAULT_EMBEDDING_PROFILES)
+    )
 
-    def prefixes_for(self, model: str | None = None) -> ModelPrefixes:
-        """Prefixes for ``model`` (default: the configured one); unknown models get none."""
-        return self.prefixes.get(model or self.model, ModelPrefixes())
+    @field_validator("profiles", mode="after")
+    @classmethod
+    def _over_defaults(cls, value: dict[str, EmbeddingProfile]) -> dict[str, EmbeddingProfile]:
+        return {**DEFAULT_EMBEDDING_PROFILES, **value}
+
+    def profile_for(self, model: str | None = None) -> EmbeddingProfile:
+        """The profile of ``model`` (default: the configured one).
+
+        A key with a tag matches that model only; a bare key matches the whole family, so
+        ``nomic-embed-text:latest`` and ``qwen3-embedding:8b`` resolve. Unknown models get no
+        prefixes and no floor.
+        """
+        name = model or self.model
+        for key, profile in self.profiles.items():
+            if ":" in key and same_model(key, name):
+                return profile
+        family = model_family(name)
+        for key, profile in self.profiles.items():
+            if ":" not in key and key.strip().lower() == family:
+                return profile
+        return EmbeddingProfile()
 
 
 class ChunkingSettings(_Section):

@@ -231,6 +231,7 @@ class SearchSkill(Skill):
         store = self.ctx.store
         if store.chunks is None:
             return []
+        store.require_current_vectors()
 
         if not parsed.text:  # filters only: the newest matching chunks
             rows = store.scan(CHUNKS, _COLUMNS, parsed.where, cfg.candidates * _FILTER_ONLY_FANOUT)

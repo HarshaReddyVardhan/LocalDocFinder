@@ -20,7 +20,7 @@ from localdoc_finder.core.providers.base import (
     ProviderUnavailableError,
     Usage,
 )
-from localdoc_finder.core.settings import EmbeddingSettings, ModelPrefixes
+from localdoc_finder.core.settings import EmbeddingProfile, EmbeddingSettings
 
 QUERY_PREFIX = "Q: "
 DOC_PREFIX = "D: "
@@ -31,7 +31,7 @@ def make(client: FakeOllamaClient, **overrides: object) -> om.OllamaProvider:
         "model": "m",
         "dim": 4,
         "batch_size": 2,
-        "prefixes": {"m": ModelPrefixes(query=QUERY_PREFIX, document=DOC_PREFIX)},
+        "profiles": {"m": EmbeddingProfile(query=QUERY_PREFIX, document=DOC_PREFIX)},
         **overrides,
     }
     settings = EmbeddingSettings(**fields)  # type: ignore[arg-type]

@@ -11,3 +11,8 @@ def normalise_model_name(name: str) -> str:
 
 def same_model(first: str, second: str) -> bool:
     return normalise_model_name(first) == normalise_model_name(second)
+
+
+def model_family(name: str) -> str:
+    """The name without its tag: ``qwen3-embedding:4b`` and ``:8b`` are one family."""
+    return normalise_model_name(name).rsplit(":", 1)[0]

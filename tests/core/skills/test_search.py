@@ -13,6 +13,7 @@ from localdoc_finder.core.skills.search import (
     SearchSkill,
     parse_query,
 )
+from localdoc_finder.core.store.lance import IndexRebuildingError
 
 PAYMENTS = (
     "def retry_failed_payments(order):\n"
@@ -211,6 +212,14 @@ class TestSearch:
         )
         skill.ctx.power._settings = disabled.power
         with pytest.raises(SearchDisabledError):
+            skill.search("retry payments")
+
+    def test_search_refuses_to_mix_vectors_from_another_embedder(
+        self, skill: SearchSkill, indexed: dict[str, str]
+    ) -> None:
+        # The user switched embedders; the worker has not rebuilt the index yet.
+        skill.ctx.store.model_id = "another-model"
+        with pytest.raises(IndexRebuildingError, match="being rebuilt"):
             skill.search("retry payments")
 
 

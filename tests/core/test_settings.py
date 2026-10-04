@@ -81,11 +81,48 @@ def test_settings_are_immutable(tmp_path: Path) -> None:
         cfg.log_level = "DEBUG"  # type: ignore[misc]  # asserting immutability
 
 
-def test_prefixes_for_known_and_unknown_model(tmp_path: Path) -> None:
+def test_profile_for_known_and_unknown_model(tmp_path: Path) -> None:
     emb = s.load_settings(tmp_path / "nope.toml").embedding
-    assert emb.prefixes_for("nomic-embed-text").query == "search_query: "
-    assert emb.prefixes_for("qwen3-embedding:0.6b").query.startswith("Instruct:")
-    assert emb.prefixes_for("some-new-model") == s.ModelPrefixes()
+    assert emb.profile_for("nomic-embed-text").query == "search_query: "
+    assert emb.profile_for("qwen3-embedding:0.6b").query.startswith("Instruct:")
+    assert emb.profile_for("some-new-model") == s.EmbeddingProfile()
+    assert emb.profile_for().query.startswith("Instruct:")  # the configured model
+
+
+@pytest.mark.parametrize(
+    ("model", "family"),
+    [
+        ("qwen3-embedding:0.6b", "qwen3-embedding"),
+        ("qwen3-embedding:4b", "qwen3-embedding"),
+        ("qwen3-embedding:8b", "qwen3-embedding"),
+        ("nomic-embed-text:latest", "nomic-embed-text"),
+        ("bge-m3:latest", "bge-m3"),
+        ("BGE-M3", "bge-m3"),
+        ("embeddinggemma:300m", "embeddinggemma"),
+    ],
+)
+def test_profiles_resolve_by_family_whatever_the_tag(model: str, family: str) -> None:
+    emb = s.EmbeddingSettings()
+    assert emb.profile_for(model) == s.DEFAULT_EMBEDDING_PROFILES[family]
+
+
+def test_every_default_profile_has_a_similarity_floor() -> None:
+    assert all(p.min_similarity > 0 for p in s.DEFAULT_EMBEDDING_PROFILES.values())
+
+
+def test_embeddinggemma_gets_its_task_prefixes() -> None:
+    profile = s.EmbeddingSettings().profile_for("embeddinggemma")
+    assert profile.query == "task: search result | query: "
+    assert profile.document == "title: none | text: "
+
+
+def test_a_tagged_profile_beats_its_family_and_settings_merge_over_defaults() -> None:
+    emb = s.EmbeddingSettings(
+        profiles={"qwen3-embedding:8b": s.EmbeddingProfile(min_similarity=0.42)}
+    )
+    assert emb.profile_for("qwen3-embedding:8b").min_similarity == 0.42
+    assert emb.profile_for("qwen3-embedding:4b").min_similarity == 0.50
+    assert emb.profile_for("bge-m3").min_similarity == 0.53  # the defaults are kept
 
 
 def test_migrate_applies_chain_up_to_current(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,6 +139,20 @@ def test_migrate_applies_chain_up_to_current(monkeypatch: pytest.MonkeyPatch) ->
     out = s.migrate({"schema_version": 1}, migrations={1: step(1), 2: step(2)})
     assert calls == [1, 2]
     assert out["schema_version"] == 3
+
+
+def test_v3_prefixes_become_profiles() -> None:
+    raw = {
+        "schema_version": 3,
+        "embedding": {"model": "m", "prefixes": {"m": {"query": "Q: ", "document": "D: "}}},
+    }
+    out = s.migrate(raw)
+    assert out["embedding"] == {
+        "model": "m",
+        "profiles": {"m": {"query": "Q: ", "document": "D: "}},
+    }
+    assert s.migrate({"schema_version": 3})["schema_version"] == s.SCHEMA_VERSION
+    assert s.EmbeddingSettings(**out["embedding"]).profile_for().query == "Q: "
 
 
 def test_v2_settings_lose_the_old_document_list() -> None:
