@@ -1,4 +1,4 @@
-"""Plain text, config/data files, RTF, Jupyter notebooks and SVG."""
+"""Plain text, config/data files, Jupyter notebooks and SVG."""
 
 import json
 import re
@@ -15,18 +15,12 @@ from vector_embed.core.extractors.base import (
 )
 from vector_embed.core.extractors.chunking import read_source, read_text, split_by_lines
 
-_PROSE_EXTS = {".txt", ".rtf", ".tex", ""}
+_PROSE_EXTS = {".txt", ".tex", ""}
 _CODE_FILENAMES = {"dockerfile", "makefile"}
 _TEXT_CHUNK_CHARS = 2500
 _TEXT_OVERLAP = 3
 _SVG_MAX_CHARS = 4000
 _SVG_MIN_CHARS = 3
-
-
-def strip_rtf(rtf: str) -> str:
-    rtf = re.sub(r"\\'[0-9a-fA-F]{2}", "", rtf)
-    rtf = re.sub(r"\\[a-zA-Z]+-?\d* ?", "", rtf)
-    return re.sub(r"[{}]", "", rtf)
 
 
 @register_extractor("text")
@@ -48,8 +42,6 @@ class TextExtractor(Extractor):
 
     def extract(self, path: Path) -> Iterable[Chunk]:
         content = read_source(self.ctx, path)
-        if path.suffix.lower() == ".rtf":
-            content = strip_rtf(content)
         is_prose = path.suffix.lower() in _PROSE_EXTS and path.name.lower() not in _CODE_FILENAMES
         kind = KIND_DOC if is_prose else KIND_CODE
         return [

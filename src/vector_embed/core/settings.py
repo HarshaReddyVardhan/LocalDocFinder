@@ -210,7 +210,7 @@ class ScopeSettings(_Section):
             ".mjs", ".cjs", ".vue", ".svelte", ".php", ".rb", ".lua", ".r", ".sh", ".bash",
             ".ps1", ".bat", ".cmd", ".html", ".htm", ".css", ".scss", ".sass", ".less", ".svg",
             ".sql", ".json", ".yaml", ".yml", ".toml", ".xml", ".ini", ".cfg", ".ipynb", ".md",
-            ".mdc", ".markdown", ".txt", ".rtf", ".tex", ".csv", ".tsv",
+            ".mdc", ".markdown", ".txt", ".tex", ".csv", ".tsv",
         }
     )  # fmt: skip
     # Parsed into function/class chunks with tree-sitter; others are chunked by lines/paragraphs.
@@ -226,7 +226,7 @@ class ScopeSettings(_Section):
         {".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".sql", ".html", ".htm",
          ".css", ".scss", ".sass", ".less", ".csv", ".tsv"}
     )  # fmt: skip
-    doc_exts: frozenset[str] = frozenset({".pdf", ".docx", ".pptx"})
+    doc_exts: frozenset[str] = frozenset({".pdf", ".docx", ".pptx", ".rtf"})
     image_exts: frozenset[str] = frozenset(
         {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
     )
