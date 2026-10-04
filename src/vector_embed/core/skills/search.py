@@ -18,6 +18,7 @@ from pydantic import Field
 from vector_embed.core import hooks
 from vector_embed.core.providers.base import ProviderError
 from vector_embed.core.retrieval import hybrid_candidates
+from vector_embed.core.settings import SearchSettings
 from vector_embed.core.skills.base import (
     UI_LIST,
     Skill,
@@ -136,6 +137,29 @@ class SearchInput(SkillInput):
     current_project: str | None = Field(default=None, description="Boost this project's files")
 
 
+def _query_words(text: str) -> list[str]:
+    return [w for w in re.findall(r"\w+", text.lower()) if len(w) >= _MIN_TERM_CHARS]
+
+
+def _name_boost(path: str, text: str, cfg: SearchSettings) -> float:
+    """Score multiplier for how well the file name matches the query.
+
+    The query naming the file (``references.txt`` or ``references``) outranks everything; partial
+    matches scale with the share of query words found in the name. The extension never counts as
+    a match on its own: ``txt`` is in every ``.txt`` file's name.
+    """
+    name = Path(path).name.lower()
+    stem = Path(name).stem
+    if text.strip().lower() in (name, stem):
+        return cfg.filename_exact_boost
+    extension = Path(name).suffix.lstrip(".")
+    words = [w for w in _query_words(text) if w != extension]
+    if not words:
+        return 1.0
+    hits = sum(w in stem for w in words)
+    return 1.0 + (cfg.filename_boost - 1.0) * hits / len(words)
+
+
 def _to_result(row: Row, score: float) -> SearchResult:
     text: str = row["text"]
     body = text.split("\n", 1)[1] if "\n" in text else text
@@ -225,7 +249,29 @@ class SearchSkill(Skill):
             force_cpu=self.ctx.query_on_cpu(),
         )
         pairs = [(c.row, c.score) for c in candidates]
+        pairs += self._filename_pairs(parsed, {row["path"] for row, _ in pairs})
         return self._group(pairs, limit, current_project, parsed.text)
+
+    def _filename_pairs(self, parsed: ParsedQuery, seen: set[str]) -> list[tuple[Row, float]]:
+        """One chunk per file whose name contains a query word, at top-of-list rank.
+
+        A file named in the query may have no chunk in the vector or BM25 top-N (its content can
+        be tiny or unrelated), so the name itself is a third retrieval leg.
+        """
+        store, cfg = self.ctx.store, self.ctx.settings.search
+        words = _query_words(parsed.text)
+        if not words:
+            return []
+        likes = " OR ".join(f"lower(path) LIKE '%{w}%'" for w in words)  # \w+ only: no quoting
+        where = f"({likes})" + (f" AND {parsed.where}" if parsed.where else "")
+        rows = store.scan(CHUNKS, _COLUMNS, where, cfg.candidates * _FILTER_ONLY_FANOUT)
+        found: dict[str, Row] = {}
+        for row in rows:
+            name = Path(row["path"]).name.lower()
+            if row["path"] not in seen and any(w in name for w in words):
+                found.setdefault(row["path"], row)
+        score = 1.0 / (cfg.rrf_k + 1)
+        return [(row, score) for row in found.values()]
 
     def _group(
         self,
@@ -236,15 +282,11 @@ class SearchSkill(Skill):
     ) -> list[SearchResult]:
         """Best chunk per file, boosted for the current project and for filename matches."""
         cfg = self.ctx.settings.search
-        words = [w for w in re.findall(r"\w+", text.lower()) if len(w) >= _MIN_TERM_CHARS]
         best: dict[str, SearchResult] = {}
         for row, base in pairs:
-            score = base
+            score = base * _name_boost(row["path"], text, cfg)
             if current_project and row["project"].lower() == current_project.lower():
                 score *= cfg.current_project_boost
-            name = Path(row["path"]).name.lower()
-            if any(w in name for w in words):
-                score *= cfg.filename_boost
             path = row["path"]
             current = best.get(path)
             if current is None:

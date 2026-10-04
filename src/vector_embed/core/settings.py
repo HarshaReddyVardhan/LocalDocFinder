@@ -447,7 +447,8 @@ class SearchSettings(_Section):
     candidates: int = Field(default=60, gt=0)
     results: int = Field(default=25, gt=0)
     current_project_boost: float = Field(default=1.15, ge=1)
-    filename_boost: float = Field(default=1.3, ge=1)  # query word appears in the file name
+    filename_boost: float = Field(default=2.0, ge=1)  # all query words appear in the file name
+    filename_exact_boost: float = Field(default=6.0, ge=1)  # query is the file name (or its stem)
     hotkey: str = "ctrl+alt+space"  # Alt+Space belongs to Windows and PowerToys Run
     vector_index_min_rows: int = Field(default=100_000, gt=0)  # flat search below, IVF_PQ above
 

@@ -125,6 +125,31 @@ class TestSearch:
         boosted = {r.path: r.score for r in skill.search("greet")}
         assert boosted[indexed["greet"]] > 0
 
+    def test_file_named_in_the_query_ranks_first(self, env: Env, skill: SearchSkill) -> None:
+        # The content never mentions the name, and every other file shares the .txt extension.
+        paths = [write(env, "docs/References.txt", "alpha\n")] + [
+            write(env, f"docs/other{n}.txt", f"references txt references list {n}\n")
+            for n in range(6)
+        ]
+        env.indexer.index_paths(paths)
+        env.store.maintain()
+        # The named file falls outside both legs' top-N.
+        settings = skill.ctx.settings
+        narrow = settings.search.model_copy(update={"candidates": 2})
+        skill.ctx.settings = settings.model_copy(update={"search": narrow})
+        for query in ("references.txt", "references"):
+            assert Path(skill.search(query)[0].path).name == "References.txt"
+
+    def test_extension_alone_is_not_a_filename_match(self, skill: SearchSkill) -> None:
+        cfg = skill.ctx.settings.search
+        assert search_mod._name_boost("D:/a/notes.txt", "txt", cfg) == 1.0
+        assert (
+            search_mod._name_boost("D:/a/notes.txt", "notes.txt", cfg) == cfg.filename_exact_boost
+        )
+        assert search_mod._name_boost("D:/a/notes.txt", "notes", cfg) == cfg.filename_exact_boost
+        half = search_mod._name_boost("D:/a/notes.txt", "notes budget", cfg)
+        assert 1.0 < half < cfg.filename_boost
+
     def test_current_project_is_boosted(self, skill: SearchSkill, indexed: dict[str, str]) -> None:
         base = {r.path: r.score for r in skill.search("retry payments")}
         boosted = {
