@@ -13,7 +13,14 @@ from tests.core.app.test_app import FakeService, result
 from localdoc_finder.app.assistant import ChatState, Delta, Event, Failed, Finished
 from localdoc_finder.app.controller import Launcher
 from localdoc_finder.app.theme import Scheme
-from localdoc_finder.app.window import EXPANDED_HEIGHT, Mode, SearchWindow, _Signals, _StreamJob
+from localdoc_finder.app.window import (
+    EXPANDED_HEIGHT,
+    SHADOW,
+    Mode,
+    SearchWindow,
+    _Signals,
+    _StreamJob,
+)
 from localdoc_finder.core.rag import Source
 
 
@@ -132,7 +139,13 @@ class TestModeSwitching:
         enabled.clear()
         window.reload_context()  # Settings switched the last feature off
         assert window.available_modes() == [Mode.SEARCH]
-        assert window.mode_bar.isHidden()  # nothing to switch between
+        # The switched-off modes keep their pills, greyed out, so they can still be found.
+        pills = {p.text(): p for p in window.mode_bar.findChildren(QPushButton, "modePill")}
+        assert not pills["Ask"].isEnabled()
+        assert not pills["Chat"].isEnabled()
+        assert "Settings > Features" in pills["Chat"].toolTip()
+        assert pills["Search"].isEnabled()
+        assert window.tab_hint.isHidden()  # nothing to switch between
         assert "Ctrl+T" not in window.hints.text()
 
     def test_switching_a_feature_off_leaves_its_mode(
@@ -253,9 +266,10 @@ class TestWindowChrome:
         for scheme in Scheme:
             window.apply_scheme(scheme)
             image = window.grab().toImage()
-            centre = image.pixelColor(image.width() // 2, image.height() // 2)
-            assert centre.alpha() == 255  # the card is opaque; only the shadow margin is not
-            assert (centre.lightness() > 128) is (scheme is Scheme.LIGHT)
+            # Inside the card's left margin: card, never a control or text drawn on it.
+            inside = image.pixelColor(SHADOW + 6, image.height() // 2)
+            assert inside.alpha() == 255  # the card is opaque; only the shadow margin is not
+            assert (inside.lightness() > 128) is (scheme is Scheme.LIGHT)
         corner = window.grab().toImage().pixelColor(0, 0)
         assert corner.alpha() < 40  # outside the rounded card: (nearly) transparent shadow
 
