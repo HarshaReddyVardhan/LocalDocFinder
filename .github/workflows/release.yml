@@ -1,0 +1,39 @@
+name: release
+
+# Push a tag like v0.2.0 to build the installer and publish it as a GitHub Release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Install vpk
+        run: dotnet tool install vpk --tool-path .tools
+      - name: Create the project venv
+        run: uv sync --locked --group build
+      - name: Check the tag matches pyproject.toml
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $version = .venv\Scripts\python.exe -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          if ($tag -ne $version) { throw "Tag v$tag does not match pyproject.toml version $version" }
+      - name: Build, pack and publish
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >
+          scripts\build.ps1
+          -RepoUrl "https://github.com/${{ github.repository }}"
+          -Upload

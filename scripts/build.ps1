@@ -68,7 +68,9 @@ if (-not (Test-Path $vpk)) {
 }
 if ($RepoUrl) {
     # Fetching the previous release lets vpk build a small delta package.
-    & $vpk download github --repoUrl $RepoUrl --outputDir Releases
+    $downloadArgs = @("download", "github", "--repoUrl", $RepoUrl, "--outputDir", "Releases")
+    if ($env:GITHUB_TOKEN) { $downloadArgs += @("--token", $env:GITHUB_TOKEN) }
+    & $vpk @downloadArgs
     if ($LASTEXITCODE -ne 0) { Write-Host "No earlier release to base a delta on (first release?)." }
 }
 Run $vpk @("pack", "--packId", "VectorEmbed", "--packVersion", $Version,
@@ -79,8 +81,10 @@ Run $vpk @("pack", "--packId", "VectorEmbed", "--packVersion", $Version,
 Step "5/5 Publish"
 if ($Upload) {
     if (-not $RepoUrl) { throw "-Upload needs -RepoUrl." }
-    Run $vpk @("upload", "github", "--repoUrl", $RepoUrl, "--outputDir", "Releases",
+    $uploadArgs = @("upload", "github", "--repoUrl", $RepoUrl, "--outputDir", "Releases",
         "--tag", "v$Version", "--releaseName", "Vector Embed $Version", "--publish")
+    if ($env:GITHUB_TOKEN) { $uploadArgs += @("--token", $env:GITHUB_TOKEN) }
+    Run $vpk $uploadArgs
 } else {
     Write-Host "Skipped (add -Upload -RepoUrl <repo> to publish)."
 }

@@ -8,6 +8,21 @@ Download `VectorEmbed-win-Setup.exe` from the project's GitHub Releases and run 
 the current user only (no admin rights), bundles its own Python, and updates itself. Windows may
 show a SmartScreen warning because the build is not code-signed: choose "More info" > "Run anyway".
 
+Or install from PowerShell or cmd in one line (downloads the latest release and runs the installer):
+
+```powershell
+irm https://raw.githubusercontent.com/HarshaReddyVardhan/LocalDocFinder/main/scripts/install.ps1 | iex
+```
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/HarshaReddyVardhan/LocalDocFinder/main/scripts/install.ps1 | iex"
+```
+
+**Releasing:** bump `version` in `pyproject.toml`, commit, then `git tag v<version>` and
+`git push origin v<version>`. The `release` workflow builds and publishes the installer and update
+packages to GitHub Releases (the tag must match the version). Locally:
+`scripts\build.ps1 -RepoUrl https://github.com/HarshaReddyVardhan/LocalDocFinder -Upload`.
+
 On first start a **setup wizard** runs:
 1. It checks your hardware and **Ollama**. If Ollama is missing it offers to download and install
    it from ollama.com (about 1.2 GB); nothing is downloaded until you tick the box, and the
