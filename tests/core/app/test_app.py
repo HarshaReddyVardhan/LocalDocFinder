@@ -446,6 +446,19 @@ def test_tray_icon_is_drawn(qapp: QApplication) -> None:
     assert not app_main.tray_icon().isNull()
 
 
+def test_every_window_uses_the_tray_icon(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids: list[str] = []
+    monkeypatch.setattr(app_main, "is_frozen", lambda: False)
+    app_main.use_app_icon(qapp, ids.append)
+    assert not qapp.windowIcon().isNull()
+    assert ids == [app_main.APP_USER_MODEL_ID]  # run from source: not grouped under python.exe
+    monkeypatch.setattr(app_main, "is_frozen", lambda: True)
+    app_main.use_app_icon(qapp, ids.append)
+    assert ids == [app_main.APP_USER_MODEL_ID]  # the installed exe keeps its own identity
+
+
 def test_build_window_wires_the_service(
     qapp: QApplication, env: Env, monkeypatch: pytest.MonkeyPatch, skill_ctx: SkillContext
 ) -> None:

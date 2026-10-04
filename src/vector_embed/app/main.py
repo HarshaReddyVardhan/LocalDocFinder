@@ -4,6 +4,7 @@ pythonw -m vector_embed.app          (or ``python -m vector_embed.app --show``)
 """
 
 import argparse
+import ctypes
 import logging
 import sys
 import threading
@@ -64,10 +65,28 @@ EXIT_BAD_SETTINGS = 2
 
 
 TRAY_ICON_FILE = Path(__file__).with_name("assets") / "icon.png"  # drawn by packaging/make_icon.py
+APP_USER_MODEL_ID = "VectorEmbed.App"
 
 
 def tray_icon() -> QIcon:
     return QIcon(str(TRAY_ICON_FILE))
+
+
+def _set_app_user_model_id(app_id: str) -> None:
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)  # type: ignore[attr-defined,unused-ignore]
+
+
+def use_app_icon(
+    app: QApplication, set_app_id: Callable[[str], None] = _set_app_user_model_id
+) -> None:
+    """The tray's icon on every window and its taskbar button.
+
+    Run from source, Windows groups the windows under python.exe and shows Python's icon; an
+    app id of our own gives them their own taskbar button. Must run before any window exists.
+    """
+    app.setWindowIcon(tray_icon())
+    if not is_frozen():  # the installed exe is its own taskbar identity already
+        set_app_id(APP_USER_MODEL_ID)
 
 
 def pick_document() -> str | None:
@@ -370,6 +389,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_logging("app", default_data_dir() / runtime.LOGS_DIRNAME)
     app = QApplication(sys.argv[:1])
     app.setQuitOnLastWindowClosed(False)
+    use_app_icon(app)
     settings = load_settings_or_report()
     if settings is None:
         return EXIT_BAD_SETTINGS
