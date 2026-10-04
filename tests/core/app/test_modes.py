@@ -114,6 +114,44 @@ class TestModeSwitching:
         window.input.setText("?not a question")
         assert window.mode is Mode.SEARCH
 
+    def test_only_the_features_switched_on_get_a_mode(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        enabled: set[str] = {"chat"}
+        window = SearchWindow(
+            FakeService(),  # type: ignore[arg-type]
+            Launcher(),
+            tmp_path,
+            FakeAssistant(),  # type: ignore[arg-type]
+            features=lambda: enabled,
+        )
+        window.show()
+        assert window.available_modes() == [Mode.SEARCH, Mode.CHAT]
+        window.input.setText("?a question")  # Ask is off: the text stays a search
+        assert window.mode is Mode.SEARCH
+        enabled.clear()
+        window.reload_context()  # Settings switched the last feature off
+        assert window.available_modes() == [Mode.SEARCH]
+        assert window.mode_bar.isHidden()  # nothing to switch between
+        assert "Ctrl+T" not in window.hints.text()
+
+    def test_switching_a_feature_off_leaves_its_mode(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        enabled: set[str] = {"ask"}
+        window = SearchWindow(
+            FakeService(),  # type: ignore[arg-type]
+            Launcher(),
+            tmp_path,
+            FakeAssistant(),  # type: ignore[arg-type]
+            features=lambda: enabled,
+        )
+        window.show()
+        window.set_mode(Mode.ASK)
+        enabled.clear()
+        window.reload_context()
+        assert window.mode is Mode.SEARCH
+
     def test_question_mark_prefix_switches_to_ask(
         self, parts: tuple[SearchWindow, FakeAssistant, list]
     ) -> None:

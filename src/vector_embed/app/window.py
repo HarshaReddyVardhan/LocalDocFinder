@@ -14,7 +14,7 @@ import enum
 import re
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
@@ -100,6 +100,7 @@ from vector_embed.app.theme import (
     style_check_boxes,
 )
 from vector_embed.core.documents import DocumentError
+from vector_embed.core.features import FEATURES
 from vector_embed.core.rag import CODE_KINDS, Source
 from vector_embed.core.skills.base import panel_skills
 from vector_embed.core.skills.chat import SessionSummary
@@ -124,8 +125,9 @@ PLACEHOLDERS = {
     "chat": "Chat about the pinned documents…  (Enter to send, Ctrl+V pastes a document)",
     "match": "Paste a job description (Ctrl+V) and press Enter to rank your documents…",
 }
+CHAT_KEY_HINT = "   Ctrl+T chat"  # dropped from the Search hints while Chat is off
 KEY_HINTS = {
-    "search": "↵ open   Ctrl+↵ reveal   Shift+↵ VS Code   Ctrl+T chat   Esc close",
+    "search": f"↵ open   Ctrl+↵ reveal   Shift+↵ VS Code{CHAT_KEY_HINT}   Esc close",
     "ask": "↵ ask   Ctrl+↵ open source   Esc close",
     "chat": "↵ send   Ctrl+V paste a document   drop files to pin   Esc close",
     "match": "Ctrl+V paste   ↵ find matches   Esc close",
@@ -317,6 +319,7 @@ class SearchWindow(QWidget):
         *,
         matcher: MatchController | None = None,
         pick_file: Callable[[], str | None] = lambda: None,
+        features: Callable[[], Collection[str]] = lambda: FEATURES,
     ) -> None:
         super().__init__(
             None,
@@ -327,6 +330,7 @@ class SearchWindow(QWidget):
         self._service = service
         self._assistant = assistant
         self._matcher = matcher
+        self._features = features  # asked each time: Settings can switch features on or off
         self._pick_file = pick_file
         self._jd_text = ""
         self._last_text = ""
@@ -376,7 +380,7 @@ class SearchWindow(QWidget):
 
     def reload_context(self) -> None:
         """Settings changed: end any chat (its model/route may differ) and rebuild lazily."""
-        if self._mode is Mode.CHAT:
+        if self._mode is Mode.CHAT or self._mode not in self.available_modes():
             self.set_mode(Mode.SEARCH)
         elif self._assistant is not None and self._assistant.session_active:
             self._end_chat("settings changed")
@@ -385,6 +389,7 @@ class SearchWindow(QWidget):
             self._assistant.reset()
         if self._matcher is not None:
             self._matcher.reset_context()
+        self._refresh_mode_bar()  # features may have been switched on or off in Settings
 
     def apply_scheme(self, scheme: Scheme) -> None:
         """Restyle the popup for light or dark (the Settings theme choice changed)."""
@@ -571,12 +576,17 @@ class SearchWindow(QWidget):
         return self._mode
 
     def available_modes(self) -> list[AnyMode]:
+        """Search always; Ask, Chat and Match only when the user switched them on."""
+        enabled = self._features()
         modes: list[AnyMode] = [Mode.SEARCH]
         if self._assistant is not None:
-            modes += [Mode.ASK, Mode.CHAT]
-        if self.panel is not None:
+            modes += [m for m in (Mode.ASK, Mode.CHAT) if m.value in enabled]
+        if self.panel is not None and Mode.MATCH.value in enabled:
             modes.append(Mode.MATCH)
         return modes + list(self._skill_modes)
+
+    def _has_mode(self, mode: Mode) -> bool:
+        return mode in self.available_modes()
 
     def _next_mode(self) -> AnyMode:
         modes = self.available_modes()
@@ -613,15 +623,10 @@ class SearchWindow(QWidget):
     def _apply_mode(self) -> None:
         searching = self._mode is Mode.SEARCH
         mode = self._mode
-        self.mode_bar.set_modes([(m.value, m.title) for m in self.available_modes()])
-        self.mode_bar.set_current(mode.value)
+        self._refresh_mode_bar()
         self.status.clear()  # the last mode's message would read as this one's
-        if isinstance(mode, SkillMode):
-            self.input.setPlaceholderText(mode.hint)
-            self.hints.setText(SKILL_KEY_HINTS)
-        else:
-            self.input.setPlaceholderText(PLACEHOLDERS[mode.value])
-            self.hints.setText(KEY_HINTS[mode.value])
+        placeholder = mode.hint if isinstance(mode, SkillMode) else PLACEHOLDERS[mode.value]
+        self.input.setPlaceholderText(placeholder)
         self.body.setCurrentIndex(self._body_index())
         self._check_cloud_async()
         self.list.setVisible(searching)  # elsewhere it lists sources, once there are some
@@ -632,6 +637,20 @@ class SearchWindow(QWidget):
         self._answer_text = ""
         self._fit_height()
         self.input.setFocus()
+
+    def _refresh_mode_bar(self) -> None:
+        """Pills and key hints for the modes on; with only Search there is nothing to switch."""
+        modes = self.available_modes()
+        self.mode_bar.set_modes([(m.value, m.title) for m in modes])
+        self.mode_bar.set_current(self._mode.value)
+        self.mode_bar.setVisible(len(modes) > 1)
+        if isinstance(self._mode, SkillMode):
+            self.hints.setText(SKILL_KEY_HINTS)
+            return
+        hint = KEY_HINTS[self._mode.value]
+        if self._mode is Mode.SEARCH and not self._has_mode(Mode.CHAT):
+            hint = hint.replace(CHAT_KEY_HINT, "")
+        self.hints.setText(hint)
 
     def _fit_height(self) -> None:
         """Search shows only the bar until there is something to list; other modes need room."""
@@ -840,7 +859,7 @@ class SearchWindow(QWidget):
 
     # ------------------------------------------------------------------ input
     def _on_text(self, text: str) -> None:
-        if self._mode is Mode.SEARCH and text.startswith("?") and self._assistant is not None:
+        if self._mode is Mode.SEARCH and text.startswith("?") and self._has_mode(Mode.ASK):
             self.input.blockSignals(True)
             self.input.setText(text[1:].lstrip())
             self.input.blockSignals(False)
@@ -1060,7 +1079,7 @@ class SearchWindow(QWidget):
     def chat_with_selected(self) -> None:
         """Ctrl+T on a search result: pin it and switch to Chat mode."""
         result = self.selected()
-        if result is None or self._assistant is None or self._mode is not Mode.SEARCH:
+        if result is None or not self._has_mode(Mode.CHAT) or self._mode is not Mode.SEARCH:
             return
         self._chat.reset()
         self._chat.pinned = [result.path]
@@ -1069,12 +1088,12 @@ class SearchWindow(QWidget):
 
     # ------------------------------------------------------------------ drag and drop
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
-        if self._assistant is not None and dropped_files(event.mimeData()):
+        if self._has_mode(Mode.CHAT) and dropped_files(event.mimeData()):
             event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
         paths = dropped_files(event.mimeData())
-        if self._assistant is None or not paths:
+        if not self._has_mode(Mode.CHAT) or not paths:
             return
         event.acceptProposedAction()
         self.pin_files(paths)

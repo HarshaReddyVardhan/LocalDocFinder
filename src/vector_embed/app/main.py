@@ -30,6 +30,7 @@ from vector_embed.app.update_scheduler import UpdateScheduler
 from vector_embed.app.window import SearchWindow
 from vector_embed.core import runtime
 from vector_embed.core.autostart import Autostart
+from vector_embed.core.features import enabled_features
 from vector_embed.core.idle import SystemActivity
 from vector_embed.core.indexing_control import IndexingControl
 from vector_embed.core.lifecycle import start_watcher
@@ -106,6 +107,11 @@ class ContextFactory:
                 )
             return self._cache
 
+    @property
+    def settings(self) -> Settings:
+        """The settings in force; replaced by ``invalidate`` when the file changes."""
+        return self._settings
+
     def invalidate(self) -> None:
         with self._lock:
             self._cache = None
@@ -133,6 +139,9 @@ def build_window(
         AssistantService(context),
         matcher=MatchController(context),
         pick_file=pick_document,
+        features=lambda: enabled_features(
+            context.settings if isinstance(context, ContextFactory) else settings
+        ),
     )
 
 
