@@ -310,6 +310,8 @@ class _CallJob(QRunnable):
 
 
 class SearchWindow(QWidget):
+    settings_requested = Signal()  # the gear in the header: the app owns the Settings window
+
     def __init__(
         self,
         service: SearchService,
@@ -462,23 +464,52 @@ class SearchWindow(QWidget):
         )
 
     def _build_header(self) -> QHBoxLayout:
-        """Mode pills (the current mode is always visible), a Tab hint and a close button."""
+        """Mode pills, a Tab key hint, the Settings gear and a close button."""
         self.mode_bar = ModeBar()
         self.mode_bar.chosen.connect(self._choose_mode)
-        hint = QLabel("Tab to switch")
-        hint.setObjectName("modeHint")
-        close = QPushButton("✕")
-        close.setObjectName("close")
-        close.setToolTip("Close (Esc)")
-        close.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        close.clicked.connect(self.dismiss)
+        self.tab_hint = self._build_tab_hint()
+        settings = self._header_button("⚙", "settingsButton", "Settings", self.open_settings)
+        close = self._header_button("✕", "close", "Close (Esc)", self.dismiss)
         header = QHBoxLayout()
-        header.setSpacing(8)
+        header.setSpacing(6)
         header.addWidget(self.mode_bar)
         header.addStretch(1)  # empty header space is where the card is dragged from
-        header.addWidget(hint)
+        header.addWidget(self.tab_hint)
+        header.addSpacing(6)
+        header.addWidget(settings)
         header.addWidget(close)
         return header
+
+    def _build_tab_hint(self) -> QFrame:
+        """A key cap and its meaning in a tinted chip, set apart from the mode pills."""
+        chip = QFrame()
+        chip.setObjectName("tabHint")
+        key = QLabel("Tab")
+        key.setObjectName("keyCap")
+        text = QLabel("to switch")
+        text.setObjectName("tabHintText")
+        row = QHBoxLayout(chip)
+        row.setContentsMargins(5, 3, 10, 3)
+        row.setSpacing(6)
+        row.addWidget(key)
+        row.addWidget(text)
+        return chip
+
+    def _header_button(
+        self, glyph: str, name: str, tip: str, action: Callable[[], None]
+    ) -> QPushButton:
+        button = QPushButton(glyph)
+        button.setObjectName(name)
+        button.setToolTip(tip)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # typing stays in the search bar
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.clicked.connect(action)
+        return button
+
+    def open_settings(self) -> None:
+        """Hide the popup (it stays on top) and ask the app for the Settings window."""
+        self.dismiss()
+        self.settings_requested.emit()
 
     def _build_bottom_bar(self) -> QHBoxLayout:
         """Status, the chat history and "Answer better" buttons, key hints and a resize grip."""
@@ -575,15 +606,23 @@ class SearchWindow(QWidget):
     def mode(self) -> AnyMode:
         return self._mode
 
+    def all_modes(self) -> list[AnyMode]:
+        """Every mode this window can show, switched on or not, in Tab order."""
+        modes: list[AnyMode] = [Mode.SEARCH]
+        if self._assistant is not None:
+            modes += [Mode.ASK, Mode.CHAT]
+        if self.panel is not None:
+            modes.append(Mode.MATCH)
+        return modes + list(self._skill_modes)
+
     def available_modes(self) -> list[AnyMode]:
         """Search always; Ask, Chat and Match only when the user switched them on."""
         enabled = self._features()
-        modes: list[AnyMode] = [Mode.SEARCH]
-        if self._assistant is not None:
-            modes += [m for m in (Mode.ASK, Mode.CHAT) if m.value in enabled]
-        if self.panel is not None and Mode.MATCH.value in enabled:
-            modes.append(Mode.MATCH)
-        return modes + list(self._skill_modes)
+        return [m for m in self.all_modes() if self._is_on(m, enabled)]
+
+    @staticmethod
+    def _is_on(mode: AnyMode, enabled: Collection[str]) -> bool:
+        return mode is Mode.SEARCH or isinstance(mode, SkillMode) or mode.value in enabled
 
     def _has_mode(self, mode: Mode) -> bool:
         return mode in self.available_modes()
@@ -641,9 +680,11 @@ class SearchWindow(QWidget):
     def _refresh_mode_bar(self) -> None:
         """Pills and key hints for the modes on; with only Search there is nothing to switch."""
         modes = self.available_modes()
-        self.mode_bar.set_modes([(m.value, m.title) for m in modes])
+        every = self.all_modes()
+        self.mode_bar.set_modes([(m.value, m.title, m in modes) for m in every])
         self.mode_bar.set_current(self._mode.value)
-        self.mode_bar.setVisible(len(modes) > 1)
+        self.mode_bar.setVisible(len(every) > 1)  # switched-off modes show greyed out
+        self.tab_hint.setVisible(len(modes) > 1)  # nothing to switch to with Search alone
         if isinstance(self._mode, SkillMode):
             self.hints.setText(SKILL_KEY_HINTS)
             return

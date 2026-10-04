@@ -1,7 +1,12 @@
-"""The row of mode pills above the search bar: shows where you are, and a click switches."""
+"""The row of mode pills above the search bar: shows where you are, and a click switches.
+
+A mode that is switched off keeps its pill, greyed out, so the feature can still be found.
+"""
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QPushButton, QWidget
+
+OFF_TIP = "{title} is off. Turn it on in Settings > Features."
 
 
 class ModeBar(QWidget):
@@ -18,9 +23,10 @@ class ModeBar(QWidget):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(4)
 
-    def set_modes(self, modes: list[tuple[str, str]]) -> None:
-        """``(value, title)`` pairs, in Tab order; the same list again keeps the pills."""
-        if [(value, pill.text()) for value, pill in self._pills.items()] == modes:
+    def set_modes(self, modes: list[tuple[str, str, bool]]) -> None:
+        """``(value, title, on)`` in Tab order; the same list again keeps the pills."""
+        current = [(value, pill.text(), pill.isEnabled()) for value, pill in self._pills.items()]
+        if current == modes:
             return
         for pill in self._pills.values():
             self._group.removeButton(pill)
@@ -28,10 +34,13 @@ class ModeBar(QWidget):
             pill.setParent(None)
             pill.deleteLater()
         self._pills = {}
-        for value, title in modes:
+        for value, title, on in modes:
             pill = QPushButton(title)
             pill.setObjectName("modePill")
             pill.setCheckable(True)
+            pill.setEnabled(on)
+            if not on:
+                pill.setToolTip(OFF_TIP.format(title=title))
             pill.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # typing stays in the search bar
             pill.setCursor(Qt.CursorShape.PointingHandCursor)
             pill.clicked.connect(lambda _checked=False, v=value: self.chosen.emit(v))

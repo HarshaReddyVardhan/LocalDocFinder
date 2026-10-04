@@ -482,6 +482,7 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
                 )
             settings_window[0].open()
 
+        window.settings_requested.connect(open_settings)  # the gear in the popup's header
         menu.addAction("Search", window.summon)
         menu.addAction("Settings…", open_settings)
         add_indexing_actions(menu, indexing_control, lambda text: announce(tray, text))

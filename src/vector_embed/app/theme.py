@@ -111,6 +111,11 @@ _POPUP_COLOURS = {
         "button_down": "#dfe5f1",
         "scroll": "#c5cbd8",
         "menu": "#ffffff",
+        "faint": "#bcc2cf",  # a switched-off mode pill
+        "chip": "#e8eeff",  # the Tab hint chip
+        "chip_fg": "#2f5be0",
+        "danger": "#e5484d",  # close button under the mouse, as in Windows title bars
+        "danger_down": "#c93a3f",
     },
     Scheme.DARK: {
         "fg": "#e8eaf0",
@@ -129,6 +134,11 @@ _POPUP_COLOURS = {
         "button_down": "#3d4252",
         "scroll": "#4a4f5e",
         "menu": "#25272f",
+        "faint": "#565b69",
+        "chip": "#28324d",
+        "chip_fg": "#9db5ff",
+        "danger": "#e5484d",
+        "danger_down": "#c93a3f",
     },
 }
 _POPUP_STYLE = """
@@ -140,12 +150,23 @@ QLineEdit#query {{ background:{field}; border:1px solid {edge}; border-radius:12
 QLineEdit#query:focus {{ background:{field_focus}; border-color:{focus_edge}; }}
 QPushButton#modePill {{ background:transparent; border:1px solid transparent; border-radius:13px;
     padding:4px 13px; color:{muted}; font-size:12px; font-weight:600; }}
-QPushButton#modePill:hover {{ background:{hover}; color:{fg}; }}
+QPushButton#modePill:hover {{ background:{button_hover}; color:{fg}; }}
 QPushButton#modePill:checked {{ background:{accent}; color:#ffffff; }}
-QPushButton#close {{ background:transparent; border:1px solid transparent; border-radius:12px;
-    color:{muted}; font-size:12px; padding:0; min-width:24px; min-height:24px; }}
-QPushButton#close:hover {{ background:{hover}; color:{fg}; }}
-QLabel#modeHint, QLabel#status, QLabel#hints {{ color:{muted}; font-size:12px; }}
+QPushButton#modePill:disabled {{ background:transparent; color:{faint}; }}
+QPushButton#close, QPushButton#settingsButton {{ background:transparent;
+    border:1px solid transparent; border-radius:8px; color:{muted}; font-size:13px;
+    padding:0; min-width:28px; min-height:28px; }}
+QPushButton#settingsButton {{ font-family:"Segoe UI Symbol"; font-size:16px; }}
+QPushButton#settingsButton:hover {{ background:{button_hover}; color:{fg}; }}
+QPushButton#settingsButton:pressed {{ background:{button_down}; }}
+QPushButton#close:hover {{ background:{danger}; color:#ffffff; }}
+QPushButton#close:pressed {{ background:{danger_down}; color:#ffffff; }}
+QFrame#tabHint {{ background:{chip}; border-radius:11px; }}
+QLabel#keyCap {{ background:{field_focus}; color:{chip_fg}; border:1px solid {focus_edge};
+    border-bottom-width:2px; border-radius:5px; padding:0 6px; font-size:11px;
+    font-weight:700; }}
+QLabel#tabHintText {{ color:{chip_fg}; font-size:12px; font-weight:600; }}
+QLabel#status, QLabel#hints {{ color:{muted}; font-size:12px; }}
 QListWidget {{ background:transparent; border:none; outline:0; }}
 QListWidget::item {{ padding:6px 8px; margin:1px 0; border-radius:10px; }}
 QListWidget::item:hover {{ background:{hover}; }}
