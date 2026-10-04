@@ -44,6 +44,11 @@ class SkillContext:
         """Embed queries on the CPU when unplugged or any process holds the chat lock."""
         return self.power.search_on_cpu() or self.state.lock_held(CHAT_LOCK)
 
+    @property
+    def similarity_floor(self) -> float:
+        """The embedder's ``min_similarity``: below it a vector-only match is probably unrelated."""
+        return self.settings.embedding.profile_for().min_similarity
+
 
 class SkillInput(BaseModel):
     """Base for skill inputs; subclasses are rendered into CLI flags and MCP tool schemas."""

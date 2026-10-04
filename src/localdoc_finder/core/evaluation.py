@@ -75,9 +75,12 @@ class EvalSpec:
 @dataclass
 class LegScore:
     """Quality of one retrieval path. Recall, MRR, nDCG and P@5 are averaged over the queries
-    with ``expect``; the false-positive rate over the queries with a negative constraint."""
+    with ``expect``; the false-positive rate over the queries with a negative constraint.
+    ``strong_recall`` counts only the strong results: a relevant file shown as "less relevant"
+    is found, but not vouched for."""
 
     recall: float = 0.0
+    strong_recall: float = 0.0
     mrr: float = 0.0
     ndcg: float = 0.0
     p_at_5: float = 0.0
@@ -207,37 +210,47 @@ def precision_at(paths: Sequence[str], expect: Sequence[str], k: int = TOP) -> f
     return sum(_matches(p, expect) for p in paths[:k]) / k
 
 
-def is_false_positive(
-    paths: Sequence[str], query: EvalQuery, k: int = TOP, *, judge_none: bool = True
-) -> bool:
-    """A query the corpus cannot answer returned something, or a forbidden path reached the top."""
-    top = paths[:k]
-    if judge_none and query.expect_none and top:
+def is_false_positive(strong: Sequence[str], query: EvalQuery, k: int = TOP) -> bool:
+    """A query the corpus cannot answer got a strong result, or a forbidden path reached the top
+    of the strong results. Weak results ("less relevant") are shown but vouch for nothing."""
+    top = strong[:k]
+    if query.expect_none and top:
         return True
     return any(_matches(p, query.not_expected) for p in top)
 
 
-def score_leg(runs: Sequence[tuple[EvalQuery, Sequence[str]]], judge_none: bool = True) -> LegScore:
-    """Aggregate per-query results. ``judge_none=False`` ignores ``expect_none`` when counting
-    false positives: a bare nearest-neighbour search always returns something."""
+@dataclass(frozen=True)
+class EvalRun:
+    """One query's results: all of them in order, and the strong ones."""
+
+    query: EvalQuery
+    paths: Sequence[str]
+    strong: Sequence[str]
+
+
+def score_leg(runs: Sequence[EvalRun]) -> LegScore:
+    """Aggregate per-query results: ranking metrics over everything returned, false positives
+    over the strong results only."""
     score = LegScore()
-    positives = [(q, paths) for q, paths in runs if q.positive]
-    for query, paths in positives:
+    positives = [run for run in runs if run.query.positive]
+    for run in positives:
+        query, paths = run.query, run.paths
         rank = rank_of(paths, query.expect)
         if rank:
             score.recall += 1
             score.mrr += 1 / rank
         else:
             score.missed.append(query.text)
+        score.strong_recall += bool(rank_of(run.strong, query.expect))
         score.ndcg += ndcg_at(paths, query.expect)
         score.p_at_5 += precision_at(paths, query.expect)
     if positives:
-        for name in ("recall", "mrr", "ndcg", "p_at_5"):
+        for name in ("recall", "strong_recall", "mrr", "ndcg", "p_at_5"):
             setattr(score, name, getattr(score, name) / len(positives))
-    judged = [(q, paths) for q, paths in runs if q.not_expected or (q.expect_none and judge_none)]
-    for query, paths in judged:
-        if is_false_positive(paths, query, judge_none=judge_none):
-            score.false_positives.append(query.text)
+    judged = [run for run in runs if run.query.negative]
+    for run in judged:
+        if is_false_positive(run.strong, run.query):
+            score.false_positives.append(run.query.text)
     score.fp_rate = len(score.false_positives) / len(judged) if judged else 0.0
     return score
 
@@ -301,9 +314,7 @@ class Evaluator:
         embedder: EvalEmbedder,
         model: str,
     ) -> tuple[int, float]:
-        settings = self._settings.model_copy(
-            update={"embedding": self._settings.embedding.model_copy(update={"model": model})}
-        )
+        settings = self._for_model(model)
         projects = Projects(self._scope, settings.scope, roots=spec.corpus)
         extractors = ExtractorSet(
             ExtractContext(
@@ -344,21 +355,30 @@ class Evaluator:
     ) -> None:
         power = PowerGate(PowerSettings(), probe=lambda: True)
         power.update()
-        skill = SearchSkill(SkillContext(self._settings, state, store, embedder, power))
-        full_runs: list[tuple[EvalQuery, Sequence[str]]] = []
-        vector_runs: list[tuple[EvalQuery, Sequence[str]]] = []
+        settings = self._for_model(result.model)
+        skill = SearchSkill(SkillContext(settings, state, store, embedder, power))
+        floor = settings.embedding.profile_for().min_similarity
+        full_runs: list[EvalRun] = []
+        vector_runs: list[EvalRun] = []
         timings: list[float] = []
         for query in spec.queries:
             started = time.perf_counter()
             found = skill.search(query.text, limit=K)
             timings.append((time.perf_counter() - started) * 1000)
-            full_runs.append((query, [r.path for r in found]))
+            strong = [r.path for r in found if not r.weak]
+            full_runs.append(EvalRun(query, [r.path for r in found], strong))
             vector = self._vector_leg(store, embedder, query.text)
-            vector_runs.append((query, vector.paths))
+            above = [p for p in vector.paths if vector.similarities[p] >= floor]
+            vector_runs.append(EvalRun(query, vector.paths, above))
             self._collect_similarities(query, vector, result)
         result.full = score_leg(full_runs)
-        result.vector = score_leg(vector_runs, judge_none=False)
+        result.vector = score_leg(vector_runs)
         result.p50_ms = statistics.median(timings)
+
+    def _for_model(self, model: str) -> Settings:
+        """The settings with ``model`` as the embedder, so its prefixes and floor apply."""
+        embedding = self._settings.embedding.model_copy(update={"model": model})
+        return self._settings.model_copy(update={"embedding": embedding})
 
     def _vector_leg(self, store: LanceStore, embedder: EvalEmbedder, text: str) -> _VectorRun:
         vector = embedder.embed([text], kind="query")[0]
@@ -386,8 +406,8 @@ class Evaluator:
 # ---------------------------------------------------------------------- reports
 def _leg_row(label: str, leg: LegScore) -> str:
     return (
-        f"{label:<28} {leg.recall:>9.2f} {leg.mrr:>6.3f} {leg.ndcg:>7.3f} "
-        f"{leg.p_at_5:>5.2f} {leg.fp_rate:>5.2f}"
+        f"{label:<28} {leg.recall:>9.2f} {leg.strong_recall:>6.2f} {leg.mrr:>6.3f} "
+        f"{leg.ndcg:>7.3f} {leg.p_at_5:>5.2f} {leg.fp_rate:>5.2f}"
     )
 
 
@@ -395,7 +415,8 @@ def format_results(results: Sequence[ModelResult]) -> str:
     """The comparison table used to choose the final models: the full pipeline per model, with
     the vector leg alone beneath it."""
     header = (
-        f"{'model':<28} {'recall@10':>9} {'MRR':>6} {'nDCG@10':>7} {'P@5':>5} {'FP':>5} "
+        f"{'model':<28} {'recall@10':>9} {'strong':>6} {'MRR':>6} {'nDCG@10':>7} {'P@5':>5} "
+        f"{'FP':>5} "
         f"{'files':>6} {'index s':>8} {'p50 ms':>7}"
     )
     lines = [header, "-" * len(header)]

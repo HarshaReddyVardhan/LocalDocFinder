@@ -174,6 +174,7 @@ class AskSkill(Skill):
             where=parsed.where,
             limit=limit or chat_cfg.retrieve_chunks,
             force_cpu=True,  # the GPU belongs to the LLM
+            min_similarity=ctx.similarity_floor,
         )
         sources = build_sources(candidates, chat_cfg.context_token_budget)
         role = self._role(sources)

@@ -1,7 +1,9 @@
 """Draws a search hit the way Explorer does: file icon, bold name, full path underneath.
 
-The selected row also shows its snippet. Rows without a ``ResultRow`` (the source list in Ask and
-Chat mode) fall back to the default painting.
+The selected row also shows its snippet. A thin bar under the icon shows the result's relevance;
+less relevant results are drawn greyed, and the first of them carries a "Less relevant" heading.
+Rows without a ``ResultRow`` (the source list in Ask and Chat mode) fall back to the default
+painting.
 """
 
 import time
@@ -37,6 +39,12 @@ GAP = 10
 META_MAX_WIDTH = 170
 PATH_STRENGTH = 0.55  # how much of the text colour the path and file details keep
 SNIPPET_STRENGTH = 0.75
+WEAK_STRENGTH = 0.6  # a less relevant result's name
+WEAK_ICON_OPACITY = 0.5
+DIVIDER_TEXT = "Less relevant"
+DIVIDER_STRENGTH = 0.5
+BAR_HEIGHT = 3
+BAR_GAP = 3  # between the icon and its relevance bar
 # Their icon is part of the file (or differs per file), so one icon per extension would be wrong.
 PER_FILE_ICON_EXTS = frozenset({"", ".exe", ".lnk", ".ico", ".msi", ".url", ".appx"})
 
@@ -126,7 +134,12 @@ class ResultDelegate(QStyledItemDelegate):
             return super().sizeHint(option, index)
         line = QFontMetrics(option.font).height()
         lines = 2 + (1 if self._selected(option, index) and row.snippet else 0)
-        return QSize(0, max(ICON_SIZE, lines * line + (lines - 1) * LINE_GAP) + 2 * PADDING)
+        height = max(ICON_SIZE + BAR_GAP + BAR_HEIGHT, lines * line + (lines - 1) * LINE_GAP)
+        return QSize(0, height + 2 * PADDING + self._divider_height(option, row))
+
+    @staticmethod
+    def _divider_height(option: QStyleOptionViewItem, row: ResultRow) -> int:
+        return QFontMetrics(option.font).height() + 2 * LINE_GAP if row.divider_above else 0
 
     @staticmethod
     def _selected(option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex) -> bool:
@@ -147,19 +160,51 @@ class ResultDelegate(QStyledItemDelegate):
         if row is None:
             super().paint(painter, option, index)
             return
+        divider = self._divider_height(option, row)
+        if divider:
+            self._draw_divider(painter, option, divider)
         background = QStyleOptionViewItem(option)
         self.initStyleOption(background, index)
         background.text = ""
         background.icon = QIcon()
+        background.rect = option.rect.adjusted(0, divider, 0, 0)  # the heading is not selectable
         style = option.widget.style() if option.widget else QApplication.style()
         style.drawControl(QStyle.ControlElement.CE_ItemViewItem, background, painter, option.widget)
 
         painter.save()
-        area = option.rect.adjusted(PADDING, PADDING, -PADDING, -PADDING)
+        area = background.rect.adjusted(PADDING, PADDING, -PADDING, -PADDING)
         icon_box = QRect(area.left(), area.top(), ICON_SIZE, ICON_SIZE)
+        if row.weak:
+            painter.setOpacity(WEAK_ICON_OPACITY)
         self.icon_for(row).paint(painter, icon_box)
+        painter.setOpacity(1.0)
+        self._draw_relevance(painter, option, row, icon_box)
         self._draw_text(painter, option, row, area, self._selected(option, index))
         painter.restore()
+
+    @staticmethod
+    def _draw_divider(painter: QPainter, option: QStyleOptionViewItem, height: int) -> None:
+        painter.save()
+        box = QRect(option.rect.left() + PADDING, option.rect.top(), option.rect.width(), height)
+        painter.setPen(secondary_text(option.palette, DIVIDER_STRENGTH))
+        painter.drawText(box, Qt.AlignmentFlag.AlignVCenter, DIVIDER_TEXT)
+        painter.restore()
+
+    @staticmethod
+    def _draw_relevance(
+        painter: QPainter, option: QStyleOptionViewItem, row: ResultRow, icon_box: QRect
+    ) -> None:
+        """A thin bar under the icon, as long as the result is relevant."""
+        width = round(ICON_SIZE * max(0, min(row.relevance, 100)) / 100)
+        if not width:
+            return
+        colour = (
+            secondary_text(option.palette, DIVIDER_STRENGTH)
+            if row.weak
+            else option.palette.color(option.palette.ColorRole.Highlight).lighter(170)
+        )
+        bar = QRect(icon_box.left(), icon_box.bottom() + BAR_GAP, width, BAR_HEIGHT)
+        painter.fillRect(bar, colour)
 
     def _draw_text(
         self,
@@ -179,7 +224,8 @@ class ResultDelegate(QStyledItemDelegate):
         )
 
         painter.setFont(bold)
-        painter.setPen(option.palette.color(option.palette.ColorRole.Text))
+        text = option.palette.color(option.palette.ColorRole.Text)
+        painter.setPen(secondary_text(option.palette, WEAK_STRENGTH) if row.weak else text)
         title = row.name + (f"  {row.detail}" if row.detail else "")
         painter.drawText(
             first,

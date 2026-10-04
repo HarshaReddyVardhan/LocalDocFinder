@@ -120,11 +120,13 @@ class TestSearch:
         env_files = skill.search("ext:py")
         assert env_files[0].path == indexed["greet"]
 
-    def test_filename_match_is_boosted(self, skill: SearchSkill, indexed: dict[str, str]) -> None:
-        plain = skill.ctx.settings.search.filename_boost
-        assert plain > 1
-        boosted = {r.path: r.score for r in skill.search("greet")}
-        assert boosted[indexed["greet"]] > 0
+    def test_filename_match_ranks_first_and_strong(
+        self, skill: SearchSkill, indexed: dict[str, str]
+    ) -> None:
+        results = skill.search("greet")
+        assert results[0].path == indexed["greet"]
+        assert not results[0].weak
+        assert results[0].relevance == 100  # the query is the file's name
 
     def test_file_named_in_the_query_ranks_first(self, env: Env, skill: SearchSkill) -> None:
         # The content never mentions the name, and every other file shares the .txt extension.
@@ -141,15 +143,36 @@ class TestSearch:
         for query in ("references.txt", "references"):
             assert Path(skill.search(query)[0].path).name == "References.txt"
 
-    def test_extension_alone_is_not_a_filename_match(self, skill: SearchSkill) -> None:
-        cfg = skill.ctx.settings.search
-        assert search_mod._name_boost("D:/a/notes.txt", "txt", cfg) == 1.0
-        assert (
-            search_mod._name_boost("D:/a/notes.txt", "notes.txt", cfg) == cfg.filename_exact_boost
-        )
-        assert search_mod._name_boost("D:/a/notes.txt", "notes", cfg) == cfg.filename_exact_boost
-        half = search_mod._name_boost("D:/a/notes.txt", "notes budget", cfg)
-        assert 1.0 < half < cfg.filename_boost
+    def test_a_part_word_in_a_file_name_is_not_a_name_match(
+        self, env: Env, skill: SearchSkill
+    ) -> None:
+        catalog = write(env, "catalog.py", "PRODUCTS = ['chair', 'table']\n")
+        log = write(env, "log_reader.py", "def read(path):\n    return open(path).read()\n")
+        env.indexer.index_paths([catalog, log])
+        env.store.maintain()
+        names = [Path(r.path).name for r in skill.search("log") if not r.weak]
+        assert names[0] == "log_reader.py"
+        assert "catalog.py" not in names
+
+    def test_unrelated_results_are_weak_and_come_last(
+        self, skill: SearchSkill, indexed: dict[str, str]
+    ) -> None:
+        results = skill.search("retry failed payments")
+        weak = [r.weak for r in results]
+        assert weak == sorted(weak)  # strong first
+        assert not results[0].weak
+        assert all(0 <= r.relevance <= 100 for r in results)
+        assert results[0].relevance >= max(r.relevance for r in results)
+
+    def test_render_marks_where_the_weak_results_start(self, skill: SearchSkill) -> None:
+        strong = search_mod.SearchResult("a.py", "p", "code", "", "", 1, 2, 0, "x", 0.9,
+                                         relevance=90)  # fmt: skip
+        weak = search_mod.SearchResult("b.py", "p", "code", "", "", 1, 2, 0, "y", 0.1,
+                                       relevance=10, weak=True)  # fmt: skip
+        lines = skill.render([strong, weak]).splitlines()
+        assert lines[0].startswith(" 90  [code] a.py")
+        assert lines[2] == "--- less relevant ---"
+        assert lines[3].startswith(" 10  [code] b.py")
 
     def test_current_project_is_boosted(self, skill: SearchSkill, indexed: dict[str, str]) -> None:
         base = {r.path: r.score for r in skill.search("retry payments")}

@@ -8,6 +8,7 @@ from tests.core.fakes import FakeEmbedder
 from localdoc_finder.core import evaluation as ev
 from localdoc_finder.core.evaluation import (
     EvalQuery,
+    EvalRun,
     EvalSpec,
     EvaluationError,
     Evaluator,
@@ -24,7 +25,7 @@ from localdoc_finder.core.evaluation import (
     score_leg,
 )
 from localdoc_finder.core.scope import ScopePolicy
-from localdoc_finder.core.settings import ScopeSettings, Settings
+from localdoc_finder.core.settings import EmbeddingProfile, ScopeSettings, Settings
 
 
 @pytest.fixture
@@ -97,7 +98,6 @@ class TestMetrics:
         none = EvalQuery("cookie recipe", expect_none=True)
         assert is_false_positive(["x.py"], none)
         assert not is_false_positive([], none)
-        assert not is_false_positive(["x.py"], none, judge_none=False)
 
     def test_a_forbidden_path_in_the_top_five_is_a_false_positive(self) -> None:
         query = EvalQuery("rent", ("lease.pdf",), ("scan_0042.pdf",))
@@ -106,10 +106,10 @@ class TestMetrics:
 
     def test_score_leg_averages_positives_and_rates_negatives(self) -> None:
         runs = [
-            (EvalQuery("hit", ("a.py",)), ["a.py"]),
-            (EvalQuery("miss", ("b.py",), ("junk",)), ["junk.pdf"]),
-            (EvalQuery("nothing", expect_none=True), ["a.py"]),
-            (EvalQuery("clean", expect_none=True), []),
+            EvalRun(EvalQuery("hit", ("a.py",)), ["a.py"], ["a.py"]),
+            EvalRun(EvalQuery("miss", ("b.py",), ("junk",)), ["junk.pdf"], ["junk.pdf"]),
+            EvalRun(EvalQuery("nothing", expect_none=True), ["a.py"], ["a.py"]),
+            EvalRun(EvalQuery("clean", expect_none=True), [], []),
         ]
         leg = score_leg(runs)
         assert leg.recall == 0.5
@@ -120,9 +120,24 @@ class TestMetrics:
         assert leg.false_positives == ["miss", "nothing"]
         assert leg.fp_rate == pytest.approx(2 / 3)
 
-    def test_the_vector_leg_is_not_judged_on_queries_nothing_answers(self) -> None:
-        runs = [(EvalQuery("nothing", expect_none=True), ["a.py"])]
-        assert score_leg(runs, judge_none=False) == LegScore()
+    def test_weak_results_are_ranked_but_never_count_as_false_positives(self) -> None:
+        runs = [
+            EvalRun(EvalQuery("nothing", expect_none=True), ["a.py"], []),
+            EvalRun(EvalQuery("rent", ("lease.pdf",), ("scan.pdf",)), ["scan.pdf", "lease.pdf"],
+                    ["lease.pdf"]),
+        ]  # fmt: skip
+        leg = score_leg(runs)
+        assert leg.false_positives == []
+        assert leg.mrr == 0.5  # ranking still sees the weak scan above the lease
+
+    def test_strong_recall_counts_only_vouched_for_results(self) -> None:
+        runs = [
+            EvalRun(EvalQuery("a", ("a.py",)), ["a.py"], ["a.py"]),
+            EvalRun(EvalQuery("b", ("b.py",)), ["x.py", "b.py"], ["x.py"]),  # b.py shown weak
+        ]
+        leg = score_leg(runs)
+        assert leg.recall == 1.0
+        assert leg.strong_recall == 0.5
 
     def test_percentiles(self) -> None:
         assert percentiles([]) == []
@@ -228,7 +243,21 @@ class TestEvaluator:
     def test_the_vector_leg_is_scored_on_its_own(self, tmp_path: Path, corpus: Path) -> None:
         result = make_evaluator(tmp_path).evaluate("fake", self.spec(corpus))
         assert result.vector.recall == pytest.approx(3 / 4)
+        # An unknown model has no floor: every neighbour counts as an answer.
+        assert "how to bake sourdough bread" in result.vector.false_positives
+
+    def test_the_models_own_floor_judges_its_vector_leg(self, tmp_path: Path, corpus: Path) -> None:
+        settings, scope = settings_and_scope()
+        strict = EmbeddingProfile(min_similarity=0.99)
+        settings = settings.model_copy(
+            update={
+                "embedding": settings.embedding.model_copy(update={"profiles": {"fake": strict}})
+            }
+        )
+        evaluator = Evaluator(settings, scope, lambda _m: FakeEmbedder(), tmp_path / "eval")
+        result = evaluator.evaluate("fake", self.spec(corpus))
         assert "how to bake sourdough bread" not in result.vector.false_positives
+        assert result.vector.recall == pytest.approx(3 / 4)  # ranking ignores the floor
 
     def test_similarities_are_collected_for_calibration(self, tmp_path: Path, corpus: Path) -> None:
         result = make_evaluator(tmp_path).evaluate("fake", self.spec(corpus))

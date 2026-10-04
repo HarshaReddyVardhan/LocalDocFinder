@@ -76,10 +76,21 @@ class TestSearch:
         assert "123-45-6789" not in snippet
         assert "REMOVED" in snippet
 
+    def test_weak_matches_are_left_out_unless_asked_for(
+        self, service: Service, indexed: dict[str, str]
+    ) -> None:
+        default = service.search("retry failed payments", 10)
+        assert default.results and not any(h.weak for h in default.results)
+        everything = service.search("retry failed payments", 10, include_weak=True)
+        assert {h.path for h in default.results} <= {h.path for h in everything.results}
+        assert all(0 <= h.relevance <= 100 for h in everything.results)
+        assert default.results[0].relevance > 0
+
     def test_removing_private_files_still_fills_the_limit(
         self, service: Service, indexed: dict[str, str]
     ) -> None:
-        assert len(service.search("retry failed payments", 2).results) == 2
+        response = service.search("retry failed payments", 2, include_weak=True)
+        assert len(response.results) == 2
 
     def test_battery_policy_is_reported(
         self, service: Service, power_state: Power, ctx: SkillContext

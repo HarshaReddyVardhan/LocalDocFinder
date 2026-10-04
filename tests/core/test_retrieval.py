@@ -65,11 +65,27 @@ def test_candidates_keep_each_legs_raw_score_and_rank(env: Env, skill_ctx: Skill
     assert top.vector_rank in (1, 2)
     assert top.similarity is not None and 0 < top.similarity <= 1
     assert top.bm25 is not None and top.bm25 > 0
-    rrf_k = skill_ctx.settings.search.rrf_k
-    assert top.score == pytest.approx(1 / (rrf_k + 1) + 1 / (rrf_k + top.vector_rank))
+    cfg = skill_ctx.settings.search
+    # No floor here, and the best BM25 score of the query: keyword part 1.0.
+    assert top.score == pytest.approx(cfg.vector_weight * top.similarity + cfg.keyword_weight)
     other = next(c for p, c in by_path.items() if p != pay)
     assert other.keyword_rank is None and other.bm25 is None  # no keyword match
     assert other.vector_rank is not None and other.similarity is not None
+
+
+def test_matches_under_the_floor_add_nothing_but_keep_the_nearest_first(
+    env: Env, skill_ctx: SkillContext
+) -> None:
+    index(env, "a.txt", "alpha beta gamma delta epsilon\n")
+    index(env, "b.txt", "zeta eta theta iota kappa lambda\n")
+    skill_ctx.store.maintain()
+    found = hybrid_candidates(
+        skill_ctx.store, skill_ctx.embedder, skill_ctx.power, skill_ctx.settings.search,
+        table=CHUNKS, text="unrelated words", columns=COLUMNS, min_similarity=0.99,
+    )  # fmt: skip
+    assert found and all(c.score == 0.0 for c in found)
+    similarities = [c.similarity or -1.0 for c in found]
+    assert similarities == sorted(similarities, reverse=True)
 
 
 def test_a_photo_without_text_is_found_by_name_never_by_meaning(

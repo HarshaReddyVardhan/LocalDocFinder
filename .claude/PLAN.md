@@ -234,7 +234,7 @@ watcher.py (always on, ~30 MB, no ML)      worker.py (spawned; exits when done)
  power gate → idle gate → spawn worker      → ollama.embed (GPU) → LanceDB upsert/delete
                                             → optimize() → keep_alive=0 → exit
 app/ (resident PySide6, hotkey)
- search.py   hybrid: vector + LanceDB FTS (BM25 on text/path/symbol) → RRF + filename boost
+ search.py   hybrid: vector + LanceDB FTS (stemmed BM25 on name words + body) + file-name words → relevance scores with a weak tier (core/ranking.py)
  rag.py      retrieve → pack context → stream answer w/ citations
  match.py    recall (documents table) → per-doc JSON scoring → ranked table → chat
  llm.py      Ollama chat client: prewarm, keep_alive, unload, model routing, power/VRAM checks

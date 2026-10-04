@@ -61,7 +61,8 @@ class SearchHit(BaseModel):
     symbol: str
     start_line: int
     end_line: int
-    score: float
+    relevance: int = Field(description="0-100: how well the file answers the query")
+    weak: bool = Field(description="A less relevant match, listed after the strong ones")
     snippet: str
 
 
@@ -114,8 +115,18 @@ class Service:
         self._privacy: PrivacyFilter = privacy
 
     # ------------------------------------------------------------------ search
-    def search(self, query: str, limit: int, current_project: str | None = None) -> SearchResponse:
+    def search(
+        self,
+        query: str,
+        limit: int,
+        current_project: str | None = None,
+        include_weak: bool = False,
+    ) -> SearchResponse:
+        """Results for an agent: weak matches are left out unless asked for, because an agent
+        tends to read whatever it is given as an answer."""
         found = SearchSkill(self._ctx).search(query, limit * _OVERFETCH, current_project)
+        if not include_weak:
+            found = [r for r in found if not r.weak]
         allowed = [r for r in found if not self._privacy.is_never_send(r.path)]
         hits = [
             SearchHit(
@@ -126,7 +137,8 @@ class Service:
                 symbol=r.symbol,
                 start_line=r.start_line,
                 end_line=r.end_line,
-                score=round(r.score, 4),
+                relevance=r.relevance,
+                weak=r.weak,
                 snippet=_clean(r.snippet),
             )
             for r in allowed[:limit]
@@ -209,13 +221,17 @@ def build_server(
 
     @server.tool(annotations=read_only)
     def search(
-        query: Query, limit: Limit = 10, current_project: str | None = None
+        query: Query,
+        limit: Limit = 10,
+        current_project: str | None = None,
+        include_weak: bool = False,
     ) -> SearchResponse:
-        """Hybrid semantic + keyword search over the user's files. Returns paths, line numbers
-        and snippets. Filters inside the query: type:code|doc|pdf|img|plan|memory ext:py
-        proj:name in:D:\\path after:2026-01 before:2026-06."""
+        """Hybrid semantic + keyword search over the user's files. Returns paths, line numbers,
+        snippets and a 0-100 relevance. Weak matches are left out unless include_weak is true.
+        Filters inside the query: type:code|doc|pdf|img|plan|memory ext:py proj:name
+        in:D:\\path after:2026-01 before:2026-06."""
         with service() as svc:
-            return svc.search(query, limit, current_project)
+            return svc.search(query, limit, current_project, include_weak)
 
     if "ask" in features:
 

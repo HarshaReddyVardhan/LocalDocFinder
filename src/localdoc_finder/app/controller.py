@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from localdoc_finder.core.providers.base import ProviderError
@@ -57,6 +57,9 @@ class ResultRow:
     modified: str  # "2026-09-28", or "" when unknown
     size: str  # "12 KB", or "" when the file cannot be read
     is_image: bool  # a whole-image hit, drawn with its thumbnail
+    relevance: int = 0  # 0-100, drawn as a thin bar
+    weak: bool = False  # a less relevant match, drawn greyed
+    divider_above: bool = False  # the first weak row carries the "Less relevant" heading
 
     @property
     def meta(self) -> str:
@@ -92,7 +95,24 @@ def result_row(result: SearchResult, stat: Callable[[str], os.stat_result] = os.
         modified=modified,
         size=size,
         is_image=result.kind == "image" and not result.page,
+        relevance=result.relevance,
+        weak=result.weak,
     )
+
+
+def result_rows(
+    results: list[SearchResult], stat: Callable[[str], os.stat_result] = os.stat
+) -> list[ResultRow]:
+    """One row per result, the first weak one headed "Less relevant" (results come strong first).
+
+    The heading is drawn inside that row, not as a row of its own, so list rows stay one-to-one
+    with results.
+    """
+    rows = [result_row(result, stat) for result in results]
+    first_weak = next((i for i, row in enumerate(rows) if row.weak), None)
+    if first_weak:  # not when every result is weak: there is nothing to set them apart from
+        rows[first_weak] = replace(rows[first_weak], divider_above=True)
+    return rows
 
 
 class Launcher:

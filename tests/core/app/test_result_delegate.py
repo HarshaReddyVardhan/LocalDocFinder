@@ -65,6 +65,7 @@ def index_for(row: object) -> tuple[QStandardItemModel, object]:
 def option(selected: bool = False) -> QStyleOptionViewItem:
     opt = QStyleOptionViewItem()
     opt.palette.setColor(QPalette.ColorRole.Text, QColor("#e6e6e6"))
+    opt.palette.setColor(QPalette.ColorRole.Base, QColor("#1e1f24"))  # faded text mixes toward it
     opt.palette.setColor(QPalette.ColorRole.Highlight, QColor("#33405a"))  # the app's selection
     opt.rect.setSize(opt.rect.size().expandedTo(opt.rect.size()))
     opt.rect.setWidth(700)
@@ -163,6 +164,49 @@ def test_snippet_line_only_appears_on_the_selected_row(delegate: ResultDelegate)
     assert text_bands(painted(delegate, make_row(), selected=False)) == 2
     assert text_bands(painted(delegate, make_row(), selected=True)) == 3
     assert text_bands(painted(delegate, make_row(snippet=""), selected=True)) == 2
+
+
+def test_the_first_weak_row_carries_a_less_relevant_heading(delegate: ResultDelegate) -> None:
+    _plain_model, plain = index_for(make_row(weak=True))  # the models must outlive their indexes
+    _headed_model, headed = index_for(make_row(weak=True, divider_above=True))
+    extra = (
+        delegate.sizeHint(option(), headed).height()  # type: ignore[arg-type]
+        - delegate.sizeHint(option(), plain).height()  # type: ignore[arg-type]
+    )
+    assert extra > 0
+    canvas = QPixmap(700, 80 + extra)
+    canvas.fill(Qt.GlobalColor.black)
+    painter = QPainter(canvas)
+    opt = option()
+    opt.rect.setHeight(80 + extra)
+    delegate.paint(painter, opt, headed)  # type: ignore[arg-type]
+    painter.end()
+    assert text_bands(canvas.toImage()) == 3  # the heading, then name and path
+
+
+def brightest_title_pixel(image: QImage) -> int:
+    return max(image.pixelColor(x, y).lightness() for x in range(50, 300) for y in range(8, 22))
+
+
+def test_weak_rows_are_drawn_greyed(delegate: ResultDelegate) -> None:
+    strong = brightest_title_pixel(painted(delegate, make_row(), selected=False))
+    weak = brightest_title_pixel(painted(delegate, make_row(weak=True), selected=False))
+    assert weak < strong
+
+
+def bar_pixels(image: QImage) -> int:
+    """Lit pixels on the line where the relevance bar sits, under the 32 px icon."""
+    y = 8 + ICON_SIZE + 3 + 1
+    return sum(image.pixelColor(x, y).lightness() > 60 for x in range(8, 8 + ICON_SIZE))
+
+
+def test_the_relevance_bar_grows_with_relevance(delegate: ResultDelegate) -> None:
+    none = bar_pixels(painted(delegate, make_row(relevance=0), selected=False))
+    half = bar_pixels(painted(delegate, make_row(relevance=50), selected=False))
+    full = bar_pixels(painted(delegate, make_row(relevance=100), selected=False))
+    assert none == 0
+    assert 0 < half < full
+    assert full == ICON_SIZE
 
 
 def test_rows_without_metadata_or_project_still_paint(delegate: ResultDelegate) -> None:

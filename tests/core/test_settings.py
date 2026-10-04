@@ -141,6 +141,18 @@ def test_migrate_applies_chain_up_to_current(monkeypatch: pytest.MonkeyPatch) ->
     assert out["schema_version"] == 3
 
 
+def test_v4_rank_fusion_settings_are_dropped() -> None:
+    raw = {
+        "schema_version": 4,
+        "search": {"rrf_k": 60, "filename_boost": 2.0, "filename_exact_boost": 6.0, "results": 9},
+    }
+    out = s.migrate(raw)
+    assert out["search"] == {"results": 9}
+    assert s.SearchSettings(**out["search"]).results == 9
+    untouched = s.migrate({"schema_version": 4, "search": {"results": 9}})
+    assert untouched["search"] == {"results": 9}
+
+
 def test_v3_prefixes_become_profiles() -> None:
     raw = {
         "schema_version": 3,

@@ -1,4 +1,7 @@
-"""Hybrid search: vector + BM25 (LanceDB FTS) fused with RRF, a filename boost and filters.
+"""Hybrid search: vector + BM25 (LanceDB FTS) and file names, ranked by relevance, with filters.
+
+Every result carries a 0-100 ``relevance`` and a ``weak`` flag (see ``core/ranking.py``): weak
+results come after the strong ones, so nothing is hidden but the order can be trusted.
 
 Filters (any order, mixed with the free text):
     type:img|code|doc|plan|memory|note|pdf|docx   ext:py   proj:name   in:D:\\path
@@ -11,14 +14,20 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 
 from pydantic import Field
 
 from localdoc_finder.core import hooks
 from localdoc_finder.core.providers.base import ProviderError
+from localdoc_finder.core.ranking import (
+    FileEvidence,
+    Ranked,
+    name_match,
+    query_terms,
+    rank_files,
+    term_coverage,
+)
 from localdoc_finder.core.retrieval import hybrid_candidates
-from localdoc_finder.core.settings import SearchSettings
 from localdoc_finder.core.skills.base import (
     UI_LIST,
     Skill,
@@ -26,6 +35,7 @@ from localdoc_finder.core.skills.base import (
     register_skill,
 )
 from localdoc_finder.core.store.lance import CHUNKS, Row, sql_quote
+from localdoc_finder.core.store.search_columns import chunk_body, search_text
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +54,9 @@ _COLUMNS = [
     "page", "chunk_hash", "mtime",
 ]  # fmt: skip
 _SNIPPET_CHARS = 260
-_MIN_TERM_CHARS = 3
 _FILTER_ONLY_FANOUT = 4
+_PLURAL_LIKE_MIN_CHARS = 4
+_FULL_RELEVANCE = 100  # a filter-only listing: every row matches the filters exactly
 
 
 class SearchDisabledError(RuntimeError):
@@ -68,6 +79,8 @@ class SearchResult:
     mtime: int = 0
     extra_hits: int = 0
     text: str = ""
+    relevance: int = 0  # 0-100
+    weak: bool = False  # shown after the strong results, as "less relevant"
 
     @property
     def location(self) -> str:
@@ -137,30 +150,12 @@ class SearchInput(SkillInput):
     current_project: str | None = Field(default=None, description="Boost this project's files")
 
 
-def _query_words(text: str) -> list[str]:
-    return [w for w in re.findall(r"\w+", text.lower()) if len(w) >= _MIN_TERM_CHARS]
+def _like_term(term: str) -> str:
+    """A ``LIKE`` fragment that also finds the singular: ``payments`` -> ``payment``."""
+    return term.removesuffix("s") if len(term) > _PLURAL_LIKE_MIN_CHARS else term
 
 
-def _name_boost(path: str, text: str, cfg: SearchSettings) -> float:
-    """Score multiplier for how well the file name matches the query.
-
-    The query naming the file (``references.txt`` or ``references``) outranks everything; partial
-    matches scale with the share of query words found in the name. The extension never counts as
-    a match on its own: ``txt`` is in every ``.txt`` file's name.
-    """
-    name = Path(path).name.lower()
-    stem = Path(name).stem
-    if text.strip().lower() in (name, stem):
-        return cfg.filename_exact_boost
-    extension = Path(name).suffix.lstrip(".")
-    words = [w for w in _query_words(text) if w != extension]
-    if not words:
-        return 1.0
-    hits = sum(w in stem for w in words)
-    return 1.0 + (cfg.filename_boost - 1.0) * hits / len(words)
-
-
-def _to_result(row: Row, score: float) -> SearchResult:
+def _to_result(row: Row, ranked: Ranked | None = None, extra_hits: int = 0) -> SearchResult:
     text: str = row["text"]
     body = text.split("\n", 1)[1] if "\n" in text else text
     return SearchResult(
@@ -173,10 +168,13 @@ def _to_result(row: Row, score: float) -> SearchResult:
         end_line=row["end_line"],
         page=row["page"],
         snippet=" ".join(body.split())[:_SNIPPET_CHARS],
-        score=score,
+        score=ranked.score if ranked else 1.0,
         ext=row["ext"],
         mtime=row["mtime"],
+        extra_hits=extra_hits,
         text=body,
+        relevance=ranked.relevance if ranked else _FULL_RELEVANCE,
+        weak=ranked.weak if ranked else False,
     )
 
 
@@ -199,10 +197,14 @@ class SearchSkill(Skill):
         if not results:
             return "no results"
         lines = []
+        divided = False
         for r in results:
+            if r.weak and not divided:
+                lines.append("--- less relevant ---")
+                divided = True
             where = f" ({r.location})" if r.location else ""
-            lines.append(f"{r.score:.4f}  [{r.kind}] {r.path}{where}  {r.symbol}")
-            lines.append(f"        {r.snippet[:140]}")
+            lines.append(f"{r.relevance:>3}  [{r.kind}] {r.path}{where}  {r.symbol}")
+            lines.append(f"     {r.snippet[:140]}")
         return "\n".join(lines)
 
     def warm(self) -> None:
@@ -236,8 +238,12 @@ class SearchSkill(Skill):
         if not parsed.text:  # filters only: the newest matching chunks
             rows = store.scan(CHUNKS, _COLUMNS, parsed.where, cfg.candidates * _FILTER_ONLY_FANOUT)
             rows.sort(key=lambda r: r["mtime"], reverse=True)
-            return self._group([(r, 1.0) for r in rows], limit, current_project, parsed.text)
+            newest: dict[str, Row] = {}
+            for row in rows:
+                newest.setdefault(row["path"], row)
+            return [_to_result(row) for row in newest.values()][:limit]
 
+        floor = self.ctx.similarity_floor
         candidates = hybrid_candidates(
             store,
             self.ctx.embedder,
@@ -248,53 +254,60 @@ class SearchSkill(Skill):
             columns=_COLUMNS,
             where=parsed.where,
             force_cpu=self.ctx.query_on_cpu(),
+            min_similarity=floor,
         )
-        pairs = [(c.row, c.score) for c in candidates]
-        pairs += self._filename_pairs(parsed, {row["path"] for row, _ in pairs})
-        return self._group(pairs, limit, current_project, parsed.text)
+        files: dict[str, FileEvidence] = {}
+        best_rows: dict[str, Row] = {}
+        chunk_counts: dict[str, int] = {}
 
-    def _filename_pairs(self, parsed: ParsedQuery, seen: set[str]) -> list[tuple[Row, float]]:
-        """One chunk per file whose name contains a query word, at top-of-list rank.
+        def evidence(row: Row) -> FileEvidence:
+            path = row["path"]
+            if path not in files:
+                in_project = bool(current_project) and (
+                    row["project"].lower() == (current_project or "").lower()
+                )
+                files[path] = FileEvidence(path, name=name_match(path, parsed.text),
+                                           in_current_project=in_project)  # fmt: skip
+                best_rows[path] = row  # candidates come best first
+            return files[path]
+
+        terms = query_terms(parsed.text)
+        for candidate in candidates:
+            found = evidence(candidate.row)
+            coverage = None
+            if candidate.keyword_rank is not None:  # judged on what BM25 saw: name words + body
+                body = chunk_body(candidate.row["text"])
+                coverage = term_coverage(terms, search_text(found.path, body))
+            found.add_chunk(candidate.score, candidate.similarity, coverage)
+            chunk_counts[found.path] = chunk_counts.get(found.path, 0) + 1
+        for row in self._filename_rows(parsed, set(files)):
+            evidence(row)
+        ranked = rank_files(list(files.values()), cfg, floor)
+        return [
+            _to_result(
+                best_rows[r.evidence.path], r, max(0, chunk_counts.get(r.evidence.path, 1) - 1)
+            )
+            for r in ranked[:limit]
+        ]
+
+    def _filename_rows(self, parsed: ParsedQuery, seen: set[str]) -> list[Row]:
+        """One chunk of each further file whose name holds a query word as a whole word.
 
         A file named in the query may have no chunk in the vector or BM25 top-N (its content can
         be tiny or unrelated), so the name itself is a third retrieval leg.
         """
         store, cfg = self.ctx.store, self.ctx.settings.search
-        words = _query_words(parsed.text)
-        if not words:
+        terms = query_terms(parsed.text)
+        if not terms:
             return []
-        likes = " OR ".join(f"lower(path) LIKE '%{w}%'" for w in words)  # \w+ only: no quoting
+        # Old indexes have no name column until the worker upgrades them.
+        column = "name" if store.has_column(CHUNKS, "name") else "lower(path)"
+        likes = " OR ".join(f"{column} LIKE '%{_like_term(t)}%'" for t in terms)  # \w+ only
         where = f"({likes})" + (f" AND {parsed.where}" if parsed.where else "")
         rows = store.scan(CHUNKS, _COLUMNS, where, cfg.candidates * _FILTER_ONLY_FANOUT)
         found: dict[str, Row] = {}
         for row in rows:
-            name = Path(row["path"]).name.lower()
-            if row["path"] not in seen and any(w in name for w in words):
-                found.setdefault(row["path"], row)
-        score = 1.0 / (cfg.rrf_k + 1)
-        return [(row, score) for row in found.values()]
-
-    def _group(
-        self,
-        pairs: list[tuple[Row, float]],
-        limit: int,
-        current_project: str | None,
-        text: str,
-    ) -> list[SearchResult]:
-        """Best chunk per file, boosted for the current project and for filename matches."""
-        cfg = self.ctx.settings.search
-        best: dict[str, SearchResult] = {}
-        for row, base in pairs:
-            score = base * _name_boost(row["path"], text, cfg)
-            if current_project and row["project"].lower() == current_project.lower():
-                score *= cfg.current_project_boost
             path = row["path"]
-            current = best.get(path)
-            if current is None:
-                best[path] = _to_result(row, score)
-                continue
-            hits = current.extra_hits + 1
-            if score > current.score:
-                best[path] = _to_result(row, score)
-            best[path].extra_hits = hits
-        return sorted(best.values(), key=lambda r: r.score, reverse=True)[:limit]
+            if path not in seen and path not in found and name_match(path, parsed.text).hit:
+                found[path] = row
+        return list(found.values())

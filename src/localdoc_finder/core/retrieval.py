@@ -1,4 +1,10 @@
-"""Hybrid candidate retrieval shared by Search, Ask and Match: vector + BM25 fused with RRF."""
+"""Hybrid candidate retrieval shared by Search, Ask, Chat and Match: vector + BM25.
+
+The legs are fused by relevance, not by rank: a chunk scores ``vector_weight`` x its similarity
+above the embedder's floor (scaled to 0..1) plus ``keyword_weight`` x its BM25 score relative to
+the query's best. Rank fusion always put *something* first, however far away; with scores, a page
+of bad matches stays low.
+"""
 
 import logging
 import re
@@ -58,8 +64,12 @@ def hybrid_candidates(
     force_cpu: bool = False,
     unique_key: tuple[str, str] = ("path", "chunk_hash"),
     query_vector: np.ndarray | None = None,
+    min_similarity: float = 0.0,
 ) -> list[Candidate]:
-    """Vector and keyword hits for ``text`` in ``table``, fused with reciprocal-rank fusion.
+    """Vector and keyword hits for ``text`` in ``table``, best first.
+
+    ``min_similarity`` is the embedder's floor (``SkillContext.similarity_floor``); similarity
+    at or below it adds nothing.
 
     ``force_cpu`` embeds the query on the CPU (used while a chat model owns the GPU). A caller
     that already embedded the query passes ``query_vector``. If the model server is unreachable
@@ -90,15 +100,23 @@ def hybrid_candidates(
         for rank, row in enumerate(store.fts_search(table, terms, columns, where, n), 1):
             found = hit(row)
             found.bm25, found.keyword_rank = float(row["_score"]), rank
-    candidates = [_fuse(found, cfg) for found in hits.values()]
-    return sorted(candidates, key=lambda c: c.score, reverse=True)
+    top_bm25 = max((found.bm25 or 0.0 for found in hits.values()), default=0.0)
+    candidates = [_fuse(found, cfg, min_similarity, top_bm25) for found in hits.values()]
+    # Ties (all below the floor, no keyword) keep the nearest first.
+    return sorted(candidates, key=lambda c: (c.score, c.similarity or -1.0), reverse=True)
 
 
-def _fuse(found: _Hits, cfg: SearchSettings) -> Candidate:
-    """Reciprocal-rank fusion: each leg adds ``1 / (k + rank)``."""
-    score = sum(
-        1.0 / (cfg.rrf_k + rank) for rank in (found.vector_rank, found.keyword_rank) if rank
-    )
+def scaled_similarity(similarity: float | None, floor: float) -> float:
+    """``similarity`` mapped from ``floor``..1 onto 0..1; at or under the floor it is 0."""
+    if similarity is None or floor >= 1.0:
+        return 0.0
+    return min(1.0, max(0.0, (similarity - floor) / (1.0 - floor)))
+
+
+def _fuse(found: _Hits, cfg: SearchSettings, floor: float, top_bm25: float) -> Candidate:
+    keyword = (found.bm25 or 0.0) / top_bm25 if top_bm25 > 0 else 0.0
+    score = cfg.vector_weight * scaled_similarity(found.similarity, floor)
+    score += cfg.keyword_weight * keyword
     return Candidate(
         found.row, score, found.similarity, found.bm25, found.vector_rank, found.keyword_rank
     )

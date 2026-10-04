@@ -161,6 +161,28 @@ def test_result_row_for_a_bare_whole_image() -> None:
     assert row.meta == "5 B"
 
 
+def test_rows_carry_relevance_and_the_first_weak_one_is_headed() -> None:
+    hits = [
+        result(path=r"D:\p\a.py", relevance=90),
+        result(path=r"D:\p\b.py", relevance=70),
+        result(path=r"D:\p\c.py", relevance=20, weak=True),
+        result(path=r"D:\p\d.py", relevance=5, weak=True),
+    ]
+    rows = controller.result_rows(hits, fake_stat(1))  # type: ignore[arg-type]
+    assert [(r.relevance, r.weak, r.divider_above) for r in rows] == [
+        (90, False, False),
+        (70, False, False),
+        (20, True, True),
+        (5, True, False),
+    ]
+
+
+def test_no_heading_when_every_result_is_weak() -> None:
+    hits = [result(weak=True), result(path=r"D:\p\b.py", weak=True)]
+    rows = controller.result_rows(hits, fake_stat(1))  # type: ignore[arg-type]
+    assert not any(r.divider_above for r in rows)
+
+
 def test_result_row_survives_a_missing_file() -> None:
     def gone(_path: str) -> os.stat_result:
         raise FileNotFoundError

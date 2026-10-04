@@ -85,7 +85,7 @@ from localdoc_finder.app.controller import (
     SearchService,
     foreground_title,
     guess_project,
-    result_row,
+    result_rows,
 )
 from localdoc_finder.app.match_controller import MatchController
 from localdoc_finder.app.match_panel import MatchPanel
@@ -1052,8 +1052,7 @@ class SearchWindow(QWidget):
     def show_results(self, outcome: SearchOutcome) -> None:
         self._results = outcome.results
         self.list.clear()
-        for result in outcome.results:
-            row = result_row(result)
+        for row in result_rows(outcome.results):
             item = QListWidgetItem(f"{row.name}\n{row.path}")  # the delegate draws from ROW_ROLE
             item.setData(ROW_ROLE, row)
             self.list.addItem(item)

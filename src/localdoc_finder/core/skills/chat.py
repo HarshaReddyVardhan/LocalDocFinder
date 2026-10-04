@@ -281,6 +281,7 @@ class ChatSkill(Skill):
             columns=SOURCE_COLUMNS,
             limit=cfg.retrieve_chunks,
             force_cpu=True,
+            min_similarity=ctx.similarity_floor,
         )
         return build_sources(candidates, cfg.context_token_budget)
 

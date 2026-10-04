@@ -24,7 +24,7 @@ from localdoc_finder.core.data_migration import migrate_legacy_data, rename_data
 from localdoc_finder.core.file_kinds import PRESET_KINDS, FileKind
 from localdoc_finder.core.model_names import model_family, same_model
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 APP_DIR_NAME = "LocalDocFinder"  # the Velopack install folder; uninstall deletes all of it
 DATA_DIR_NAME = "LocalDocFinderData"  # a sibling, so uninstalling never takes the index with it
 # Names from before the app was called LocalDoc Finder; their data is moved on first start.
@@ -59,11 +59,23 @@ def _prefixes_to_profiles(raw: RawSettings) -> RawSettings:
     return {**raw, "embedding": renamed}
 
 
+_RANK_FUSION_KEYS = ("rrf_k", "filename_boost", "filename_exact_boost")
+
+
+def _drop_rank_fusion_keys(raw: RawSettings) -> RawSettings:
+    """v4 -> v5: rank fusion and its multiplicative boosts gave way to relevance scores."""
+    search = raw.get("search", {})
+    if not any(key in search for key in _RANK_FUSION_KEYS):
+        return raw
+    return {**raw, "search": {k: v for k, v in search.items() if k not in _RANK_FUSION_KEYS}}
+
+
 # Maps "from version" -> function producing the next version's layout.
 MIGRATIONS: dict[int, Migration] = {
     1: _keep_optional_features_on,
     2: _drop_document_exts,
     3: _prefixes_to_profiles,
+    4: _drop_rank_fusion_keys,
 }
 
 
@@ -557,12 +569,22 @@ class CloudSettings(_Section):
 
 
 class SearchSettings(_Section):
-    rrf_k: int = Field(default=60, gt=0)
+    """Ranking: a chunk scores ``vector_weight`` x its similarity above the model's floor (scaled
+    to 0..1) plus ``keyword_weight`` x its BM25 score relative to the query's best."""
+
     candidates: int = Field(default=60, gt=0)
     results: int = Field(default=25, gt=0)
+    vector_weight: float = Field(default=0.7, ge=0)
+    keyword_weight: float = Field(default=0.3, ge=0)
+    multi_hit_bonus: float = Field(default=0.15, ge=0)  # x the file's second-best chunk
+    filename_weight: float = Field(default=0.5, ge=0)  # x the share of query words in the name
+    filename_exact_bonus: float = Field(default=1.0, ge=0)  # the query is the file name
     current_project_boost: float = Field(default=1.15, ge=1)
-    filename_boost: float = Field(default=2.0, ge=1)  # all query words appear in the file name
-    filename_exact_boost: float = Field(default=6.0, ge=1)  # query is the file name (or its stem)
+    # A result scoring below (1 - relative_gap) x the best one is marked weak (shown, ranked last).
+    relative_gap: float = Field(default=0.5, ge=0, le=1)
+    # A keyword or file-name match vouches for a result only when it covers this share of the
+    # query's words; similarity above the embedder's floor vouches on its own.
+    min_term_coverage: float = Field(default=0.5, ge=0, le=1)
     hotkey: str = "ctrl+alt+space"  # Alt+Space belongs to Windows and PowerToys Run
     vector_index_min_rows: int = Field(default=100_000, gt=0)  # flat search below, IVF_PQ above
     # Chunks with fewer letters and digits than this (a blank scan, a photo with no text) are
