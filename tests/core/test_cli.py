@@ -12,7 +12,7 @@ from vector_embed.core import runtime
 from vector_embed.core.models.hardware import Hardware
 from vector_embed.core.providers.base import ModelInfo, ProviderError
 from vector_embed.core.providers.ollama import OllamaProvider
-from vector_embed.core.settings import SettingsError
+from vector_embed.core.settings import FeatureSettings, SettingsError
 from vector_embed.core.setup.ollama_install import OllamaState
 from vector_embed.core.skills.base import (
     SKILLS,
@@ -256,7 +256,26 @@ def test_model_info_is_exposed_to_the_report() -> None:
     assert not info.is_embedding
 
 
+def with_features(env: Env, monkeypatch: pytest.MonkeyPatch, **on: bool) -> None:
+    settings = env.settings.model_copy(update={"features": FeatureSettings(**on)})
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+
+
+class TestOptionalFeatures:
+    def test_a_feature_that_is_off_is_refused_with_a_way_to_turn_it_on(
+        self, wired: SkillContext, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert cli.main(["chat", "hello"]) == cli.EXIT_USAGE
+        err = capsys.readouterr().err
+        assert "ve chat is not enabled" in err
+        assert "ve setup --features chat" in err
+
+
 class TestChatSessions:
+    @pytest.fixture(autouse=True)
+    def chat_on(self, env: Env, wired: SkillContext, monkeypatch: pytest.MonkeyPatch) -> None:
+        with_features(env, monkeypatch, chat=True)
+
     def test_list_sessions_needs_no_message(
         self, env: Env, wired: SkillContext, chat: Chat, capsys: pytest.CaptureFixture[str]
     ) -> None:

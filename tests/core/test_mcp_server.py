@@ -232,6 +232,12 @@ class TestServer:
         assert {t.name for t in tools} == {"search", "ask", "match"}
         assert all(t.annotations and t.annotations.read_only_hint for t in tools)
 
+    def test_tools_for_features_that_are_off_are_not_offered(self, service: Service) -> None:
+        tools = asyncio.run(build_server(lambda: service, frozenset({"match"})).list_tools())
+        assert {t.name for t in tools} == {"search", "match"}
+        tools = asyncio.run(build_server(lambda: service, frozenset()).list_tools())
+        assert {t.name for t in tools} == {"search"}
+
     def test_search_over_the_protocol_returns_structured_content(
         self, server: Any, indexed: dict[str, str]
     ) -> None:

@@ -31,6 +31,7 @@ from vector_embed.core.evaluation import (
     load_spec,
 )
 from vector_embed.core.extractors.ocr import WindowsOcr
+from vector_embed.core.features import enabled_features, is_enabled
 from vector_embed.core.health import collect_health, format_health
 from vector_embed.core.logging_setup import configure_logging
 from vector_embed.core.models.hardware import probe_hardware
@@ -115,6 +116,12 @@ def collect_input(
 
 
 def run_skill(skill_cls: type[Skill], args: argparse.Namespace, settings: Settings) -> int:
+    if not is_enabled(skill_cls.name, enabled_features(settings)):
+        err(
+            f"ve {skill_cls.name} is not enabled. Turn it on in Settings > Features, "
+            f"or run `ve setup --features {skill_cls.name}` to also download its model."
+        )
+        return EXIT_USAGE
     fields = dict(skill_cls.Input.model_fields)
     try:
         params = skill_cls.Input(**collect_input(args, fields, skill_cls.cli_positional))

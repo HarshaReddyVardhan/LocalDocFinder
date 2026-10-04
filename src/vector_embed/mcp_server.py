@@ -11,7 +11,7 @@ Nothing is loaded until the first tool call, and chat models are unloaded after 
 
 import logging
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from contextlib import ExitStack, contextmanager
 from typing import Annotated
 
@@ -21,6 +21,7 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
 from vector_embed.core import runtime
+from vector_embed.core.features import FEATURES, enabled_features
 from vector_embed.core.match.pipeline import DocumentScore
 from vector_embed.core.privacy.mask import mask_sensitive
 from vector_embed.core.privacy.policy import PrivacyFilter
@@ -183,8 +184,13 @@ class Service:
         )
 
 
-def build_server(service_factory: Callable[[], Service]) -> MCPServer:
-    """The MCP server; the service (and with it the index and models) is built on first use."""
+def build_server(
+    service_factory: Callable[[], Service], features: Collection[str] = FEATURES
+) -> MCPServer:
+    """The MCP server; the service (and with it the index and models) is built on first use.
+
+    ``ask`` and ``match`` are offered only when those features are on; ``search`` always is.
+    """
     lock = threading.Lock()  # tools run on worker threads; one request at a time owns the GPU
     cache: list[Service] = []
 
@@ -211,24 +217,29 @@ def build_server(service_factory: Callable[[], Service]) -> MCPServer:
         with service() as svc:
             return svc.search(query, limit, current_project)
 
-    @server.tool(annotations=read_only)
-    def ask(question: Query, limit: Limit | None = None) -> AskResponse:
-        """Answer a question from the user's indexed files using a local model, with citations
-        to real files and lines. Slower than `search` (loads a local chat model); answers
-        "Not found" instead of guessing."""
-        with service() as svc:
-            return svc.ask(question, limit)
+    if "ask" in features:
 
-    @server.tool(annotations=read_only)
-    def match(
-        text: Annotated[str, Field(max_length=MAX_MATCH_CHARS)],
-        doc_type: str = "resume",
-        top: Annotated[int, Field(ge=1, le=10)] = 5,
-    ) -> MatchResponse:
-        """Rank the user's documents of one type (default: resumes) against pasted text such as a
-        job description. Scores come from a fixed requirement checklist judged by a local model."""
-        with service() as svc:
-            return svc.match(text, doc_type, top)
+        @server.tool(annotations=read_only)
+        def ask(question: Query, limit: Limit | None = None) -> AskResponse:
+            """Answer a question from the user's indexed files using a local model, with
+            citations to real files and lines. Slower than `search` (loads a local chat model);
+            answers "Not found" instead of guessing."""
+            with service() as svc:
+                return svc.ask(question, limit)
+
+    if "match" in features:
+
+        @server.tool(annotations=read_only)
+        def match(
+            text: Annotated[str, Field(max_length=MAX_MATCH_CHARS)],
+            doc_type: str = "resume",
+            top: Annotated[int, Field(ge=1, le=10)] = 5,
+        ) -> MatchResponse:
+            """Rank the user's documents of one type (default: resumes) against pasted text such
+            as a job description. Scores come from a fixed requirement checklist judged by a
+            local model."""
+            with service() as svc:
+                return svc.match(text, doc_type, top)
 
     return server
 
@@ -249,4 +260,4 @@ def serve(settings: Settings) -> None:
         return stack.enter_context(open_service(settings))
 
     with stack:
-        build_server(factory).run("stdio")
+        build_server(factory, enabled_features(settings)).run("stdio")
