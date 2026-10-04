@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from tests.core.setup.fakes import Harness
 
+from vector_embed.core.features import FEATURES
 from vector_embed.core.models.benchmark import (
     BenchKind,
     BenchmarkError,
@@ -20,6 +21,8 @@ from vector_embed.core.setup.flow import (
 from vector_embed.core.setup.ollama_install import OllamaState
 from vector_embed.core.setup.plan import SetupChoices
 
+EVERYTHING = SetupOptions(choices=SetupChoices(features=FEATURES))  # search plus Ask/Chat/Match
+
 
 @pytest.fixture
 def harness(tmp_path: Path) -> Harness:
@@ -27,7 +30,7 @@ def harness(tmp_path: Path) -> Harness:
 
 
 def test_full_run_downloads_benchmarks_and_saves(harness: Harness) -> None:
-    result = harness.flow().run(SetupOptions())
+    result = harness.flow().run(EVERYTHING)
     assert harness.host.pulled == ["qwen3-embedding:0.6b", "qwen3.5:9b"]
     assert harness.benched == ["qwen3-embedding:0.6b", "qwen3.5:9b"]  # embedder first, alone
     assert (result.embed_model, result.chat_model) == ("qwen3-embedding:0.6b", "qwen3.5:9b")
@@ -42,6 +45,22 @@ def test_full_run_downloads_benchmarks_and_saves(harness: Harness) -> None:
     assert any(e.stage is Stage.PULL and e.fraction == 0.5 for e in harness.events)
 
 
+def test_search_only_downloads_just_the_embedder_and_leaves_features_off(
+    harness: Harness,
+) -> None:
+    result = harness.flow().run(SetupOptions())
+    assert harness.host.pulled == ["qwen3-embedding:0.6b"]
+    assert result.chat_model is None
+    assert harness.saved()["features"] == {"ask": False, "chat": False, "match": False}
+    assert "models" not in harness.saved()
+
+
+def test_chosen_features_are_saved_on(harness: Harness) -> None:
+    harness.flow().run(SetupOptions(choices=SetupChoices(features=("chat",))))
+    assert "qwen3.5:9b" in harness.host.pulled
+    assert harness.saved()["features"] == {"ask": False, "chat": True, "match": False}
+
+
 def test_rerun_skips_installed_models(tmp_path: Path) -> None:
     harness = Harness(tmp_path, installed=["qwen3-embedding:0.6b", "qwen3.5:9b"])
     result = harness.flow().run(SetupOptions())
@@ -52,10 +71,10 @@ def test_rerun_skips_installed_models(tmp_path: Path) -> None:
 def test_interrupted_pull_is_resumed_by_running_again(harness: Harness) -> None:
     harness.host.fail_on = "qwen3.5:9b"
     with pytest.raises(ProviderError):
-        harness.flow().run(SetupOptions())
+        harness.flow().run(EVERYTHING)
     assert harness.state.get_meta(SETUP_COMPLETED_KEY) is None  # not marked done
     harness.host.fail_on = None
-    harness.flow().run(SetupOptions())
+    harness.flow().run(EVERYTHING)
     assert harness.host.pulled == [
         "qwen3-embedding:0.6b",
         "qwen3.5:9b",
@@ -94,14 +113,14 @@ def test_installer_failure_becomes_a_setup_error(tmp_path: Path) -> None:
 def test_not_enough_disk_stops_before_any_download(harness: Harness) -> None:
     harness.system.free_mb = 3000
     with pytest.raises(SetupError, match="Not enough disk space"):
-        harness.flow().run(SetupOptions())
+        harness.flow().run(EVERYTHING)
     assert harness.host.pulled == []
 
 
 def test_slow_model_offers_downgrade_and_accepts(harness: Harness) -> None:
     harness.model_rates = {"qwen3.5:9b": 2.0, "qwen3:8b": 25.0}
     harness.accept = True
-    result = harness.flow().run(SetupOptions())
+    result = harness.flow().run(EVERYTHING)
     assert [o.alternative for o in harness.offers] == ["qwen3:8b"]
     assert harness.offers[0].model == "qwen3.5:9b"
     assert result.chat_model == "qwen3:8b"
@@ -111,7 +130,7 @@ def test_slow_model_offers_downgrade_and_accepts(harness: Harness) -> None:
 
 def test_slow_model_kept_when_downgrade_declined(harness: Harness) -> None:
     harness.rates[BenchKind.CHAT] = 2.0
-    result = harness.flow().run(SetupOptions())
+    result = harness.flow().run(EVERYTHING)
     assert result.chat_model == "qwen3.5:9b"
     assert any("slow on this machine" in w for w in result.warnings)
     assert "qwen3:8b" not in harness.host.pulled
@@ -159,7 +178,7 @@ def test_extras_are_downloaded_but_not_benchmarked(harness: Harness) -> None:
 
 def test_preview_changes_nothing(tmp_path: Path) -> None:
     harness = Harness(tmp_path, up=False)
-    preview = harness.flow().preview(SetupOptions())
+    preview = harness.flow().preview(EVERYTHING)
     assert preview.ollama is OllamaState.MISSING
     assert preview.to_download == ("qwen3-embedding:0.6b", "qwen3.5:9b")
     assert preview.download_mb == 640 + 6100
@@ -234,6 +253,6 @@ class TestCancellation:
         flow = harness.flow()
         flow.cancelled = lambda: True
         with pytest.raises(SetupCancelled):
-            flow.run(SetupOptions())
+            flow.run(EVERYTHING)
         flow.cancelled = lambda: False
-        assert flow.run(SetupOptions()).chat_model == "qwen3.5:9b"
+        assert flow.run(EVERYTHING).chat_model == "qwen3.5:9b"

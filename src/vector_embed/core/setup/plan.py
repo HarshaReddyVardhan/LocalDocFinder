@@ -3,6 +3,7 @@
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 
+from vector_embed.core.features import FEATURES
 from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_EMBED, ROLES, Catalog
 from vector_embed.core.models.fit import budget_mb, fits
 from vector_embed.core.models.hardware import Hardware
@@ -23,6 +24,14 @@ class SetupChoices:
     embed: str | None = None
     chat: str | None = None
     extras: tuple[str, ...] = ()  # extra roles (caption, reranker, ...) to download a model for
+    features: tuple[
+        str, ...
+    ] = ()  # optional features wanted (ask, chat, match); none = search only
+
+    @property
+    def wants_chat_model(self) -> bool:
+        """Every feature answers with a chat model; search alone needs only the embedder."""
+        return bool(self.features) or self.chat is not None
 
 
 @dataclass(frozen=True)
@@ -72,11 +81,15 @@ def plan_setup(
     unknown = sorted(set(choices.extras) - set(EXTRA_ROLES))
     if unknown:
         raise SetupPlanError(f"unknown extra roles: {', '.join(unknown)}")
-    starter = pick_starter(catalog, hardware, (ROLE_EMBED, ROLE_CHAT, *choices.extras))
+    unknown_features = sorted(set(choices.features) - set(FEATURES))
+    if unknown_features:
+        raise SetupPlanError(f"unknown features: {', '.join(unknown_features)}")
+    roles = (ROLE_EMBED, *((ROLE_CHAT,) if choices.wants_chat_model else ()), *choices.extras)
+    starter = pick_starter(catalog, hardware, roles)
     warnings = [f"no {role} model fits this machine" for role in starter.missing_roles]
     wanted = {ROLE_EMBED: locked_embed or choices.embed, ROLE_CHAT: choices.chat}
     models: list[PlannedModel] = []
-    for role in (ROLE_EMBED, ROLE_CHAT, *choices.extras):
+    for role in roles:
         planned = _planned(catalog, hardware, starter, role, wanted.get(role))
         if planned is None:
             continue

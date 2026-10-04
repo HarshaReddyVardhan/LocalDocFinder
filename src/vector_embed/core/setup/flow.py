@@ -13,6 +13,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
+from vector_embed.core.features import FEATURES
 from vector_embed.core.models.benchmark import (
     BenchmarkError,
     BenchResult,
@@ -23,7 +24,7 @@ from vector_embed.core.models.benchmark import (
 from vector_embed.core.models.catalog import ROLE_CHAT, ROLE_EMBED, Catalog
 from vector_embed.core.models.hardware import Hardware
 from vector_embed.core.providers.base import ModelInfo, ProviderError, PullProgress
-from vector_embed.core.settings_io import set_setting
+from vector_embed.core.settings_io import set_setting, set_settings
 from vector_embed.core.setup.ollama_install import (
     INSTALLED_SIZE_MB,
     INSTALLER_SIZE_MB,
@@ -220,7 +221,7 @@ class SetupFlow:
         warnings = list(plan.warnings)
         if options.run_bench:
             chosen, results = self._speed_test(plan, chosen, warnings)
-        self._save(chosen)
+        self._save(chosen, options.choices.features)
         self._emit(Stage.DONE, "setup complete")
         return SetupResult(
             chosen.get(ROLE_EMBED),
@@ -351,8 +352,11 @@ class SetupFlow:
         self._pull_missing(tuple(n for n in (alternative,) if n not in self._installed_names()))
         return self._measure(role, alternative, bench, warnings)
 
-    def _save(self, chosen: dict[str, str]) -> None:
+    def _save(self, chosen: dict[str, str], features: tuple[str, ...]) -> None:
         self._emit(Stage.SAVE, "saving settings")
+        set_settings(
+            self._settings_path, [(["features", name], name in features) for name in FEATURES]
+        )
         embed = chosen.get(ROLE_EMBED)
         if embed:
             set_setting(self._settings_path, ["embedding", "model"], embed)

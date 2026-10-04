@@ -7,6 +7,7 @@ from tests.core.conftest import Env
 from tests.core.setup.fakes import Harness
 
 from vector_embed import cli, cli_setup
+from vector_embed.core.features import FEATURES
 from vector_embed.core.models.benchmark import BenchKind
 from vector_embed.core.setup.flow import (
     SETUP_COMPLETED_KEY,
@@ -24,6 +25,7 @@ def args(**overrides: object) -> argparse.Namespace:
         "embed": None,
         "chat": None,
         "extras": [],
+        "features": list(FEATURES),  # None would keep the features already on
         "dry_run": False,
         "no_install_ollama": False,
         "skip_bench": False,
@@ -66,6 +68,14 @@ def run(harness: Harness, console: Console, env: Env, **overrides: object) -> in
 @pytest.fixture
 def harness(env: Env) -> Harness:
     return Harness(env.data_dir.parent / "cli")
+
+
+def test_without_features_the_ones_already_on_are_kept(harness: Harness, env: Env) -> None:
+    console = Console()
+    assert run(harness, console, env, dry_run=True, features=None) == 0
+    text = "\n".join(console.out)
+    assert "embed: qwen3-embedding:0.6b (640 MB)" in text
+    assert "chat:" not in text  # a fresh install is search only
 
 
 def test_dry_run_prints_the_plan_and_changes_nothing(harness: Harness, env: Env) -> None:

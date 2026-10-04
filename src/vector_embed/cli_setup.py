@@ -7,6 +7,7 @@ import argparse
 import sys
 from collections.abc import Callable
 
+from vector_embed.core.features import FEATURES, enabled_features
 from vector_embed.core.settings import Settings
 from vector_embed.core.setup.flow import (
     SetupEvent,
@@ -32,6 +33,12 @@ def add_setup_parser(sub: "argparse._SubParsersAction[argparse.ArgumentParser]")
     setup.add_argument("--chat", metavar="MODEL", help="chat model (default: auto-picked)")
     setup.add_argument(
         "--extras", nargs="*", default=[], choices=EXTRA_ROLES, help="also download these roles"
+    )
+    setup.add_argument(
+        "--features",
+        nargs="*",
+        choices=FEATURES,
+        help="optional features to set up (default: keep the ones already on; search is always on)",
     )
     setup.add_argument("--dry-run", action="store_true", help="show the plan, change nothing")
     setup.add_argument(
@@ -97,7 +104,10 @@ def run_setup(
     ask: Asker = ask_yes_no,
     build: FlowBuilder = build_flow,
 ) -> int:
-    choices = SetupChoices(args.embed, args.chat, tuple(args.extras))
+    features = enabled_features(settings) if args.features is None else frozenset(args.features)
+    choices = SetupChoices(
+        args.embed, args.chat, tuple(args.extras), tuple(f for f in FEATURES if f in features)
+    )
     with StateDb(settings.storage.data_dir) as state:
         confirm: Asker = (lambda _question: True) if args.yes else ask
         flow = build(

@@ -2,7 +2,7 @@
 
 Every scalar option (on/off, a choice, a number or text) of every section is listed, so a new
 option appears in the Settings window without UI code. Options that a hand-built tab already
-edits with its own checks (the hotkey, folders, the cloud, the embedder) are left out.
+edits with its own checks (the hotkey, folders, the cloud, the embedder, the features) are left out.
 """
 
 import types
@@ -16,7 +16,7 @@ from vector_embed.core.settings import Settings, SettingsError
 OptionKind = Literal["bool", "choice", "text"]
 
 # Edited elsewhere, with checks of their own; or not meant to be changed by hand at all.
-OWNED_SECTIONS = frozenset({"scope", "cloud", "storage", "updates"})
+OWNED_SECTIONS = frozenset({"scope", "cloud", "storage", "updates", "features"})
 OWNED_OPTIONS = frozenset(
     {
         ("schema_version",),

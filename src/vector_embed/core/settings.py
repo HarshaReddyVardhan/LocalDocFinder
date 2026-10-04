@@ -22,7 +22,7 @@ from pydantic_settings import (
 
 from vector_embed.core.data_migration import migrate_legacy_data
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 APP_DIR_NAME = "VectorEmbed"  # the Velopack install folder; uninstall deletes all of it
 DATA_DIR_NAME = "VectorEmbedData"  # a sibling, so uninstalling never takes the index with it
 SETTINGS_FILENAME = "settings.toml"
@@ -30,8 +30,15 @@ SETTINGS_FILENAME = "settings.toml"
 RawSettings = dict[str, Any]
 Migration = Callable[[RawSettings], RawSettings]
 
+
+def _keep_optional_features_on(raw: RawSettings) -> RawSettings:
+    """v1 -> v2: installs from before features were optional got a chat model, so keep them on."""
+    features = dict.fromkeys(FeatureSettings.model_fields, True)
+    return {**raw, "features": {**features, **raw.get("features", {})}}
+
+
 # Maps "from version" -> function producing the next version's layout.
-MIGRATIONS: dict[int, Migration] = {}
+MIGRATIONS: dict[int, Migration] = {1: _keep_optional_features_on}
 
 
 class SettingsError(ValueError):
@@ -376,6 +383,14 @@ class ModelSettings(_Section):
     refresh_seconds: int = Field(default=3600, gt=0)  # re-discover installed models this often
 
 
+class FeatureSettings(_Section):
+    """The optional features. Search is always on; these need a chat model, so they start off."""
+
+    ask: bool = False  # one-shot answers with citations
+    chat: bool = False  # multi-turn chat about files
+    match: bool = False  # rank documents against a job description or similar
+
+
 class ChatSettings(_Section):
     """Chat / Ask / Match. The chat model is loaded on demand and unloaded afterwards."""
 
@@ -491,6 +506,7 @@ class Settings(BaseSettings):
     images: ImageSettings = Field(default_factory=ImageSettings)
     doctypes: DocTypeSettings = Field(default_factory=DocTypeSettings)
     models: ModelSettings = Field(default_factory=ModelSettings)
+    features: FeatureSettings = Field(default_factory=FeatureSettings)
     chat: ChatSettings = Field(default_factory=ChatSettings)
     match: MatchSettings = Field(default_factory=MatchSettings)
     privacy: PrivacySettings = Field(default_factory=PrivacySettings)
