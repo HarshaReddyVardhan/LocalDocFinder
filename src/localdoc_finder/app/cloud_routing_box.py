@@ -1,7 +1,7 @@
 """When each feature uses the cloud, and a button to withdraw "don't ask again"."""
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QFormLayout, QPushButton, QWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QPushButton, QWidget
 
 from localdoc_finder.core.models.catalog import ROLE_CHAT, ROLE_MATCH_SCORER
 
@@ -17,21 +17,28 @@ class RoutingBox(QWidget):
 
     routing_changed = Signal(str, str)
     forget_clicked = Signal()
+    fallback_changed = Signal(bool)
 
     def __init__(self) -> None:
         super().__init__()
         self.chat = _policy_combo()
         self.match = _policy_combo()
+        self.fallback = QCheckBox("If the cloud fails, answer with the local model")
         self.forget = QPushButton("Forget \u201cdon\u2019t ask again\u201d")
         self.forget.setToolTip("The next cloud request asks for your consent again")
         form = QFormLayout(self)
         form.setContentsMargins(0, 0, 0, 0)
         form.addRow("Ask && Chat uses the cloud", self.chat)
         form.addRow("Match uses the cloud", self.match)
+        form.addRow(self.fallback)
         form.addRow(self.forget)
         self.chat.activated.connect(lambda _i: self._picked(ROLE_CHAT, self.chat))
         self.match.activated.connect(lambda _i: self._picked(ROLE_MATCH_SCORER, self.match))
         self.forget.clicked.connect(self.forget_clicked)
+        self.fallback.clicked.connect(self.fallback_changed)
+
+    def set_fallback(self, enabled: bool) -> None:
+        self.fallback.setChecked(enabled)
 
     def set_policies(self, chat: str, match: str) -> None:
         self.chat.setCurrentIndex(max(0, self.chat.findData(chat)))

@@ -254,6 +254,26 @@ class TestRouter:
         chat.gateway._registry.refresh()
         assert not chat.gateway.target().local  # no local chat model fits or exists
 
+    def test_a_routed_target_may_fall_back_but_an_escalated_one_may_not(
+        self, env: Env, chat: Chat
+    ) -> None:
+        router, _, _ = self.setup_cloud(env, chat, routing={"chat": "cloud"})
+        routed = chat.gateway.target()
+        assert (routed.local, routed.fallback) == (False, True)
+        with router.escalated():
+            assert chat.gateway.target().fallback is False  # the user asked for the cloud
+
+    def test_the_fallback_can_be_switched_off(self, env: Env, chat: Chat) -> None:
+        self.setup_cloud(env, chat, routing={"chat": "cloud"}, fallback_to_local=False)
+        assert chat.gateway.target().fallback is False
+
+    def test_a_missing_consent_is_a_consent_error(self, env: Env) -> None:
+        from localdoc_finder.core.llm import ConsentRequiredError
+
+        provider, _, _, _ = make(env, consent=False)
+        with pytest.raises(ConsentRequiredError):
+            list(provider.stream_chat(MESSAGES, "m"))
+
     def test_answer_better_escalates_until_the_block_ends(self, env: Env, chat: Chat) -> None:
         router, _, _ = self.setup_cloud(env, chat)
         with router.escalated():

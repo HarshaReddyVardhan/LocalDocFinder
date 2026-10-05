@@ -71,6 +71,7 @@ class AskResult:
     not_found: bool = False
     role: str = ROLE_CHAT
     withheld: int = 0  # private files kept out of a cloud request
+    notice: str = ""  # the cloud failed and the local model answered
 
 
 class AskRun:
@@ -105,6 +106,8 @@ class AskRun:
         for chunk in self._gateway.stream(
             self.messages, result.role, session=self._session, target=self._target
         ):
+            if chunk.notice:
+                result.notice = chunk.notice
             if chunk.text:
                 parts.append(chunk.text)
                 yield chunk.text
@@ -121,6 +124,8 @@ class AskRun:
         if result.withheld:
             noun = "file was" if result.withheld == 1 else "files were"
             withheld = f"\n({result.withheld} private {noun} not sent to the cloud)"
+        if result.notice:
+            withheld = f"\n({result.notice})" + withheld
         if result.not_found:
             return withheld
         if result.cited:

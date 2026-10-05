@@ -1,18 +1,36 @@
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 from tests.core.providers.fakes import FakeOllamaClient
 
 from localdoc_finder.core import llm
-from localdoc_finder.core.llm import ChatBlockedError, ChatTarget, LlmGateway, NoChatModelError
+from localdoc_finder.core.llm import (
+    ChatBlockedError,
+    ChatTarget,
+    ConsentRequiredError,
+    LlmGateway,
+    NoChatModelError,
+)
 from localdoc_finder.core.models.catalog import load_catalog
 from localdoc_finder.core.models.hardware import Hardware
 from localdoc_finder.core.models.registry import ModelRegistry
 from localdoc_finder.core.power import PowerGate
 from localdoc_finder.core.privacy.policy import PrivacyFilter
-from localdoc_finder.core.providers.base import Message
+from localdoc_finder.core.providers.base import (
+    ChatChunk,
+    ChatOptions,
+    InvalidJsonError,
+    JsonResult,
+    Message,
+    ModelInfo,
+    ModelNotFoundError,
+    ProviderError,
+    ProviderUnavailableError,
+    Usage,
+)
 from localdoc_finder.core.providers.ollama import OllamaProvider
 from localdoc_finder.core.scope import ScopePolicy
 from localdoc_finder.core.settings import (
@@ -334,3 +352,156 @@ class TestSession:
         world.client.failures = [ollama.ResponseError("nope", 400)]
         world.gateway.begin_chat()
         assert world.gateway.session_active
+
+
+class FlakyCloud:
+    """A cloud provider that fails as scripted: before its first chunk, or part-way through."""
+
+    name = "flaky"
+    label = "Flaky Cloud"
+
+    def __init__(self, error: Exception | None = None, *, after: int = 0) -> None:
+        self.error = error
+        self.after = after  # chunks delivered before the error
+        self.calls = 0
+
+    def stream_chat(
+        self, messages: list[Message], model: str, options: ChatOptions | None = None
+    ) -> Iterator[ChatChunk]:
+        self.calls += 1
+        for index in range(self.after):
+            yield ChatChunk(f"c{index}")
+        if self.error is not None:
+            raise self.error
+        yield ChatChunk("cloud answer")
+        yield ChatChunk("", Usage(1, 1))
+
+    def chat_json(
+        self,
+        messages: list[Message],
+        model: str,
+        schema: dict[str, Any],
+        options: ChatOptions | None = None,
+    ) -> JsonResult:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return JsonResult({"from": "cloud"})
+
+    def list_models(self) -> list[ModelInfo]:
+        return []
+
+    def capabilities(self, model: str) -> frozenset[str]:
+        return frozenset()
+
+    def estimate_cost(self, model: str, usage: Usage) -> float:
+        return 0.0
+
+
+def routed(cloud: FlakyCloud, *, fallback: bool = True) -> ChatTarget:
+    return ChatTarget("chat", "vendor/m", cloud, local=False, fallback=fallback)
+
+
+class TestCloudFallback:
+    def test_a_routed_call_that_fails_at_once_is_answered_locally_with_a_notice(
+        self, world: World
+    ) -> None:
+        cloud = FlakyCloud(ProviderUnavailableError("Flaky Cloud unavailable: rate limit"))
+        chunks = list(world.gateway.stream(MESSAGES, target=routed(cloud)))
+        assert "".join(c.text for c in chunks) == "Hello"
+        assert chunks[0].notice == (
+            "Flaky Cloud unavailable: rate limit; answered locally with qwen3.5:9b"
+        )
+        assert all(c.notice is None for c in chunks[1:])
+        assert world.calls("chat")  # the local model really answered
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ProviderError("Flaky Cloud: the API key was rejected"),
+            ModelNotFoundError("no such model"),
+            ChatBlockedError("the monthly cloud budget ($5.00) would be exceeded"),
+        ],
+    )
+    def test_rejected_keys_unknown_models_and_the_budget_fall_back_too(
+        self, world: World, error: Exception
+    ) -> None:
+        chunks = list(world.gateway.stream(MESSAGES, target=routed(FlakyCloud(error))))
+        assert "".join(c.text for c in chunks) == "Hello"
+        assert str(error) in (chunks[0].notice or "")
+
+    def test_nothing_falls_back_once_text_has_streamed(self, world: World) -> None:
+        cloud = FlakyCloud(ProviderUnavailableError("dropped"), after=2)
+        received: list[str] = []
+        with pytest.raises(ProviderUnavailableError):
+            for chunk in world.gateway.stream(MESSAGES, target=routed(cloud)):
+                received.append(chunk.text)
+        assert received == ["c0", "c1"]
+        assert world.calls("chat") == []  # the local model was never asked
+
+    def test_answer_better_shows_the_error_instead(self, world: World) -> None:
+        cloud = FlakyCloud(ProviderUnavailableError("down"))
+        with pytest.raises(ProviderUnavailableError):
+            list(world.gateway.stream(MESSAGES, target=routed(cloud, fallback=False)))
+        assert world.calls("chat") == []
+
+    def test_a_missing_consent_is_never_answered_locally(self, world: World) -> None:
+        cloud = FlakyCloud(ConsentRequiredError("cloud requests need your consent"))
+        with pytest.raises(ConsentRequiredError):
+            list(world.gateway.stream(MESSAGES, target=routed(cloud)))
+        assert world.calls("chat") == []
+
+    def test_when_the_local_model_cannot_answer_either_the_cloud_error_is_shown(
+        self, world: World
+    ) -> None:
+        world.ac = False  # on battery: no local chat
+        cloud = FlakyCloud(ProviderUnavailableError("Flaky Cloud unavailable: down"))
+        with pytest.raises(ProviderUnavailableError, match="Flaky Cloud unavailable"):
+            list(world.gateway.stream(MESSAGES, target=routed(cloud)))
+
+    def test_a_local_target_is_never_retried(self, world: World) -> None:
+        flaky = FlakyCloud(ProviderError("boom"))
+        target = ChatTarget("chat", "qwen3.5:9b", flaky, local=True, fallback=True)
+        with pytest.raises(ProviderError):
+            list(world.gateway.stream(MESSAGES, target=target))
+        assert flaky.calls == 1 and world.calls("chat") == []
+
+    def test_a_long_provider_error_is_shortened_in_the_notice(self, world: World) -> None:
+        cloud = FlakyCloud(ProviderUnavailableError("x" * 500))
+        stream = world.gateway.stream(MESSAGES, target=routed(cloud))
+        notice = next(stream).notice
+        stream.close()
+        assert notice is not None
+        assert len(notice) < 200
+        assert "…" in notice
+
+    def test_json_calls_fall_back_and_carry_the_notice(self, world: World) -> None:
+        world.client.chat_json_reply = '{"ok": 1}'
+        cloud = FlakyCloud(ProviderUnavailableError("rate limit"))
+        result = world.gateway.chat_json(MESSAGES, {"type": "object"}, target=routed(cloud))
+        assert result.data == {"ok": 1}
+        assert result.notice == "rate limit; answered locally with qwen3.5:9b"
+
+    def test_json_from_the_cloud_has_no_notice(self, world: World) -> None:
+        result = world.gateway.chat_json(MESSAGES, {"type": "object"}, target=routed(FlakyCloud()))
+        assert (result.data, result.notice) == ({"from": "cloud"}, None)
+
+    def test_unusable_json_is_left_to_the_callers_retry_not_answered_locally(
+        self, world: World
+    ) -> None:
+        cloud = FlakyCloud(InvalidJsonError("not json"))
+        with pytest.raises(InvalidJsonError):
+            world.gateway.chat_json(MESSAGES, {"type": "object"}, target=routed(cloud))
+        assert world.calls("chat") == []
+
+    def test_escalated_and_consent_cases_for_json(self, world: World) -> None:
+        with pytest.raises(ProviderUnavailableError):
+            world.gateway.chat_json(
+                MESSAGES,
+                {},
+                target=routed(FlakyCloud(ProviderUnavailableError("down")), fallback=False),
+            )
+        with pytest.raises(ConsentRequiredError):
+            world.gateway.chat_json(
+                MESSAGES, {}, target=routed(FlakyCloud(ConsentRequiredError("consent")))
+            )

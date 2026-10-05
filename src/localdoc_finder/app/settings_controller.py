@@ -268,6 +268,11 @@ class SettingsController:
         set_settings(self._path, [(["cloud", "routing", r], stored) for r in roles])
         self._on_changed()
 
+    def set_fallback_to_local(self, enabled: bool) -> None:
+        """Answer with the local model when a routed cloud call fails."""
+        set_setting(self._path, ["cloud", "fallback_to_local"], enabled)
+        self._on_changed()
+
     def forget_cloud_consent(self) -> None:
         """Withdraw "don't ask again": the next cloud request asks first."""
         self._forget_consent()

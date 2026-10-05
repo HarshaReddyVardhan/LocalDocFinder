@@ -119,6 +119,9 @@ class CloudTab(SettingsTab):
         self.add_provider.clicked.connect(self._add)
         self.refresh_models.clicked.connect(lambda: self.load_models(force=True))
         self.routing.routing_changed.connect(self._route)
+        self.routing.fallback_changed.connect(
+            lambda on: self._save(self._controller.set_fallback_to_local, on)
+        )
         self.routing.forget_clicked.connect(
             lambda: self._guard(self._controller.forget_cloud_consent, "will ask before sending")
         )
@@ -213,6 +216,7 @@ class CloudTab(SettingsTab):
         self.models_title.setText(f"Models for {provider.label or self._active}")
         cloud = self._controller.settings().cloud
         self.routing.set_policies(cloud.policy(ROLE_CHAT), cloud.policy(ROLE_MATCH_SCORER))
+        self.routing.set_fallback(cloud.fallback_to_local)
         for role, picker in self._pickers():
             picker.set_current(provider.models.get(role, ""))
         self._fill_lists()

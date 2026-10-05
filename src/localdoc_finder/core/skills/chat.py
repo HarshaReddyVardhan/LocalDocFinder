@@ -92,6 +92,7 @@ class ChatTurn:
     session_id: int
     reply: str = ""
     truncated: list[str] = field(default_factory=list)
+    notice: str = ""  # the cloud failed and the local model answered
 
 
 @dataclass
@@ -321,6 +322,8 @@ class ChatSkill(Skill):
         parts: list[str] = []
         try:
             for chunk in stream:
+                if chunk.notice:
+                    turn.notice = chunk.notice
                 if chunk.text:
                     parts.append(chunk.text)
                     yield chunk.text
@@ -347,7 +350,7 @@ class ChatSkill(Skill):
             return
         turn, deltas = self.turn(params)
         yield from deltas
-        notes = []
+        notes = [f"({turn.notice})"] if turn.notice else []
         if turn.truncated:
             notes.append("(cut to fit the context: " + ", ".join(turn.truncated) + ")")
         notes.append(f"[session {turn.session_id}]")

@@ -58,12 +58,16 @@ class ChatChunk:
 
     text: str = ""
     usage: Usage | None = None
+    # Set on the first chunk when the answer did not come from the route that was asked for
+    # (a cloud failure answered by the local model).
+    notice: str | None = None
 
 
 @dataclass(frozen=True)
 class JsonResult:
     data: Any
     usage: Usage = field(default_factory=Usage)
+    notice: str | None = None  # as ``ChatChunk.notice``
 
 
 @dataclass(frozen=True)

@@ -385,9 +385,10 @@ class AssistantService:
             state.session_id = turn.session_id
             for text in deltas:
                 yield Delta(text)
-            note = (
-                f"(cut to fit the context: {', '.join(turn.truncated)})" if turn.truncated else ""
-            )
+            notes = [f"({turn.notice})"] if turn.notice else []
+            if turn.truncated:
+                notes.append(f"(cut to fit the context: {', '.join(turn.truncated)})")
+            note = "\n\n" + "\n".join(notes) if notes else ""
             yield Finished(note=note, session_id=turn.session_id)
         except _KNOWN_ERRORS as exc:
             yield Failed(str(exc))

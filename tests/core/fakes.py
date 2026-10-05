@@ -72,11 +72,14 @@ class FakeCloudInner:
         self.usage = Usage(1000, 500)
         self.json_data: Any = {"summary": "[NAME_1] is a fit"}
         self.json_fn: Callable[[list[Message]], Any] | None = None
+        self.error: Exception | None = None  # raised by every call, before anything is produced
 
     def stream_chat(
         self, messages: list[Message], model: str, options: ChatOptions | None = None
     ) -> Iterator[ChatChunk]:
         self.sent.append(messages)
+        if self.error is not None:
+            raise self.error
         for piece in self.reply:
             yield ChatChunk(piece)
         yield ChatChunk("", self.usage)
@@ -89,6 +92,8 @@ class FakeCloudInner:
         options: ChatOptions | None = None,
     ) -> JsonResult:
         self.sent.append(messages)
+        if self.error is not None:
+            raise self.error
         data = self.json_fn(messages) if self.json_fn else self.json_data
         return JsonResult(data, self.usage)
 

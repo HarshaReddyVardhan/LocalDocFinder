@@ -12,9 +12,9 @@ Rules from the design:
 import logging
 import threading
 import time
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass
+from collections.abc import Callable, Generator, Iterator
+from contextlib import closing, contextmanager
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from localdoc_finder.core.models.catalog import ROLE_CHAT
@@ -24,6 +24,7 @@ from localdoc_finder.core.providers.base import (
     ChatChunk,
     ChatOptions,
     ChatProvider,
+    InvalidJsonError,
     JsonResult,
     Message,
     ProviderError,
@@ -41,10 +42,16 @@ REASON_IDLE = "idle"
 _LOCK_GRACE_SECONDS = 60
 _ONE_SHOT_LEASE_SECONDS = 180  # a one-shot call renews this while it streams
 _LEASE_REFRESH_SECONDS = 30  # renew the lock at most this often, not on every token
+_NOTICE_REASON_MAX = 120  # longest provider error shown in a fallback notice
 
 
 class ChatBlockedError(RuntimeError):
     """Chat cannot run right now (for example on battery with no cloud provider)."""
+
+
+class ConsentRequiredError(ChatBlockedError):
+    """A cloud request was made without the user's consent. Never answered locally instead: the
+    caller must ask the user, not quietly change where the question goes."""
 
 
 class NoChatModelError(RuntimeError):
@@ -57,6 +64,8 @@ class ChatTarget:
     model: str
     provider: ChatProvider
     local: bool
+    # A routed cloud call (not the user's "Answer better") may be answered locally if it fails.
+    fallback: bool = False
 
 
 class TargetRouter(Protocol):
@@ -291,8 +300,59 @@ class LlmGateway:
         target: ChatTarget | None = None,
     ) -> Iterator[ChatChunk]:
         """Stream a reply. Pass ``target`` (from ``target()``) to send to exactly the model that a
-        privacy decision was made for, rather than resolving the route a second time."""
+        privacy decision was made for, rather than resolving the route a second time.
+
+        A routed cloud call that fails before its first chunk is answered by the local model; the
+        first chunk then carries a ``notice`` saying so.
+        """
         target = target or self.target(role, local_only=local_only)
+        streamed = False
+        try:
+            for chunk in self._stream_target(messages, target, session):
+                streamed = True
+                yield chunk
+            return
+        except (ProviderError, ChatBlockedError) as exc:
+            if streamed or not self._may_fall_back(target, exc):
+                raise
+            local, notice = self._local_fallback(role, target, exc)
+        first = True
+        # closing(): cancelling the answer must end the local stream (and free the model) now
+        with closing(self._stream_target(messages, local, session)) as answer:
+            for chunk in answer:
+                yield replace(chunk, notice=notice) if first else chunk
+                first = False
+
+    @staticmethod
+    def _may_fall_back(target: ChatTarget, exc: Exception) -> bool:
+        """Only a routed cloud call, and only for a failure of the cloud itself: not a missing
+        consent (the user must be asked), and not unusable output (callers retry that)."""
+        if target.local or not target.fallback:
+            return False
+        return not isinstance(exc, ConsentRequiredError | InvalidJsonError)
+
+    def _local_fallback(
+        self, role: str, target: ChatTarget, exc: Exception
+    ) -> tuple[ChatTarget, str]:
+        """The local target to retry on, and the notice for the user. When no local model can
+        answer either (on battery, nothing installed) the cloud's own error is the one to show.
+        The local route is strictly more private, so no new privacy decision is needed."""
+        try:
+            local = self.target(role, local_only=True)
+        except (ChatBlockedError, NoChatModelError) as local_error:
+            raise exc from local_error
+        reason = " ".join(str(exc).split())
+        if len(reason) > _NOTICE_REASON_MAX:
+            reason = reason[: _NOTICE_REASON_MAX - 1] + "…"
+        logger.info(
+            "cloud call failed; answering locally",
+            extra={"provider": target.provider.name, "error": type(exc).__name__},
+        )
+        return local, f"{reason}; answered locally with {local.model}"
+
+    def _stream_target(
+        self, messages: list[Message], target: ChatTarget, session: bool
+    ) -> Generator[ChatChunk]:
         if target.local:
             self._free_embedder()
             self._remember_loaded(target.model)
@@ -317,7 +377,19 @@ class LlmGateway:
         local_only: bool = False,
         target: ChatTarget | None = None,
     ) -> JsonResult:
+        """One JSON answer; a failed routed cloud call is answered locally (see ``stream``)."""
         target = target or self.target(role, local_only=local_only)
+        try:
+            return self._json_target(messages, schema, target, session)
+        except (ProviderError, ChatBlockedError) as exc:
+            if not self._may_fall_back(target, exc):
+                raise
+            local, notice = self._local_fallback(role, target, exc)
+        return replace(self._json_target(messages, schema, local, session), notice=notice)
+
+    def _json_target(
+        self, messages: list[Message], schema: dict[str, Any], target: ChatTarget, session: bool
+    ) -> JsonResult:
         if target.local:
             self._free_embedder()
             self._remember_loaded(target.model)

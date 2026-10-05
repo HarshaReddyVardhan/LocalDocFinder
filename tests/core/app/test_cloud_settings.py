@@ -206,6 +206,13 @@ class TestRouting:
             controller.set_cloud_routing("chat", "sometimes")
         assert controller.settings().cloud.routing == {}
 
+    def test_the_fallback_to_the_local_model_can_be_switched(
+        self, controller: SettingsController
+    ) -> None:
+        assert controller.settings().cloud.fallback_to_local is True
+        controller.set_fallback_to_local(False)
+        assert controller.settings().cloud.fallback_to_local is False
+
     def test_forgetting_consent_calls_the_app(self, env: Env, store: MemoryKeyStore) -> None:
         forgotten: list[int] = []
         controller = SettingsController(
@@ -483,6 +490,16 @@ class TestRoutingControls:
         tab.routing.match.setCurrentIndex(tab.routing.match.findData("auto"))
         tab.routing.match.activated.emit(tab.routing.match.currentIndex())
         assert controller.settings().cloud.policy("match_scorer") == "auto"
+
+    def test_the_fallback_checkbox_shows_and_saves_the_setting(
+        self, qapp: QApplication, tab: CloudTab, controller: SettingsController
+    ) -> None:
+        tab.add_provider.click()
+        assert tab.routing.fallback.isChecked()  # on by default
+        tab.routing.fallback.click()
+        assert controller.settings().cloud.fallback_to_local is False
+        tab.refresh()
+        assert not tab.routing.fallback.isChecked()
 
     def test_forget_withdraws_dont_ask_again(
         self, qapp: QApplication, env: Env, store: MemoryKeyStore

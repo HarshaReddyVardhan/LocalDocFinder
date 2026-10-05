@@ -360,6 +360,25 @@ class TestRoutedConsent:
         assert text == "Cloud chat."
         assert routed.consent.session_granted
 
+    def test_a_failing_cloud_is_answered_locally_and_the_note_says_so(
+        self, env: Env, skill_ctx: SkillContext, chat: Chat, routed: CloudRig
+    ) -> None:
+        from localdoc_finder.core.providers.base import ProviderUnavailableError
+
+        self.index(env)
+        routed.consent.grant()
+        routed.inner.error = ProviderUnavailableError("OpenRouter unavailable: rate limit")
+        service = AssistantService(lambda: skill_ctx)
+        text, (finished,) = drain(service.ask("how do we retry failed payments"))
+        assert text
+        assert isinstance(finished, Finished)
+        assert "OpenRouter unavailable: rate limit; answered locally with" in finished.note
+        state = ChatState()
+        _, events = drain(service.chat("how do we retry failed payments", state))
+        done = events[-1]
+        assert isinstance(done, Finished)
+        assert "answered locally with" in done.note
+
     def test_without_remember_a_failed_stream_still_withdraws_consent(
         self, skill_ctx: SkillContext, routed: CloudRig
     ) -> None:

@@ -18,7 +18,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from localdoc_finder.core.health import month_start
-from localdoc_finder.core.llm import ChatBlockedError, ChatTarget
+from localdoc_finder.core.llm import ChatBlockedError, ChatTarget, ConsentRequiredError
 from localdoc_finder.core.models.catalog import ROLE_CHAT
 from localdoc_finder.core.models.registry import ModelRegistry
 from localdoc_finder.core.power import PowerGate
@@ -140,7 +140,7 @@ class CloudChatProvider:
     # ------------------------------------------------------------------ guards
     def _guard(self) -> None:
         if not self._consent.granted:
-            raise ChatBlockedError(
+            raise ConsentRequiredError(
                 "cloud requests need your consent for this session (command line: pass --cloud-ok)"
             )
 
@@ -357,4 +357,6 @@ class CloudRouter:
             if wanted == "cloud" or escalate:
                 raise ChatBlockedError("cloud is selected but no provider/model/key is configured")
             return None
-        return ChatTarget(role, model, self._provider, local=False)
+        # An explicit "Answer better" shows the error; a routed request may fall back to local.
+        fallback = self._settings.fallback_to_local and not escalate
+        return ChatTarget(role, model, self._provider, local=False, fallback=fallback)

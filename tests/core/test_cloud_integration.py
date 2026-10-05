@@ -12,7 +12,7 @@ from localdoc_finder.core.llm import ChatBlockedError
 from localdoc_finder.core.match.pipeline import MatchPipeline
 from localdoc_finder.core.match.recall import select_all
 from localdoc_finder.core.privacy.policy import PrivacyFilter
-from localdoc_finder.core.providers.base import Message
+from localdoc_finder.core.providers.base import Message, ProviderUnavailableError
 from localdoc_finder.core.skills.ask import AskInput, AskSkill
 from localdoc_finder.core.skills.base import SkillContext
 from localdoc_finder.core.skills.chat import ChatInput, ChatSkill
@@ -61,6 +61,66 @@ class TestAsk:
         assert run.result.withheld == 1
         assert "1 private file was not sent to the cloud" in run.footer()
         assert chat.chat_calls() == []  # nothing went to the local model either
+
+    def test_a_failing_cloud_is_answered_by_the_local_model_and_says_so(
+        self, chat: Chat, cloud: CloudRig, skill_ctx: SkillContext, notes: dict[str, str]
+    ) -> None:
+        cloud.inner.error = ProviderUnavailableError("OpenRouter unavailable: rate limit")
+        run = AskSkill(skill_ctx).prepare("how do we retry failed payments")
+        answer = "".join(run.deltas())
+        assert answer  # the local model answered
+        assert chat.chat_calls()
+        assert run.result.notice == (
+            "OpenRouter unavailable: rate limit; answered locally with qwen3.5:9b"
+        )
+        assert "(OpenRouter unavailable: rate limit; answered locally" in run.footer()
+        assert "secret strategy" not in sent_text(cloud.inner)  # the cloud still never saw it
+
+    def test_a_working_cloud_leaves_no_notice(
+        self, chat: Chat, cloud: CloudRig, skill_ctx: SkillContext, notes: dict[str, str]
+    ) -> None:
+        run = AskSkill(skill_ctx).prepare("how do we retry failed payments")
+        list(run.deltas())
+        assert run.result.notice == ""
+
+    def test_answer_better_shows_the_cloud_error_instead_of_switching_models(
+        self, chat: Chat, cloud: CloudRig, skill_ctx: SkillContext, notes: dict[str, str]
+    ) -> None:
+        cloud.router._settings = cloud.router._settings.model_copy(update={"routing": {}})
+        cloud.inner.error = ProviderUnavailableError("OpenRouter unavailable: down")
+        with cloud.router.escalated():
+            run = AskSkill(skill_ctx).prepare("how do we retry failed payments")
+            with pytest.raises(ProviderUnavailableError):
+                list(run.deltas())
+        assert chat.chat_calls() == []
+
+    def test_the_fallback_setting_turns_it_off(
+        self, chat: Chat, cloud: CloudRig, skill_ctx: SkillContext, notes: dict[str, str]
+    ) -> None:
+        cloud.router._settings = cloud.router._settings.model_copy(
+            update={"fallback_to_local": False}
+        )
+        cloud.inner.error = ProviderUnavailableError("OpenRouter unavailable: down")
+        run = AskSkill(skill_ctx).prepare("how do we retry failed payments")
+        with pytest.raises(ProviderUnavailableError):
+            list(run.deltas())
+        assert chat.chat_calls() == []
+
+    def test_a_blocked_budget_falls_back_but_a_missing_consent_does_not(
+        self, chat: Chat, cloud: CloudRig, skill_ctx: SkillContext, notes: dict[str, str]
+    ) -> None:
+        cloud.inner.error = ChatBlockedError("the monthly cloud budget ($5.00) would be exceeded")
+        run = AskSkill(skill_ctx).prepare("how do we retry failed payments")
+        list(run.deltas())
+        assert "budget" in run.result.notice
+        assert chat.chat_calls()
+        chat.client.calls.clear()
+        cloud.inner.error = None
+        cloud.consent.revoke()
+        run = AskSkill(skill_ctx).prepare("how do we retry failed payments")
+        with pytest.raises(ChatBlockedError, match="consent"):
+            list(run.deltas())
+        assert chat.chat_calls() == []
 
     def test_local_requests_may_use_private_files(
         self, chat: Chat, skill_ctx: SkillContext, notes: dict[str, str], cloud: CloudRig
