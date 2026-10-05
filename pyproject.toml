@@ -1,6 +1,6 @@
 [project]
 name = "localdoc-finder"
-version = "0.2.2"
+version = "0.3.0"
 description = "Private, on-device semantic search and chat for your documents, scans, images and code on Windows"
 readme = "README.md"
 requires-python = ">=3.11"
