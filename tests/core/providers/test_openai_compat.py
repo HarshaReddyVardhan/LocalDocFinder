@@ -220,8 +220,8 @@ class TestDiscoveryAndCost:
             SimpleNamespace(id="odd", pricing={"prompt": "free"}),
         ]
         models = provider.list_models()
-        assert [m.name for m in models] == ["vendor/big", "plain", "odd"]
-        assert models[0].context_length == 128000
+        assert [m.name for m in models] == ["odd", "plain", "vendor/big"]  # sorted by name
+        assert models[2].context_length == 128000
         assert models[1].context_length is None
         assert provider.has_price("vendor/big")
         assert not provider.has_price("odd")
@@ -288,3 +288,65 @@ class TestReplyLengthCap:
         with pytest.raises(ProviderError):
             provider.chat_json([Message("user", "hi")], "m", {}, ChatOptions(max_tokens=300))
         assert all("max_completion_tokens" not in call for call in client.completions.calls)
+
+
+def make(preset: str, client: FakeClient, **extra: Any) -> OpenAICompatibleProvider:
+    settings = CloudProviderSettings(base_url="https://x/v1", preset=preset, **extra)
+    return OpenAICompatibleProvider("p", settings, KEY, client=client)
+
+
+class TestPresets:
+    def test_listing_hides_models_that_cannot_chat_and_sorts_by_name(
+        self, client: FakeClient
+    ) -> None:
+        client.model_entries = [
+            SimpleNamespace(id="gpt-4o"),
+            SimpleNamespace(id="text-embedding-3-small"),
+            SimpleNamespace(id="dall-e-3"),
+            SimpleNamespace(id="gpt-4.1"),
+        ]
+        models = make("openai", client).list_models()
+        assert [m.name for m in models] == ["gpt-4.1", "gpt-4o"]
+
+    def test_gemini_ids_lose_the_models_prefix_and_pricing_follows_the_clean_id(
+        self, client: FakeClient
+    ) -> None:
+        client.model_entries = [
+            SimpleNamespace(
+                id="models/gemini-2.5-flash", pricing={"prompt": "1e-7", "completion": "2e-7"}
+            ),
+            SimpleNamespace(id="models/gemini-embedding-001"),
+        ]
+        provider = make("gemini", client)
+        assert [m.name for m in provider.list_models()] == ["gemini-2.5-flash"]
+        assert provider.price("gemini-2.5-flash") == pytest.approx((0.1, 0.2))
+
+    def test_price_is_none_when_nobody_published_one(self, client: FakeClient) -> None:
+        provider = make("openai", client, pricing={"gpt-4o": (2.5, 10.0)})
+        assert provider.price("gpt-4o") == (2.5, 10.0)
+        assert provider.price("gpt-5") is None
+
+    def test_prompt_json_mode_sends_no_response_format(self, client: FakeClient) -> None:
+        provider = make("anthropic", client)
+        assert provider.chat_json(MESSAGES, "claude", {"type": "object"}).data == {"ok": True}
+        assert len(client.completions.calls) == 1
+        sent = client.completions.calls[0]
+        assert "response_format" not in sent
+        assert "Reply with JSON matching" in sent["messages"][-1]["content"]
+
+    def test_prompt_json_mode_reports_an_error_without_retrying(self, client: FakeClient) -> None:
+        provider = make("anthropic", client)
+        client.completions.errors = [api_error(openai.BadRequestError, 400, "prompt too long")]
+        with pytest.raises(ProviderError, match="too long"):
+            provider.chat_json(MESSAGES, "claude", {})
+        assert len(client.completions.calls) == 1
+
+    def test_extra_headers_reach_the_real_client(self) -> None:
+        settings = CloudProviderSettings(base_url="https://x/v1", preset="openrouter")
+        provider = OpenAICompatibleProvider("p", settings, KEY)
+        assert provider._client._custom_headers["X-Title"] == "LocalDoc Finder"
+
+    def test_no_headers_for_a_plain_preset(self) -> None:
+        settings = CloudProviderSettings(base_url="https://x/v1", preset="openai")
+        provider = OpenAICompatibleProvider("p", settings, KEY)
+        assert "X-Title" not in provider._client._custom_headers

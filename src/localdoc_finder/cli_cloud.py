@@ -11,6 +11,9 @@ from pathlib import Path
 
 from localdoc_finder.core.health import month_start
 from localdoc_finder.core.models.catalog import ROLES
+from localdoc_finder.core.providers.base import ProviderError
+from localdoc_finder.core.providers.openai_compat import OpenAICompatibleProvider
+from localdoc_finder.core.providers.presets import PRESETS
 from localdoc_finder.core.secrets import KeyStore
 from localdoc_finder.core.settings import Settings
 from localdoc_finder.core.settings_io import set_setting
@@ -18,6 +21,7 @@ from localdoc_finder.core.store.sqlite import StateDb
 
 POLICIES = ("local", "cloud", "auto")
 Printer = Callable[[str], None]
+ProviderFactory = Callable[[str, Settings, str], OpenAICompatibleProvider]
 
 
 class CloudCommandError(RuntimeError):
@@ -38,7 +42,8 @@ def add_cloud_parsers(sub: "argparse._SubParsersAction[argparse.ArgumentParser]"
     cloud_sub = cloud.add_subparsers(dest="cloud_command", required=True)
     add = cloud_sub.add_parser("add", help="add or update an OpenAI-compatible provider")
     add.add_argument("name")
-    add.add_argument("--base-url", required=True, help="e.g. https://openrouter.ai/api/v1")
+    add.add_argument("--preset", choices=sorted(PRESETS), help="fills in the base URL and quirks")
+    add.add_argument("--base-url", help="e.g. https://openrouter.ai/api/v1 (default: the preset's)")
     add.add_argument("--label", help="display name")
     add.add_argument("--model", action="append", metavar="ROLE=MODEL", help="model for a role")
     add.add_argument("--use", action="store_true", help="make it the active provider")
@@ -47,6 +52,8 @@ def add_cloud_parsers(sub: "argparse._SubParsersAction[argparse.ArgumentParser]"
     budget = cloud_sub.add_parser("budget", help="monthly spend limit in USD (or 'off')")
     budget.add_argument("amount")
     cloud_sub.add_parser("status", help="providers, routing, budget and spend this month")
+    models = cloud_sub.add_parser("models", help="list the chat models a provider offers")
+    models.add_argument("name")
 
 
 def _split(assignment: str) -> tuple[str, str]:
@@ -84,11 +91,20 @@ def run_keys(
     return 0
 
 
-def run_cloud(args: argparse.Namespace, settings: Settings, store: KeyStore, out: Printer) -> int:
+def run_cloud(
+    args: argparse.Namespace,
+    settings: Settings,
+    store: KeyStore,
+    out: Printer,
+    *,
+    make_provider: ProviderFactory | None = None,
+) -> int:
     path = settings.settings_path()
     command: str = args.cloud_command
     if command == "add":
         _add(args, path, out)
+    elif command == "models":
+        _models(args.name, settings, store, out, make_provider or _default_provider)
     elif command == "route":
         _route(args.assignment, path, out)
     elif command == "budget":
@@ -99,10 +115,17 @@ def run_cloud(args: argparse.Namespace, settings: Settings, store: KeyStore, out
 
 
 def _add(args: argparse.Namespace, path: Path, out: Printer) -> None:
+    preset = PRESETS[args.preset or "custom"]
+    base_url = args.base_url or preset.base_url
+    if not base_url:
+        raise CloudCommandError("give --base-url, or --preset to use a service's own address")
     base = ["cloud", "providers", args.name]
-    set_setting(path, [*base, "base_url"], args.base_url)
-    if args.label:
-        set_setting(path, [*base, "label"], args.label)
+    set_setting(path, [*base, "base_url"], base_url)
+    if args.preset:
+        set_setting(path, [*base, "preset"], args.preset)
+    label = args.label or (preset.label if args.preset else "")
+    if label:
+        set_setting(path, [*base, "label"], label)
     for assignment in args.model or []:
         role, model = _split(assignment)
         if role not in ROLES:
@@ -111,6 +134,31 @@ def _add(args: argparse.Namespace, path: Path, out: Printer) -> None:
     if args.use:
         set_setting(path, ["cloud", "active"], args.name)
     out(f"saved provider {args.name}; store its key with: ldf keys set {args.name}")
+
+
+def _default_provider(name: str, settings: Settings, key: str) -> OpenAICompatibleProvider:
+    return OpenAICompatibleProvider(name, settings.cloud.providers[name], key)
+
+
+def _models(
+    name: str, settings: Settings, store: KeyStore, out: Printer, make_provider: ProviderFactory
+) -> None:
+    if name not in settings.cloud.providers:
+        raise CloudCommandError(f"no provider named {name!r} (see: ldf cloud status)")
+    key = store.get(name)
+    if not key:
+        raise CloudCommandError(f"no key stored for {name}; run: ldf keys set {name}")
+    provider = make_provider(name, settings, key)
+    try:
+        models = provider.list_models()
+    except ProviderError as exc:
+        raise CloudCommandError(str(exc)) from exc
+    for info in models:
+        price = provider.price(info.name)
+        context = f"  {info.context_length // 1000}k ctx" if info.context_length else ""
+        cost = f"  ${price[0]:g} / ${price[1]:g} per 1M" if price else ""
+        out(f"{info.name}{context}{cost}")
+    out(f"{len(models)} models")
 
 
 def _route(assignments: list[str], path: Path, out: Printer) -> None:

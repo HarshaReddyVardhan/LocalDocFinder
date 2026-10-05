@@ -1,11 +1,14 @@
 import argparse
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
+import openai
 import pytest
 from tests.core.conftest import Env
 
 from localdoc_finder import cli, cli_cloud
+from localdoc_finder.core.providers.openai_compat import OpenAICompatibleProvider
 from localdoc_finder.core.secrets import MemoryKeyStore
 from localdoc_finder.core.settings import Settings, load_settings
 
@@ -106,6 +109,96 @@ class TestCloud:
         assert provider.label == "OpenRouter"
         assert provider.models == {"chat": "vendor/chat", "match_scorer": "vendor/judge"}
         assert cloud.active == "openrouter"
+
+    def test_a_preset_supplies_the_address_and_label(self, env: Env) -> None:
+        cli_cloud.run_cloud(
+            parse("cloud", "add", "or", "--preset", "openrouter", "--use"),
+            env.settings,
+            MemoryKeyStore(),
+            Out(),
+        )
+        provider = reload(env).cloud.providers["or"]
+        assert provider.base_url == "https://openrouter.ai/api/v1"
+        assert provider.preset == "openrouter"
+        assert provider.label == "OpenRouter"
+
+    def test_an_explicit_base_url_and_label_beat_the_preset(self, env: Env) -> None:
+        cli_cloud.run_cloud(
+            parse(
+                "cloud", "add", "proxy", "--preset", "openai",
+                "--base-url", "https://proxy/v1", "--label", "Work proxy",
+            ),
+            env.settings, MemoryKeyStore(), Out(),
+        )  # fmt: skip
+        provider = reload(env).cloud.providers["proxy"]
+        assert (provider.base_url, provider.label) == ("https://proxy/v1", "Work proxy")
+
+    def test_without_a_preset_the_base_url_is_still_required(self, env: Env) -> None:
+        with pytest.raises(cli_cloud.CloudCommandError, match="--base-url"):
+            cli_cloud.run_cloud(parse("cloud", "add", "p"), env.settings, MemoryKeyStore(), Out())
+
+    def test_models_lists_what_the_provider_offers_with_prices(self, env: Env) -> None:
+        from tests.core.providers.test_openai_compat import FakeClient
+
+        cli_cloud.run_cloud(
+            parse("cloud", "add", "or", "--preset", "openrouter"),
+            env.settings, MemoryKeyStore(), Out(),
+        )  # fmt: skip
+        client = FakeClient()
+        client.model_entries = [
+            SimpleNamespace(
+                id="vendor/big",
+                context_length=128000,
+                pricing={"prompt": "0.00000015", "completion": "0.0000006"},
+            ),
+            SimpleNamespace(id="plain"),
+        ]
+
+        def factory(name: str, settings: Settings, key: str) -> OpenAICompatibleProvider:
+            assert key == "k"
+            return OpenAICompatibleProvider(
+                name, settings.cloud.providers[name], key, client=client
+            )
+
+        out = Out()
+        cli_cloud.run_cloud(
+            parse("cloud", "models", "or"),
+            reload(env),
+            MemoryKeyStore({"or": "k"}),
+            out,
+            make_provider=factory,
+        )
+        assert out == ["plain", "vendor/big  128k ctx  $0.15 / $0.6 per 1M", "2 models"]
+
+    def test_models_needs_a_known_provider_and_a_stored_key(self, env: Env) -> None:
+        store = MemoryKeyStore()
+        with pytest.raises(cli_cloud.CloudCommandError, match="no provider named"):
+            cli_cloud.run_cloud(parse("cloud", "models", "or"), env.settings, store, Out())
+        cli_cloud.run_cloud(
+            parse("cloud", "add", "or", "--preset", "openrouter"), env.settings, store, Out()
+        )
+        with pytest.raises(cli_cloud.CloudCommandError, match="ldf keys set or"):
+            cli_cloud.run_cloud(parse("cloud", "models", "or"), reload(env), store, Out())
+
+    def test_models_reports_a_rejected_key_as_a_command_error(self, env: Env) -> None:
+        from tests.core.providers.test_openai_compat import FakeClient, api_error
+
+        cli_cloud.run_cloud(
+            parse("cloud", "add", "or", "--preset", "openrouter"),
+            env.settings, MemoryKeyStore(), Out(),
+        )  # fmt: skip
+        client = FakeClient()
+        client.list_error = api_error(openai.AuthenticationError, 401)
+        with pytest.raises(cli_cloud.CloudCommandError, match="rejected"):
+            cli_cloud.run_cloud(
+                parse("cloud", "models", "or"),
+                reload(env),
+                MemoryKeyStore({"or": "k"}),
+                Out(),
+                make_provider=lambda n, s, k: OpenAICompatibleProvider(
+                    n, s.cloud.providers[n], k, client=client
+                ),
+            )
 
     def test_bad_roles_and_assignments_are_rejected(self, env: Env) -> None:
         store = MemoryKeyStore()

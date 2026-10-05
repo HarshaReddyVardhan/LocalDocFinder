@@ -23,6 +23,7 @@ from pydantic_settings import (
 from localdoc_finder.core.data_migration import migrate_legacy_data, rename_data_dir
 from localdoc_finder.core.file_kinds import PRESET_KINDS, FileKind
 from localdoc_finder.core.model_names import model_family, same_model
+from localdoc_finder.core.providers.presets import PRESETS
 
 SCHEMA_VERSION = 5
 APP_DIR_NAME = "LocalDocFinder"  # the Velopack install folder; uninstall deletes all of it
@@ -552,6 +553,15 @@ class CloudProviderSettings(_Section):
     models: dict[str, str] = Field(default_factory=dict)  # role -> model id
     # USD per million tokens (input, output) for models whose catalog gives no pricing.
     pricing: dict[str, tuple[float, float]] = Field(default_factory=dict)
+    preset: str = "custom"  # a key of ``PRESETS``: model filtering, JSON mode, extra headers
+    favorites: list[str] = Field(default_factory=list)  # model ids starred in the pickers
+
+    @field_validator("preset")
+    @classmethod
+    def _known_preset(cls, value: str) -> str:
+        if value not in PRESETS:
+            raise ValueError(f"unknown preset {value!r}; choose from {', '.join(sorted(PRESETS))}")
+        return value
 
 
 class CloudSettings(_Section):
@@ -562,6 +572,9 @@ class CloudSettings(_Section):
     routing: dict[str, Literal["local", "cloud", "auto"]] = Field(default_factory=dict)
     monthly_budget_usd: float | None = Field(default=None, gt=0)
     max_output_tokens: int = Field(default=2048, gt=0)  # cap on every cloud reply: it is billed
+    # A routed cloud call that fails is answered by the local model instead (never for an explicit
+    # "Answer better": the user asked for the cloud and sees the error).
+    fallback_to_local: bool = True
 
     def policy(self, role: str) -> str:
         """``local`` unless the user chose otherwise; the safe default."""
