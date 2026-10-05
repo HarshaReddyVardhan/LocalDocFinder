@@ -2,13 +2,14 @@
 
 import logging
 from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
 from localdoc_finder.core.documents import DocumentError
 from localdoc_finder.core.llm import ChatBlockedError, LlmGateway, NoChatModelError
-from localdoc_finder.core.models.catalog import ROLE_CHAT
+from localdoc_finder.core.models.catalog import ROLE_CHAT, ROLE_CODE_CHAT
 from localdoc_finder.core.providers.base import Message, ProviderError
 from localdoc_finder.core.rag import Source
 from localdoc_finder.core.registry import RegistryError
@@ -143,6 +144,15 @@ class AssistantService:
         """True when a cloud provider with a stored key and a chat model is configured."""
         return self._cloud() is not None
 
+    def needs_cloud_consent(self) -> bool:
+        """Whether a normal Ask or Chat request would go to the cloud (because of the user's
+        routing) without the user having agreed yet. May reach Ollama: not for the UI thread."""
+        cloud = self._cloud()
+        if cloud is None or cloud.consent.granted:
+            return False
+        gateway = self.gateway
+        return any(gateway.will_use_cloud(role) for role in (ROLE_CHAT, ROLE_CODE_CHAT))
+
     def _preview(self, cloud: CloudContext, messages: list[Message], excerpts: int) -> CloudPreview:
         assert cloud.provider is not None
         destination = str(cloud.router.destination(ROLE_CHAT))
@@ -155,37 +165,46 @@ class AssistantService:
             privacy.preview(outbound),
         )
 
-    def cloud_preview_ask(self, question: str) -> CloudPreview | None:
+    def cloud_preview_ask(self, question: str, *, escalate: bool = True) -> CloudPreview | None:
         """The request an escalated Ask would send; ``None`` if no cloud is configured.
 
         The prepared answer is kept, and ``ask_escalated`` sends that same object, so what the
-        user inspected is exactly what leaves.
+        user inspected is exactly what leaves. ``escalate=False`` previews a request that the
+        user's routing already sends to the cloud (``ask_routed`` sends it).
         """
         cloud = self._cloud()
         if cloud is None:
             return None
-        run = self._prepare_cloud_ask(cloud, question)
+        run = self._prepare_cloud_ask(cloud, question, escalate)
         self._previewed = _Previewed("ask", question, run)
         return self._preview(cloud, run.messages, len(run.result.sources))
 
-    def cloud_preview_chat(self, message: str, state: ChatState) -> CloudPreview | None:
+    def cloud_preview_chat(
+        self, message: str, state: ChatState, *, escalate: bool = True
+    ) -> CloudPreview | None:
         """The request an escalated chat turn would send (opens the session if needed)."""
         cloud = self._cloud()
         if cloud is None:
             return None
-        prepared = self._prepare_cloud_turn(cloud, message, state)
+        prepared = self._prepare_cloud_turn(cloud, message, state, escalate)
         self._previewed = _Previewed("chat", message, prepared)
         excerpts = len(state.pinned) + (1 if state.scratch else 0) or 1
         return self._preview(cloud, prepared.messages, excerpts)
 
-    def _prepare_cloud_ask(self, cloud: CloudContext, question: str) -> AskRun:
+    @staticmethod
+    def _scope(cloud: CloudContext, escalate: bool) -> AbstractContextManager[None]:
+        return cloud.router.escalated() if escalate else nullcontext()
+
+    def _prepare_cloud_ask(
+        self, cloud: CloudContext, question: str, escalate: bool = True
+    ) -> AskRun:
         # escalated so private files are filtered as for a cloud request; the prepared run keeps
         # its cloud route, nothing else does
-        with cloud.router.escalated():
+        with self._scope(cloud, escalate):
             return AskSkill(self.ctx).prepare(question, session=self.session_active)
 
     def _prepare_cloud_turn(
-        self, cloud: CloudContext, message: str, state: ChatState
+        self, cloud: CloudContext, message: str, state: ChatState, escalate: bool = True
     ) -> PreparedTurn:
         skill = ChatSkill(self.ctx)
         params = ChatInput(
@@ -194,7 +213,7 @@ class AssistantService:
             pin=[] if state.session_id else state.pinned,
             scratch=None if state.session_id else state.scratch or None,
         )
-        with cloud.router.escalated():
+        with self._scope(cloud, escalate):
             prepared = skill.prepare_turn(params)
         state.session_id = prepared.session_id
         return prepared
@@ -205,8 +224,17 @@ class AssistantService:
             return previewed.payload
         return None
 
-    def ask_escalated(self, question: str) -> Iterator[Event]:
-        """Answer in the cloud with exactly the request the user previewed (or prepare it now)."""
+    def ask_escalated(self, question: str, remember: bool = False) -> Iterator[Event]:
+        """Answer in the cloud with exactly the request the user previewed (or prepare it now).
+        ``remember`` keeps the user's consent for the rest of the session."""
+        yield from self._ask_in_cloud(question, forced=True, remember=remember)
+
+    def ask_routed(self, question: str, remember: bool = False) -> Iterator[Event]:
+        """Like ``ask_escalated`` for a request the user's routing sends to the cloud anyway:
+        the route stays a routed one, so a cloud failure can fall back to the local model."""
+        yield from self._ask_in_cloud(question, forced=False, remember=remember)
+
+    def _ask_in_cloud(self, question: str, *, forced: bool, remember: bool) -> Iterator[Event]:
         cloud = self._cloud()
         if cloud is None:
             yield Failed("no cloud provider is configured")
@@ -216,14 +244,26 @@ class AssistantService:
             run = (
                 previewed
                 if isinstance(previewed, AskRun)
-                else self._prepare_cloud_ask(cloud, question)
+                else self._prepare_cloud_ask(cloud, question, forced)
             )
         except _KNOWN_ERRORS as exc:
             yield Failed(str(exc))
             return
-        yield from self.escalated(self._ask_events(run))
+        yield from self._consented(self._ask_events(run), forced, remember)
 
-    def chat_escalated(self, message: str, state: ChatState) -> Iterator[Event]:
+    def chat_escalated(
+        self, message: str, state: ChatState, remember: bool = False
+    ) -> Iterator[Event]:
+        yield from self._chat_in_cloud(message, state, forced=True, remember=remember)
+
+    def chat_routed(
+        self, message: str, state: ChatState, remember: bool = False
+    ) -> Iterator[Event]:
+        yield from self._chat_in_cloud(message, state, forced=False, remember=remember)
+
+    def _chat_in_cloud(
+        self, message: str, state: ChatState, *, forced: bool, remember: bool
+    ) -> Iterator[Event]:
         cloud = self._cloud()
         if cloud is None:
             yield Failed("no cloud provider is configured")
@@ -233,25 +273,30 @@ class AssistantService:
             prepared = (
                 previewed
                 if isinstance(previewed, PreparedTurn)
-                else self._prepare_cloud_turn(cloud, message, state)
+                else self._prepare_cloud_turn(cloud, message, state, forced)
             )
         except _KNOWN_ERRORS as exc:
             yield Failed(str(exc))
             return
-        yield from self.escalated(self._turn_events(prepared, state))
+        yield from self._consented(self._turn_events(prepared, state), forced, remember)
 
-    def escalated(self, events: Iterator[Event]) -> Iterator[Event]:
+    def escalated(self, events: Iterator[Event], remember: bool = False) -> Iterator[Event]:
         """Run ``events`` with the cloud for this one request, after the user's consent."""
+        yield from self._consented(events, True, remember)
+
+    def _consented(self, events: Iterator[Event], forced: bool, remember: bool) -> Iterator[Event]:
         cloud = self._cloud()
         if cloud is None:
             yield Failed("no cloud provider is configured")
             return
         cloud.consent.grant()
+        if remember:
+            cloud.consent.grant_session()  # the user ticked "don't ask again" themselves
         try:
-            with cloud.router.escalated():
+            with self._scope(cloud, forced):
                 yield from events
         finally:
-            cloud.consent.revoke()  # consent covers this one request, never the next
+            cloud.consent.revoke()  # covers this one request; a session consent stays
 
     # ------------------------------------------------------------------ streaming
     def ask(self, question: str) -> Iterator[Event]:

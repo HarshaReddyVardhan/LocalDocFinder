@@ -137,10 +137,14 @@ def build_cloud(
     keys: KeyStore | None = None,
     *,
     doc_types: DocTypeLookup | None = None,
+    consent: CloudConsent | None = None,
 ) -> CloudContext:
-    """Cloud wiring. With no provider configured (the default) nothing can leave the machine."""
+    """Cloud wiring. With no provider configured (the default) nothing can leave the machine.
+
+    ``consent`` lets the app keep one consent object across context rebuilds, so a "don't ask
+    again this session" survives a settings change (it still ends when the app restarts)."""
     privacy = PrivacyFilter(settings.privacy, scope, doc_types)
-    consent = CloudConsent()
+    consent = consent or CloudConsent()
     provider: CloudChatProvider | None = None
     active = settings.cloud.active
     if active and active in settings.cloud.providers:
@@ -165,6 +169,7 @@ def build_skill_context(
     *,
     owner: str = "app",
     allow_cloud: bool = True,
+    consent: CloudConsent | None = None,
 ) -> SkillContext:
     """Context for read-side skills (search, ask, ...): read-only store, local provider.
 
@@ -187,7 +192,9 @@ def build_skill_context(
     )
     store = open_read_only_store(settings, state)
     scope = build_scope(settings)
-    cloud = build_cloud(settings, state, scope, registry, keys, doc_types=store.doc_types_for)
+    cloud = build_cloud(
+        settings, state, scope, registry, keys, doc_types=store.doc_types_for, consent=consent
+    )
     if allow_cloud:
         gateway.router = cloud.router
     if settings.privacy.mask_ids_locally:

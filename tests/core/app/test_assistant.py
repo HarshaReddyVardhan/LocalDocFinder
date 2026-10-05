@@ -277,6 +277,103 @@ class TestAnswerBetter:
         assert preview.badge.startswith("☁ Sending 1 excerpt")
 
 
+class TestRoutedConsent:
+    """Requests the user's routing sends to the cloud, as opposed to "Answer better"."""
+
+    @pytest.fixture
+    def routed(self, cloud: CloudRig) -> CloudRig:
+        cloud.consent.revoke()  # routing is "cloud" (the fixture's default), nothing agreed yet
+        return cloud
+
+    def index(self, env: Env) -> None:
+        env.indexer.index_paths([write(env, "payments.md", NOTES)])
+        env.store.maintain()
+
+    def test_a_cloud_routed_request_needs_consent_until_it_is_given(
+        self, env: Env, skill_ctx: SkillContext, routed: CloudRig
+    ) -> None:
+        service = AssistantService(lambda: skill_ctx)
+        assert service.needs_cloud_consent()
+        routed.consent.grant_session()
+        assert not service.needs_cloud_consent()
+
+    def test_a_local_route_needs_no_consent(
+        self, skill_ctx: SkillContext, routed: CloudRig
+    ) -> None:
+        routed.router._settings = routed.router._settings.model_copy(update={"routing": {}})
+        assert not AssistantService(lambda: skill_ctx).needs_cloud_consent()
+
+    def test_no_provider_needs_no_consent(self, skill_ctx: SkillContext, chat: Chat) -> None:
+        assert not AssistantService(lambda: skill_ctx).needs_cloud_consent()
+
+    def test_routed_previews_do_not_escalate_and_the_request_goes_to_the_cloud(
+        self, env: Env, skill_ctx: SkillContext, chat: Chat, routed: CloudRig
+    ) -> None:
+        self.index(env)
+        service = AssistantService(lambda: skill_ctx)
+        question = "how do we retry failed payments"
+        preview = service.cloud_preview_ask(question, escalate=False)
+        assert preview is not None
+        assert not routed.router.escalate
+        routed.inner.reply = ["Cloud answer."]
+        text, (finished,) = drain(service.ask_routed(question))
+        assert text == "Cloud answer."
+        assert isinstance(finished, Finished)
+        assert routed.inner.sent
+        assert not routed.consent.granted  # a plain yes covered that request only
+
+    def test_remember_keeps_consent_after_the_request(
+        self, env: Env, skill_ctx: SkillContext, routed: CloudRig
+    ) -> None:
+        self.index(env)
+        service = AssistantService(lambda: skill_ctx)
+        routed.inner.reply = ["ok"]
+        drain(service.ask_routed("how do we retry failed payments", remember=True))
+        assert routed.consent.session_granted
+        assert not service.needs_cloud_consent()  # the next request goes without a dialog
+        service.revoke_consent()  # hiding the popup or ending a chat keeps the user's choice
+        assert routed.consent.granted
+
+    def test_escalating_with_remember_also_keeps_it(
+        self, env: Env, skill_ctx: SkillContext, routed: CloudRig
+    ) -> None:
+        self.index(env)
+        service = AssistantService(lambda: skill_ctx)
+        routed.inner.reply = ["ok"]
+        drain(service.ask_escalated("how do we retry failed payments", remember=True))
+        assert routed.consent.session_granted
+
+    def test_a_chat_turn_can_be_routed_and_remembered(
+        self, env: Env, skill_ctx: SkillContext, routed: CloudRig
+    ) -> None:
+        self.index(env)
+        service = AssistantService(lambda: skill_ctx)
+        state = ChatState()
+        routed.inner.reply = ["Cloud chat."]
+        preview = service.cloud_preview_chat(
+            "how do we retry failed payments", state, escalate=False
+        )
+        assert preview is not None
+        text, _ = drain(
+            service.chat_routed("how do we retry failed payments", state, remember=True)
+        )
+        assert text == "Cloud chat."
+        assert routed.consent.session_granted
+
+    def test_without_remember_a_failed_stream_still_withdraws_consent(
+        self, skill_ctx: SkillContext, routed: CloudRig
+    ) -> None:
+        service = AssistantService(lambda: skill_ctx)
+
+        def boom() -> Iterator[object]:
+            yield Delta("x")
+            raise RuntimeError("stream died")
+
+        with pytest.raises(RuntimeError):
+            list(service.escalated(boom()))  # type: ignore[arg-type]
+        assert not routed.consent.granted
+
+
 class TestConsentLifetime:
     @pytest.fixture
     def local_by_default(self, cloud: CloudRig) -> CloudRig:

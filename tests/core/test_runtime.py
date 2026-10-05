@@ -150,6 +150,21 @@ class TestCloudWiring:
             assert ctx.router.model_for("chat") == "vendor/m"
             assert not ctx.consent.granted
 
+    def test_a_given_consent_object_is_the_one_in_the_context(self, tmp_path: Path) -> None:
+        from localdoc_finder.core.cloud import CloudConsent
+
+        settings = make_settings(tmp_path)
+        consent = CloudConsent()
+        with StateDb(settings.storage.data_dir) as state:
+            ctx = runtime.build_cloud(
+                settings,
+                state,
+                runtime.build_scope(settings),
+                self.registry(settings, state),
+                consent=consent,
+            )
+            assert ctx.consent is consent
+
     def test_a_missing_or_unreadable_key_keeps_everything_local(self, tmp_path: Path) -> None:
         from localdoc_finder.core.secrets import KeyStoreError, MemoryKeyStore
 

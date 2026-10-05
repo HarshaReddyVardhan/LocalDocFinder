@@ -15,7 +15,12 @@ from localdoc_finder.core.lifecycle import (
     stop_everything,
 )
 from localdoc_finder.core.models.benchmark import BenchResult, load_results
-from localdoc_finder.core.models.catalog import ROLES
+from localdoc_finder.core.models.catalog import (
+    ROLE_CHAT,
+    ROLE_CODE_CHAT,
+    ROLE_MATCH_SCORER,
+    ROLES,
+)
 from localdoc_finder.core.protection import SystemProtection
 from localdoc_finder.core.providers.openai_compat import OpenAICompatibleProvider
 from localdoc_finder.core.providers.presets import CUSTOM, PRESETS
@@ -34,6 +39,8 @@ from localdoc_finder.core.updates import UpdateKind, UpdateOutcome, Updater
 PACKAGE_NAME = "localdoc-finder"
 NO_UPDATES = "Updates are not available in this build."
 _TOKENS_PER_K = 1000
+ROUTED_ROLES = (ROLE_CHAT, ROLE_MATCH_SCORER)  # what Settings lets the user point at the cloud
+ROUTING_POLICIES = ("local", "auto", "cloud")
 _CENTS_THRESHOLD_USD = 0.1  # below this a price is shown to three decimals
 ProviderFactory = Callable[[str, CloudProviderSettings, str], OpenAICompatibleProvider]
 
@@ -92,8 +99,10 @@ class SettingsController:
         schedule_deletion: Callable[[Path], None] = schedule_data_deletion,
         on_changed: Callable[[], None] = lambda: None,
         make_provider: ProviderFactory = OpenAICompatibleProvider,
+        forget_consent: Callable[[], None] = lambda: None,
     ) -> None:
         self._make_provider = make_provider
+        self._forget_consent = forget_consent
         self._on_changed = on_changed
         self._path = settings_path
         self._state = state
@@ -246,6 +255,22 @@ class SettingsController:
             raise SettingsError(f"unknown role {role!r}")
         set_setting(self._path, ["cloud", "providers", name, "models", role], model or None)
         self._on_changed()
+
+    def set_cloud_routing(self, role: str, policy: str) -> None:
+        """When ``role`` uses the cloud: ``local`` (only on "Answer better"), ``auto`` (when the
+        local model cannot) or ``cloud`` (always). Ask & Chat carries code questions with it."""
+        if role not in ROUTED_ROLES:
+            raise SettingsError(f"unknown role {role!r}")
+        if policy not in ROUTING_POLICIES:
+            raise SettingsError(f"unknown routing {policy!r}")
+        stored = None if policy == "local" else policy  # local is the default: leave it unset
+        roles = (ROLE_CHAT, ROLE_CODE_CHAT) if role == ROLE_CHAT else (role,)
+        set_settings(self._path, [(["cloud", "routing", r], stored) for r in roles])
+        self._on_changed()
+
+    def forget_cloud_consent(self) -> None:
+        """Withdraw "don't ask again": the next cloud request asks first."""
+        self._forget_consent()
 
     def set_model_price(self, name: str, model: str, inp: float, out: float) -> None:
         """USD per million input and output tokens, for models whose listing gives no price."""

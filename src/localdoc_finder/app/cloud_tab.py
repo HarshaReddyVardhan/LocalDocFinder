@@ -23,6 +23,7 @@ from localdoc_finder.app.cloud_provider_dialog import (
     ModelsSignals,
     run_add_provider_dialog,
 )
+from localdoc_finder.app.cloud_routing_box import RoutingBox
 from localdoc_finder.app.settings_controller import CloudModel, SettingsController
 from localdoc_finder.app.settings_tabs import SettingsTab, ask_secret
 from localdoc_finder.app.theme import scheme_in_use, style_check_boxes
@@ -117,6 +118,10 @@ class CloudTab(SettingsTab):
         self.budget.editingFinished.connect(self._save_budget)
         self.add_provider.clicked.connect(self._add)
         self.refresh_models.clicked.connect(lambda: self.load_models(force=True))
+        self.routing.routing_changed.connect(self._route)
+        self.routing.forget_clicked.connect(
+            lambda: self._guard(self._controller.forget_cloud_consent, "will ask before sending")
+        )
         for role, picker in self._pickers():
             picker.chosen.connect(lambda model, r=role: self._choose_model(r, model))
             picker.star_toggled.connect(self._star)
@@ -139,6 +144,8 @@ class CloudTab(SettingsTab):
         refresh_row.addWidget(self.refresh_models)
         refresh_row.addWidget(self.models_status, 1)
         models.addLayout(refresh_row)
+        self.routing = RoutingBox()
+        models.addWidget(self.routing)
 
     def _pickers(self) -> tuple[tuple[str, ModelPicker], tuple[str, ModelPicker]]:
         return (ROLE_CHAT, self.chat_picker), (ROLE_MATCH_SCORER, self.match_picker)
@@ -204,6 +211,8 @@ class CloudTab(SettingsTab):
         if provider is None:
             return
         self.models_title.setText(f"Models for {provider.label or self._active}")
+        cloud = self._controller.settings().cloud
+        self.routing.set_policies(cloud.policy(ROLE_CHAT), cloud.policy(ROLE_MATCH_SCORER))
         for role, picker in self._pickers():
             picker.set_current(provider.models.get(role, ""))
         self._fill_lists()
@@ -312,6 +321,13 @@ class CloudTab(SettingsTab):
             return
         self._guard(lambda: self._controller.set_cloud_model(name, role, model), "model saved")
         self._update_price_rows()
+
+    def _route(self, role: str, policy: str) -> None:
+        saved = self._guard(
+            lambda: self._controller.set_cloud_routing(role, policy), "routing saved"
+        )
+        if not saved:
+            self._fill_models()
 
     def _star(self, model: str) -> None:
         name = self._active

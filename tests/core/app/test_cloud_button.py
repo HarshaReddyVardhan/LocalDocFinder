@@ -8,6 +8,7 @@ from tests.core.app.test_app import FakeService
 from tests.core.app.test_modes import FakeAssistant
 
 from localdoc_finder.app.assistant import ChatState, CloudPreview, Delta, Event, Failed, Finished
+from localdoc_finder.app.cloud_dialog import CloudAnswer
 from localdoc_finder.app.controller import Launcher
 from localdoc_finder.app.window import Mode, SearchWindow
 
@@ -26,29 +27,56 @@ class CloudAssistant(FakeAssistant):
         self.preview: CloudPreview | None = PREVIEW
         self.preview_error: Exception | None = None
         self.escalations = 0
+        self.consent_needed = False  # the user's routing sends a normal request to the cloud
+        self.remembered: list[bool] = []
 
     def cloud_available(self) -> bool:
         return self.available
 
-    def cloud_preview_ask(self, question: str) -> CloudPreview | None:
-        self.calls.append(("preview_ask", question))
+    def needs_cloud_consent(self) -> bool:
+        self.calls.append(("needs_consent", None))
+        return self.consent_needed
+
+    def cloud_preview_ask(self, question: str, *, escalate: bool = True) -> CloudPreview | None:
+        self.calls.append(
+            ("preview_ask", question) if escalate else ("preview_ask_routed", question)
+        )
         if self.preview_error:
             raise self.preview_error
         return self.preview
 
-    def cloud_preview_chat(self, message: str, state: ChatState) -> CloudPreview | None:
-        self.calls.append(("preview_chat", message))
+    def cloud_preview_chat(
+        self, message: str, state: ChatState, *, escalate: bool = True
+    ) -> CloudPreview | None:
+        self.calls.append(
+            ("preview_chat", message) if escalate else ("preview_chat_routed", message)
+        )
         return self.preview
 
-    def escalated(self, events: Iterator[Event]) -> Iterator[Event]:
+    def escalated(self, events: Iterator[Event], remember: bool = False) -> Iterator[Event]:
         self.escalations += 1
+        self.remembered.append(remember)
         yield from events
 
-    def ask_escalated(self, question: str) -> Iterator[Event]:
-        yield from self.escalated(self.ask(question))
+    def ask_escalated(self, question: str, remember: bool = False) -> Iterator[Event]:
+        yield from self.escalated(self.ask(question), remember)
 
-    def chat_escalated(self, message: str, state: ChatState) -> Iterator[Event]:
-        yield from self.escalated(self.chat(message, state))
+    def chat_escalated(
+        self, message: str, state: ChatState, remember: bool = False
+    ) -> Iterator[Event]:
+        yield from self.escalated(self.chat(message, state), remember)
+
+    def ask_routed(self, question: str, remember: bool = False) -> Iterator[Event]:
+        self.calls.append(("ask_routed", question))
+        self.remembered.append(remember)
+        yield from self.events
+
+    def chat_routed(
+        self, message: str, state: ChatState, remember: bool = False
+    ) -> Iterator[Event]:
+        self.calls.append(("chat_routed", message))
+        self.remembered.append(remember)
+        yield from self.events
 
 
 def wait_for(qapp: QApplication, condition: Callable[[], bool], timeout: float = 5.0) -> None:
@@ -72,9 +100,9 @@ def parts(
         assistant,  # type: ignore[arg-type]
     )
 
-    def confirm(preview: CloudPreview) -> bool:
+    def confirm(preview: CloudPreview) -> CloudAnswer:
         shown.append(preview)
-        return True
+        return CloudAnswer(True)
 
     window.cloud_confirm = confirm
     return window, assistant, shown
@@ -140,7 +168,7 @@ def test_declining_sends_nothing(
     qapp: QApplication, parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]]
 ) -> None:
     window, assistant, _ = parts
-    window.cloud_confirm = lambda _preview: False
+    window.cloud_confirm = lambda _preview: CloudAnswer(False)
     ask(window)
     wait_for(qapp, lambda: window.status.text() == "done")
     window.answer_better()
@@ -212,9 +240,9 @@ def test_the_preview_is_built_off_the_ui_thread(
     threads: list[str] = []
     original = assistant.cloud_preview_ask
 
-    def spy(question: str) -> CloudPreview | None:
+    def spy(question: str, **kwargs: bool) -> CloudPreview | None:
         threads.append(threading.current_thread().name)
-        return original(question)
+        return original(question, **kwargs)
 
     assistant.cloud_preview_ask = spy  # type: ignore[method-assign]
     ask(window)
@@ -223,3 +251,110 @@ def test_the_preview_is_built_off_the_ui_thread(
     wait_for(qapp, lambda: threads)
     assert threads
     assert threads[0] != threading.main_thread().name
+
+
+# ------------------------------------------------------------------ routed requests
+def wait_ready(qapp: QApplication, window: SearchWindow) -> None:
+    """Until the background probe has found the configured provider."""
+    wait_for(qapp, lambda: window._cloud_ready)
+    assert window._cloud_ready
+
+
+def test_a_request_routed_to_the_cloud_is_previewed_and_sent_after_consent(
+    qapp: QApplication, parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]]
+) -> None:
+    window, assistant, shown = parts
+    assistant.consent_needed = True
+    window.set_mode(Mode.ASK)
+    wait_ready(qapp, window)
+    window.input.setText("what changed")
+    window.submit()
+    wait_for(qapp, lambda: ("ask_routed", "what changed") in assistant.calls)
+    assert shown == [PREVIEW]
+    assert ("preview_ask_routed", "what changed") in assistant.calls  # not an escalated preview
+    assert assistant.escalations == 0  # the route stays a routed one
+    assert not any(kind == "ask" for kind, _ in assistant.calls)  # not the plain local path
+    assert assistant.remembered == [False]
+
+
+def test_a_routed_chat_turn_is_previewed_too(
+    qapp: QApplication, parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]]
+) -> None:
+    window, assistant, shown = parts
+    assistant.consent_needed = True
+    window.set_mode(Mode.CHAT)
+    wait_ready(qapp, window)
+    window.input.setText("hello")
+    window.submit()
+    wait_for(qapp, lambda: any(c[0] == "chat_routed" for c in assistant.calls))
+    assert ("preview_chat_routed", "hello") in assistant.calls
+    assert shown == [PREVIEW]
+
+
+def test_declining_a_routed_request_sends_nothing(
+    qapp: QApplication, parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]]
+) -> None:
+    window, assistant, _ = parts
+    assistant.consent_needed = True
+    window.cloud_confirm = lambda _preview: CloudAnswer(False)
+    window.set_mode(Mode.ASK)
+    wait_ready(qapp, window)
+    window.input.setText("what changed")
+    window.submit()
+    wait_for(qapp, lambda: window.status.text() == "cancelled: nothing was sent")
+    assert window.status.text() == "cancelled: nothing was sent"
+    assert not any(kind in ("ask", "ask_routed") for kind, _ in assistant.calls)
+    assert assistant.escalations == 0
+
+
+def test_dont_ask_again_is_passed_on_with_the_request(
+    qapp: QApplication, parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]]
+) -> None:
+    window, assistant, _ = parts
+    assistant.consent_needed = True
+    window.cloud_confirm = lambda _preview: CloudAnswer(True, remember=True)
+    window.set_mode(Mode.ASK)
+    wait_ready(qapp, window)
+    window.input.setText("what changed")
+    window.submit()
+    wait_for(qapp, lambda: assistant.remembered)
+    assert assistant.remembered == [True]
+
+
+def test_answer_better_passes_dont_ask_again_too(
+    qapp: QApplication, parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]]
+) -> None:
+    window, assistant, _ = parts
+    window.cloud_confirm = lambda _preview: CloudAnswer(True, remember=True)
+    ask(window)
+    wait_for(qapp, lambda: window.status.text() == "done")
+    window.answer_better()
+    wait_for(qapp, lambda: assistant.escalations == 1)
+    assert assistant.remembered == [True]
+
+
+def test_no_dialog_when_the_request_needs_no_consent(
+    qapp: QApplication, parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]]
+) -> None:
+    window, assistant, shown = parts
+    window.set_mode(Mode.ASK)
+    wait_ready(qapp, window)
+    window.input.setText("what changed")
+    window.submit()
+    wait_for(qapp, lambda: window.status.text() == "done")
+    assert shown == []
+    assert ("needs_consent", None) in assistant.calls
+    assert ("ask", "what changed") in assistant.calls
+
+
+def test_a_newer_question_cancels_the_pending_routed_preview(
+    qapp: QApplication, parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]]
+) -> None:
+    window, assistant, shown = parts
+    assistant.consent_needed = True
+    window.set_mode(Mode.ASK)
+    wait_ready(qapp, window)
+    window._generation += 1  # the user asked something else meanwhile
+    window._on_consent_checked(window._generation - 1, True)
+    wait_for(qapp, lambda: False, timeout=0.2)
+    assert shown == []

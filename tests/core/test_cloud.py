@@ -65,6 +65,47 @@ def make(  # type: ignore[no-untyped-def]
 MESSAGES = [Message("system", "judge"), Message("user", f"Resume (r.pdf):\n{RESUME}")]
 
 
+class TestCloudConsent:
+    def test_nothing_is_granted_at_first(self) -> None:
+        consent = CloudConsent()
+        assert not consent.granted
+        assert not consent.session_granted
+
+    def test_a_request_grant_ends_with_the_request(self) -> None:
+        consent = CloudConsent()
+        consent.grant()
+        assert consent.granted
+        assert not consent.session_granted
+        consent.revoke()
+        assert not consent.granted
+
+    def test_a_session_grant_survives_the_end_of_a_request(self) -> None:
+        consent = CloudConsent()
+        consent.grant()
+        consent.grant_session()
+        consent.revoke()
+        assert consent.granted
+        assert consent.session_granted
+
+    def test_revoking_the_session_clears_everything(self) -> None:
+        consent = CloudConsent()
+        consent.grant()
+        consent.grant_session()
+        consent.revoke_session()
+        assert not consent.granted
+        assert not consent.session_granted
+
+    def test_a_session_grant_lets_requests_through_the_provider(self, env: Env) -> None:
+        provider, _, gate, _ = make(env, consent=False)
+        gate.grant_session()
+        assert "".join(c.text for c in provider.stream_chat(MESSAGES, "m"))
+        gate.revoke()  # the end of a request does not undo it
+        assert "".join(c.text for c in provider.stream_chat(MESSAGES, "m"))
+        gate.revoke_session()
+        with pytest.raises(ChatBlockedError, match="consent"):
+            list(provider.stream_chat(MESSAGES, "m"))
+
+
 class TestCloudChatProvider:
     def test_requests_need_consent(self, env: Env) -> None:
         provider, inner, gate, _ = make(env, consent=False)

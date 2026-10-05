@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from localdoc_finder.app.assistant import CloudPreview
-from localdoc_finder.app.cloud_dialog import confirm_cloud_dialog
+from localdoc_finder.app.cloud_dialog import CloudAnswer, confirm_cloud_dialog
 from localdoc_finder.app.match_controller import MatchController
 from localdoc_finder.core.match.judge import MatchError
 from localdoc_finder.core.match.pipeline import MatchRun
@@ -73,7 +73,7 @@ class MatchPanel(QWidget):
         controller: MatchController,
         pick_file: Callable[[], str | None] = lambda: None,
         pool: QThreadPool | None = None,
-        confirm_cloud: Callable[[CloudPreview], bool] | None = None,
+        confirm_cloud: Callable[[CloudPreview], CloudAnswer] | None = None,
     ) -> None:
         super().__init__()
         self._confirm_cloud = confirm_cloud or confirm_cloud_dialog
@@ -324,10 +324,11 @@ class MatchPanel(QWidget):
     def _after_preview(self, preview: CloudPreview | None) -> None:
         """Local scoring starts at once; a cloud one waits for the user's explicit Send."""
         if preview is not None:
-            if not self._confirm_cloud(preview):
+            answer = self._confirm_cloud(preview)
+            if not answer.send:
                 self._say("cancelled: nothing was sent")
                 return
-            self._controller.grant_cloud_consent()
+            self._controller.grant_cloud_consent(remember=answer.remember)
         self._after_confirm()
 
     def _score(self) -> object:

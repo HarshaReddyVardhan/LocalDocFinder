@@ -45,16 +45,38 @@ _CHARS_PER_TOKEN = 4  # rough size of a streamed reply when the provider reports
 
 
 class CloudConsent:
-    """Per-session opt-in. Nothing is sent to the cloud until the user grants it."""
+    """Opt-in. Nothing is sent to the cloud until the user grants it.
+
+    Two grants exist. The *request* grant covers one request and is withdrawn when it ends. The
+    *session* grant is the user's explicit "don't ask again until LocalDoc Finder restarts"; it
+    lives as long as this object (the app keeps one for its whole run) or until
+    ``revoke_session``.
+    """
 
     def __init__(self) -> None:
-        self.granted = False
+        self._request = False
+        self._session = False
+
+    @property
+    def granted(self) -> bool:
+        return self._request or self._session
+
+    @property
+    def session_granted(self) -> bool:
+        return self._session
 
     def grant(self) -> None:
-        self.granted = True
+        self._request = True
+
+    def grant_session(self) -> None:
+        self._session = True
 
     def revoke(self) -> None:
-        self.granted = False
+        """End the per-request consent; a session consent the user chose stays."""
+        self._request = False
+
+    def revoke_session(self) -> None:
+        self._request = self._session = False
 
 
 def _restore_strings(data: Any, restore: Callable[[str], str]) -> Any:  # noqa: ANN401

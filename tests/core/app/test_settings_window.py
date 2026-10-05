@@ -598,6 +598,25 @@ def test_the_context_is_rebuilt_from_the_saved_settings_after_a_change(
     assert built == [False, True]  # the rebuilt context saw the new privacy setting
 
 
+def test_one_consent_object_outlives_every_context_rebuild(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[object] = []
+
+    def fake_build(settings: object, state: object, **kw: object) -> object:
+        seen.append(kw["consent"])
+        return object()
+
+    monkeypatch.setattr(app_main.runtime, "build_skill_context", fake_build)
+    factory = app_main.make_context_factory(env.settings, env.state, None)
+    factory()
+    factory.consent.grant_session()  # the user ticked "don't ask again"
+    factory.invalidate()  # a setting changed, so the context is rebuilt
+    factory()
+    assert seen == [factory.consent, factory.consent]
+    assert factory.consent.session_granted  # still agreed: only a restart (or Forget) ends it
+
+
 def test_an_invalid_settings_file_keeps_the_working_context_settings(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:

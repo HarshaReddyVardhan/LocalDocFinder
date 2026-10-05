@@ -78,7 +78,7 @@ from localdoc_finder.app.assistant import (
     Failed,
     Finished,
 )
-from localdoc_finder.app.cloud_dialog import confirm_cloud_dialog
+from localdoc_finder.app.cloud_dialog import CloudAnswer, confirm_cloud_dialog
 from localdoc_finder.app.controller import (
     Launcher,
     SearchOutcome,
@@ -202,6 +202,7 @@ class _Signals(QObject):
     status = Signal(str)
     cloud_checked = Signal(int, bool)  # mode-change token, is a cloud provider configured
     preview_ready = Signal(object, str)  # CloudPreview or None, error text
+    consent_checked = Signal(int, bool)  # generation, would this request go to the cloud unasked
 
 
 class _SearchJob(QRunnable):
@@ -281,6 +282,21 @@ class _CloudProbeJob(QRunnable):
         self._signals.cloud_checked.emit(self._token, available)
 
 
+class _ConsentJob(QRunnable):
+    """Asks whether the user's routing sends this request to the cloud without their consent."""
+
+    def __init__(self, generation: int, assistant: AssistantService, signals: _Signals) -> None:
+        super().__init__()
+        self._generation, self._assistant, self._signals = generation, assistant, signals
+
+    def run(self) -> None:
+        try:
+            needs = self._assistant.needs_cloud_consent()
+        except Exception:  # the request itself will report the real problem
+            needs = False
+        self._signals.consent_checked.emit(self._generation, needs)
+
+
 class _PreviewJob(QRunnable):
     """Builds the "what will be sent" preview (retrieval and masking) off the UI thread."""
 
@@ -337,7 +353,7 @@ class SearchWindow(QWidget):
         self._pick_file = pick_file
         self._jd_text = ""
         self._last_text = ""
-        self.cloud_confirm: Callable[[CloudPreview], bool] = confirm_cloud_dialog
+        self.cloud_confirm: Callable[[CloudPreview], CloudAnswer] = confirm_cloud_dialog
         self.choose_session: Callable[[list[SessionSummary]], int | None] = self._session_menu
         self._launcher = launcher
         self._thumbs_dir = thumbs_dir
@@ -356,10 +372,7 @@ class SearchWindow(QWidget):
         self._signals.done.connect(self._on_outcome)
         self._signals.streamed.connect(self._on_event)
         self._signals.status.connect(self._set_status)
-        self._signals.cloud_checked.connect(self._on_cloud_checked)
-        self._signals.preview_ready.connect(self._on_preview)
-        self._mode_token = 0  # which mode switch a cloud probe answers
-        self._pending_cloud: tuple[AnyMode, str] | None = None
+        self._init_cloud_state()
         self._last_render = 0.0
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
@@ -511,6 +524,15 @@ class SearchWindow(QWidget):
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.clicked.connect(action)
         return button
+
+    def _init_cloud_state(self) -> None:
+        self._signals.cloud_checked.connect(self._on_cloud_checked)
+        self._signals.preview_ready.connect(self._on_preview)
+        self._signals.consent_checked.connect(self._on_consent_checked)
+        self._mode_token = 0  # which mode switch a cloud probe answers
+        self._cloud_ready = False  # a provider with a key is configured (set by the probe)
+        # mode, question, forced ("Answer better") or routed, generation of the request
+        self._pending_cloud: tuple[AnyMode, str, bool, int] | None = None
 
     def open_settings(self) -> None:
         """Hide the popup (it stays on top) and ask the app for the Settings window."""
@@ -724,6 +746,7 @@ class SearchWindow(QWidget):
         Found out in the background: the answer may need the whole skill context built first.
         """
         self.cloud_button.setVisible(False)
+        self._cloud_ready = False
         self._mode_token += 1
         if self._assistant is None or self._mode not in (Mode.ASK, Mode.CHAT):
             return
@@ -731,7 +754,8 @@ class SearchWindow(QWidget):
 
     def _on_cloud_checked(self, token: int, available: bool) -> None:
         if token == self._mode_token:  # not a stale answer for a mode we already left
-            self.cloud_button.setVisible(available and self._mode in (Mode.ASK, Mode.CHAT))
+            self._cloud_ready = available and self._mode in (Mode.ASK, Mode.CHAT)
+            self.cloud_button.setVisible(self._cloud_ready)
 
     def _body_index(self) -> int:
         if self._mode is Mode.MATCH:
@@ -925,31 +949,55 @@ class SearchWindow(QWidget):
         self._answer_text = ""
         self.answer.clear()
         self.status.setText("thinking…")
-        if self._mode is Mode.ASK:
-            events = self._assistant.ask(text)
-        elif isinstance(self._mode, SkillMode):
-            events = self._assistant.run_skill(self._mode.value, text)
-        else:
+        if isinstance(self._mode, SkillMode):
+            self._start_stream(self._assistant.run_skill(self._mode.value, text))
+            return
+        if self._mode is Mode.CHAT:
             self.answer.setMarkdown(f"**You:** {text}\n\n")
             self._answer_text = f"**You:** {text}\n\n"
-            events = self._assistant.chat(text, self._chat)
             self.input.clear()
+        if self._cloud_ready:  # routing may send this to the cloud: find out before asking
+            self._pool.start(_ConsentJob(self._generation, self._assistant, self._signals))
+        else:
+            self._send_locally_routed(text)
+
+    def _send_locally_routed(self, text: str) -> None:
+        """Send as the settings route it (the local model, unless routing says otherwise)."""
+        assert self._assistant is not None
+        if self._mode is Mode.ASK:
+            events = self._assistant.ask(text)
+        else:
+            events = self._assistant.chat(text, self._chat)
         self._start_stream(events)
+
+    def _on_consent_checked(self, generation: int, needs_consent: bool) -> None:
+        if generation != self._generation:  # a newer question replaced this one
+            return
+        if needs_consent:  # routed to the cloud, and not yet agreed: preview, then ask
+            self._start_preview(self._last_text, forced=False)
+        else:
+            self._send_locally_routed(self._last_text)
 
     def answer_better(self) -> None:
         """Re-ask the last question in the cloud, after showing exactly what would be sent."""
-        assistant = self._assistant
-        if assistant is None or not self._last_text or self._mode not in (Mode.ASK, Mode.CHAT):
+        if not self._last_text or self._mode not in (Mode.ASK, Mode.CHAT):
             return
-        question = self._last_text
+        self._start_preview(self._last_text, forced=True)
+
+    def _start_preview(self, question: str, *, forced: bool) -> None:
+        """Prepare what a cloud request would send. ``forced`` is the user's "Answer better"; the
+        other kind is a request their routing sends to the cloud anyway."""
+        assistant = self._assistant
+        if assistant is None or self._mode not in (Mode.ASK, Mode.CHAT):
+            return
         mode, chat = self._mode, self._chat
-        self._pending_cloud = (mode, question)
+        self._pending_cloud = (mode, question, forced, self._generation)
         self.status.setText("preparing what will be sent…")
         self.cloud_button.setEnabled(False)
         build = (
-            (lambda: assistant.cloud_preview_ask(question))
+            (lambda: assistant.cloud_preview_ask(question, escalate=forced))
             if mode is Mode.ASK
-            else (lambda: assistant.cloud_preview_chat(question, chat))
+            else (lambda: assistant.cloud_preview_chat(question, chat, escalate=forced))
         )
         self._pool.start(_PreviewJob(build, self._signals))
 
@@ -960,9 +1008,9 @@ class SearchWindow(QWidget):
         assistant = self._assistant
         if pending is None or assistant is None:
             return
-        mode, question = pending
-        if mode is not self._mode:  # the user moved on while it was being prepared
-            return
+        mode, question, forced, generation = pending
+        if mode is not self._mode or generation != self._generation:
+            return  # the user moved on while it was being prepared
         if error:
             self.status.setText(error)
             return
@@ -972,17 +1020,21 @@ class SearchWindow(QWidget):
             )
             return
         assert isinstance(preview, CloudPreview)
-        if not self._in_dialog(lambda: self.cloud_confirm(preview)):
+        answer = self._in_dialog(lambda: self.cloud_confirm(preview))
+        if not answer.send:
             self.status.setText("cancelled: nothing was sent")
             return
         self._generation += 1
         self._answer_text = ""
         self.answer.clear()
         self.status.setText(f"asking {preview.destination}…")
-        if self._mode is Mode.ASK:
-            events = assistant.ask_escalated(question)  # the very request that was previewed
+        remember = answer.remember
+        if self._mode is Mode.ASK:  # the very request that was previewed
+            ask = assistant.ask_escalated if forced else assistant.ask_routed
+            events = ask(question, remember)
         else:
-            events = assistant.chat_escalated(question, self._chat)
+            chat = assistant.chat_escalated if forced else assistant.chat_routed
+            events = chat(question, self._chat, remember)
         self._start_stream(events)
 
     def _on_event(self, generation: int, event: Event) -> None:

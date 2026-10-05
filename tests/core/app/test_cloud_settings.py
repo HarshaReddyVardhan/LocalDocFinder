@@ -178,6 +178,46 @@ class TestModelChoices:
         assert controller.settings().cloud.providers["openai"].favorites == []
 
 
+class TestRouting:
+    @pytest.mark.parametrize("policy", ["auto", "cloud"])
+    def test_ask_and_chat_routing_carries_code_questions_with_it(
+        self, controller: SettingsController, policy: str, changes: list[int]
+    ) -> None:
+        controller.set_cloud_routing("chat", policy)
+        routing = controller.settings().cloud.routing
+        assert routing == {"chat": policy, "code_chat": policy}
+        assert changes
+
+    def test_match_routing_is_its_own(self, controller: SettingsController) -> None:
+        controller.set_cloud_routing("match_scorer", "cloud")
+        assert controller.settings().cloud.routing == {"match_scorer": "cloud"}
+
+    def test_local_is_the_default_so_it_is_left_unset(self, controller: SettingsController) -> None:
+        controller.set_cloud_routing("chat", "cloud")
+        controller.set_cloud_routing("chat", "local")
+        cloud = controller.settings().cloud
+        assert cloud.routing == {}
+        assert cloud.policy("chat") == cloud.policy("code_chat") == "local"
+
+    def test_bad_roles_and_policies_are_refused(self, controller: SettingsController) -> None:
+        with pytest.raises(SettingsError, match="unknown role"):
+            controller.set_cloud_routing("poetry", "cloud")
+        with pytest.raises(SettingsError, match="unknown routing"):
+            controller.set_cloud_routing("chat", "sometimes")
+        assert controller.settings().cloud.routing == {}
+
+    def test_forgetting_consent_calls_the_app(self, env: Env, store: MemoryKeyStore) -> None:
+        forgotten: list[int] = []
+        controller = SettingsController(
+            env.data_dir / "settings.toml",
+            env.state,
+            store,
+            forget_consent=lambda: forgotten.append(1),
+        )
+        controller.forget_cloud_consent()
+        assert forgotten == [1]
+
+
 class TestListing:
     def test_a_saved_provider_lists_models_with_context_and_price(
         self, controller: SettingsController
@@ -412,6 +452,55 @@ class TestCloudTab:
         tab.load_models()
         assert tab.models_status.text() == "Set the API key to list the models."
         assert tab._loading is None
+
+
+class TestRoutingControls:
+    def test_the_boxes_show_the_saved_routing(
+        self, qapp: QApplication, tab: CloudTab, controller: SettingsController
+    ) -> None:
+        tab.add_provider.click()
+        controller.set_cloud_routing("chat", "auto")
+        controller.set_cloud_routing("match_scorer", "cloud")
+        tab.refresh()
+        assert tab.routing.chat.currentData() == "auto"
+        assert tab.routing.match.currentData() == "cloud"
+
+    def test_the_default_is_only_when_i_press_answer_better(
+        self, qapp: QApplication, tab: CloudTab
+    ) -> None:
+        tab.add_provider.click()
+        assert tab.routing.chat.currentData() == "local"
+        assert tab.routing.chat.currentText() == "Only when I press Answer better"
+        assert tab.routing.match.currentData() == "local"
+
+    def test_choosing_saves_for_that_feature(
+        self, qapp: QApplication, tab: CloudTab, controller: SettingsController
+    ) -> None:
+        tab.add_provider.click()
+        tab.routing.chat.setCurrentIndex(tab.routing.chat.findData("cloud"))
+        tab.routing.chat.activated.emit(tab.routing.chat.currentIndex())
+        assert controller.settings().cloud.routing == {"chat": "cloud", "code_chat": "cloud"}
+        tab.routing.match.setCurrentIndex(tab.routing.match.findData("auto"))
+        tab.routing.match.activated.emit(tab.routing.match.currentIndex())
+        assert controller.settings().cloud.policy("match_scorer") == "auto"
+
+    def test_forget_withdraws_dont_ask_again(
+        self, qapp: QApplication, env: Env, store: MemoryKeyStore
+    ) -> None:
+        forgotten: list[int] = []
+        controller = SettingsController(
+            env.data_dir / "settings.toml",
+            env.state,
+            store,
+            forget_consent=lambda: forgotten.append(1),
+        )
+        controller.add_provider("openrouter", "k")
+        tab = CloudTab(controller)
+        messages: list[str] = []
+        tab.message.connect(messages.append)
+        tab.routing.forget.click()
+        assert forgotten == [1]
+        assert messages == ["will ask before sending"]
 
 
 # ------------------------------------------------------------------ the add dialog

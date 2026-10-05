@@ -31,6 +31,7 @@ from localdoc_finder.app.update_scheduler import UpdateScheduler
 from localdoc_finder.app.window import SearchWindow
 from localdoc_finder.core import runtime
 from localdoc_finder.core.autostart import Autostart
+from localdoc_finder.core.cloud import CloudConsent
 from localdoc_finder.core.features import enabled_features
 from localdoc_finder.core.idle import SystemActivity
 from localdoc_finder.core.indexing_control import IndexingControl
@@ -116,13 +117,19 @@ class ContextFactory:
         self._cache: SkillContext | None = None
         self._lock = threading.Lock()  # built on a worker thread; two must not race
         self._activity = SystemActivity()
+        # One for the whole run, so a "don't ask again" outlives context rebuilds; a restart
+        # starts with none.
+        self.consent = CloudConsent()
 
     def __call__(self) -> SkillContext:
         with self._lock:
             if self._cache is None:
                 self._ensure_server(self._settings.ollama_host)  # start Ollama if it is stopped
                 self._cache = runtime.build_skill_context(
-                    self._settings, self._state, fullscreen=self._activity.fullscreen_app_active
+                    self._settings,
+                    self._state,
+                    fullscreen=self._activity.fullscreen_app_active,
+                    consent=self.consent,
                 )
             return self._cache
 
@@ -169,6 +176,7 @@ def make_settings_controller(
     state: StateDb,
     updater: Updater | None = None,
     on_changed: Callable[[], None] = lambda: None,
+    forget_consent: Callable[[], None] = lambda: None,
 ) -> SettingsController:
     return SettingsController(
         path,
@@ -177,6 +185,7 @@ def make_settings_controller(
         apply_autostart=Autostart().apply,
         updater=updater,
         on_changed=on_changed,
+        forget_consent=forget_consent,
     )
 
 
@@ -251,10 +260,11 @@ def build_settings_window(
     *,
     on_changed: Callable[[], None] = lambda: None,
     indexing: IndexingControl | None = None,
+    forget_consent: Callable[[], None] = lambda: None,
 ) -> SettingsWindow:
     path = settings.settings_path()
     window = SettingsWindow(
-        make_settings_controller(path, state, updater, on_changed),
+        make_settings_controller(path, state, updater, on_changed, forget_consent),
         ModelsController(context, path),
         indexing=indexing,
     )
@@ -478,6 +488,7 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
                         updater,
                         on_changed=settings_changed,
                         indexing=indexing_control(),
+                        forget_consent=context.consent.revoke_session,
                     )
                 )
             settings_window[0].open()

@@ -13,6 +13,7 @@ from tests.core.conftest import Chat, CloudRig, Env
 from tests.core.match.test_pipeline import JD, faithful_model, resume, write
 
 from localdoc_finder.app.assistant import ChatState, CloudPreview
+from localdoc_finder.app.cloud_dialog import CloudAnswer
 from localdoc_finder.app.controller import Launcher
 from localdoc_finder.app.match_controller import MatchController
 from localdoc_finder.app.match_panel import (
@@ -419,7 +420,9 @@ class TestCloudConsent:
         self, qapp: QApplication, controller: MatchController, cloud: CloudRig
     ) -> None:
         previews: list[CloudPreview] = []
-        panel = MatchPanel(controller, confirm_cloud=lambda p: previews.append(p) or False)
+        panel = MatchPanel(
+            controller, confirm_cloud=lambda p: previews.append(p) or CloudAnswer(False)
+        )
         recall(qapp, panel)
         panel.buttons["all"].click()
         panel.buttons["checklist"].click()
@@ -436,7 +439,7 @@ class TestCloudConsent:
         cloud.inner.json_fn = lambda _m: {
             "requirements": [{"text": "Python", "kind": "must", "weight": 1}]
         }
-        panel = MatchPanel(controller, confirm_cloud=lambda _p: True)
+        panel = MatchPanel(controller, confirm_cloud=lambda _p: CloudAnswer(True))
         recall(qapp, panel)
         panel.buttons["checklist"].click()
         wait_for(qapp, lambda: panel.pages.currentIndex() == PAGE_CHECKLIST)
@@ -448,11 +451,41 @@ class TestCloudConsent:
     ) -> None:
         cloud.router._settings = cloud.router._settings.model_copy(update={"routing": {}})
         shown: list[CloudPreview] = []
-        panel = MatchPanel(controller, confirm_cloud=lambda p: shown.append(p) or True)
+        panel = MatchPanel(controller, confirm_cloud=lambda p: shown.append(p) or CloudAnswer(True))
         recall(qapp, panel)
         panel.buttons["checklist"].click()
         wait_for(qapp, lambda: panel.pages.currentIndex() == PAGE_CHECKLIST)
         assert shown == []
+
+    def test_dont_ask_again_keeps_consent_and_skips_the_next_preview(
+        self, qapp: QApplication, controller: MatchController, cloud: CloudRig
+    ) -> None:
+        cloud.inner.json_fn = lambda _m: {
+            "requirements": [{"text": "Python", "kind": "must", "weight": 1}]
+        }
+        shown: list[CloudPreview] = []
+        panel = MatchPanel(
+            controller,
+            confirm_cloud=lambda p: shown.append(p) or CloudAnswer(True, remember=True),
+        )
+        recall(qapp, panel)
+        panel.buttons["checklist"].click()
+        wait_for(qapp, lambda: panel.pages.currentIndex() == PAGE_CHECKLIST)
+        assert len(shown) == 1
+        assert cloud.consent.session_granted
+        controller.revoke_cloud_consent()  # a finished run withdraws only its own consent
+        assert cloud.consent.granted
+        assert controller.cloud_preview("score") is None  # no dialog for the next step either
+
+    def test_a_plain_yes_is_for_this_run_only(
+        self, qapp: QApplication, controller: MatchController, cloud: CloudRig
+    ) -> None:
+        cloud.consent.revoke_session()
+        controller.grant_cloud_consent()
+        assert cloud.consent.granted
+        assert not cloud.consent.session_granted
+        controller.revoke_cloud_consent()
+        assert not cloud.consent.granted
 
 
 class TestSessionChoices:

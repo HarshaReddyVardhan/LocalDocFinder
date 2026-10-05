@@ -74,12 +74,14 @@ class MatchController:
         ``None`` when the step stays on this machine.
         """
         run = self._require()
+        cloud = self._cloud()
+        if cloud is not None and cloud.consent.session_granted:
+            return None  # the user chose not to be asked again: no preview, no dialog
         messages = (
             self.pipeline.checklist_cloud_messages(run)
             if step == "checklist"
             else self.pipeline.cloud_messages(run)
         )
-        cloud = self._cloud()
         if not messages or cloud is None or cloud.provider is None:
             return None
         destination = str(cloud.router.destination(ROLE_MATCH_SCORER))
@@ -95,11 +97,14 @@ class MatchController:
             privacy.preview(outbound) + JSON_FALLBACK_NOTE,
         )
 
-    def grant_cloud_consent(self) -> None:
-        """The user pressed Send in the preview: allow cloud calls for this run."""
+    def grant_cloud_consent(self, remember: bool = False) -> None:
+        """The user pressed Send in the preview: allow cloud calls for this run (and, when they
+        ticked "don't ask again", for the rest of the session)."""
         cloud = self._cloud()
         if cloud is not None:
             cloud.consent.grant()
+            if remember:
+                cloud.consent.grant_session()
 
     def revoke_cloud_consent(self) -> None:
         cloud = self._cloud()
