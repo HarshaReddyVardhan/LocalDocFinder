@@ -214,7 +214,7 @@ The catalog lives in `core/models/models_catalog.toml`.
 | `LDF_UPDATES__AUTO_CHECK`, `LDF_UPDATES__REPO_URL` | Update checks and their source |
 | `LDF_APP__START_WITH_WINDOWS` | Start at logon |
 
-API keys for cloud providers are stored in Windows Credential Manager through `keyring`, never in files. Manage them with `ldf keys` and `ldf cloud`.
+API keys for cloud providers are stored in Windows Credential Manager through `keyring`, never in files. Manage them in Settings → Cloud & Privacy, or with `ldf keys` and `ldf cloud`. Every service goes through one `OpenAICompatibleProvider`; what differs between services (address, model filter, JSON mode, headers) is data in `core/providers/presets.py`, so adding a service is adding a `ProviderPreset` entry.
 
 ## 7. Design principles
 

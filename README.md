@@ -93,10 +93,46 @@ Narrow a search with filters: `type:pdf`, `type:img`, `type:code`, `ext:docx`, `
 
 Everything else, including folders, file types, models, the hotkey, features, updates and privacy, is in **Settings**: click the gear in the popup, or right-click the tray icon.
 
+## Cloud models (optional)
+
+Everything works with local models. If you also want a hosted model for harder questions, add one in **Settings → Cloud & Privacy**:
+
+1. Press **+ Add provider…**, pick the service (OpenRouter, OpenAI, Google Gemini, Anthropic, Groq, Mistral, DeepSeek, or any OpenAI-compatible address under *Custom*) and paste your API key. **Get a key ↗** opens the service's key page. **Test & save** checks the key by listing the models, and saves nothing if it fails.
+2. Under **Models**, pick the model for **Ask & Chat** and, if you like, a different one for **Match**. The list is searchable (OpenRouter has hundreds of models), shows context size and price per million tokens when the service publishes one, and a ★ keeps favourites at the top. **Refresh list** reloads it.
+3. If you set a monthly spend limit and a model has no published price, enter its input and output price there so the limit can be enforced. Without a price the limit blocks the call.
+
+Keys go to Windows Credential Manager. With several providers, the **Active** radio chooses which one is used.
+
+**When the cloud is used.** Nothing leaves your PC unless you agree. By default only the **Answer better ☁** button in the popup uses the cloud, and it first shows exactly what would be sent (with IDs masked). In Settings you can change that per feature, for Ask & Chat and for Match:
+
+| Setting | Meaning |
+| --- | --- |
+| Only when I press Answer better | The default. Local models do the work. |
+| When the local model can't | Local first; the cloud when no local model fits or the PC is on battery. |
+| Always use the cloud | Every request goes to the cloud. |
+
+Routed requests show the same "what will be sent" dialog. Tick **Don't ask again until LocalDoc Finder restarts** to skip it for the rest of the session; **Forget "don't ask again"** in Settings takes that back, and restarting the app does too.
+
+**If the cloud fails** (rate limit, outage, rejected key, unknown model or a used-up budget) a routed request is answered by the local model instead, with a note saying so. You can turn this off in Settings. A request you made with **Answer better** shows the error instead.
+
+The **Model ▾** button next to **Answer better ☁** switches between your providers' models, favourites included, without opening Settings; **Manage…** opens the Cloud tab.
+
+The same setup from the command line:
+
+```powershell
+ldf cloud add or --preset openrouter --use   # --preset fills in the address; also: openai, gemini, anthropic, groq, mistral, deepseek
+ldf keys set or                              # prompts for the key; it is never shown
+ldf cloud models or                          # the chat models the service offers, with prices when known
+ldf cloud add or --model chat=vendor/model   # choose the model for a role
+ldf cloud route chat=auto match_scorer=local # when each feature uses the cloud
+ldf cloud budget 10                          # monthly limit in USD, or "off"
+ldf cloud status
+```
+
 ## Privacy and security
 
 - **Local by default.** Files, the search index and every model stay on your PC.
-- **Cloud is opt-in.** If you connect a cloud model for answers, passwords, keys and other secrets are never sent, and government and financial ID numbers are masked first.
+- **Cloud is opt-in.** If you connect a cloud model for answers, passwords, keys and other secrets are never sent, and government and financial ID numbers are masked first. Each request is shown to you before it is sent, unless you chose "don't ask again" for the session.
 - **API keys** are stored in Windows Credential Manager, never in files or logs.
 - **Your data is yours.** The index lives in `%LOCALAPPDATA%\LocalDocFinderData`. Uninstalling keeps it, and **Settings → About → Delete my data** removes it.
 
