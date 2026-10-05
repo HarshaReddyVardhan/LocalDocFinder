@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 _MAX_ATTEMPTS = 3
 MAX_STORED_MESSAGES = 400  # per chat session
+MAX_SEARCH_HISTORY = 50  # remembered queries
+_SQL_PARAM_BATCH = 500  # well under SQLite's 999-variable limit
 _OPEN_ATTEMPTS = 8  # opening a database that another process is creating or upgrading
 _OPEN_RETRY_SECONDS = 0.05
 EMBEDDER_APPROVED_KEY = "embedder_change_approved"  # the model whose index rebuild the user OK'd
@@ -106,8 +108,16 @@ def _migrate_case_insensitive_paths(sql: sqlite3.Connection) -> None:
         )
 
 
+def _add_search_history(sql: sqlite3.Connection) -> None:
+    """Queries the user ran, newest first. Kept in this local database only."""
+    sql.execute(
+        "CREATE TABLE search_history(query TEXT COLLATE NOCASE PRIMARY KEY,"
+        " searched_at REAL NOT NULL)"
+    )
+
+
 # Index i upgrades schema version i+1 -> i+2; version 1 is created by _SCHEMA_V1.
-MIGRATIONS: tuple[Migration, ...] = (_migrate_case_insensitive_paths,)
+MIGRATIONS: tuple[Migration, ...] = (_migrate_case_insensitive_paths, _add_search_history)
 SCHEMA_VERSION = 1 + len(MIGRATIONS)
 
 
@@ -331,6 +341,18 @@ class StateDb:
         )
         return [IndexedFile(p, int(s), float(t), h == FAILED_HASH) for p, s, t, h in rows]
 
+    def manifest_indexed_at(self, paths: Iterable[str]) -> dict[str, float]:
+        """When each path was last indexed (keyed in lower case; unknown paths are left out)."""
+        unique = list(dict.fromkeys(paths))
+        found: dict[str, float] = {}
+        for start in range(0, len(unique), _SQL_PARAM_BATCH):
+            batch = unique[start : start + _SQL_PARAM_BATCH]
+            marks = ",".join("?" * len(batch))
+            query = f"SELECT path,indexed_at FROM manifest WHERE path IN ({marks})"  # noqa: S608
+            for path, stamp in self._all(query, tuple(batch)):  # only "?" marks are interpolated
+                found[os.path.normcase(path)] = float(stamp)
+        return found
+
     def manifest_count(self) -> int:
         return int(self._one("SELECT COUNT(*) FROM manifest")[0])  # type: ignore[index]
 
@@ -491,6 +513,35 @@ class StateDb:
             (limit,),
         )
         return [ChatSession(*r) for r in rows]
+
+    # ------------------------------------------------------------------ search history
+    def record_search(self, query: str) -> None:
+        """Remember a query (a repeat moves to the top); only the newest few are kept."""
+        query = " ".join(query.split())
+        if not query:
+            return
+        with self._lock:
+            self._sql.execute(
+                "INSERT INTO search_history(query,searched_at) VALUES(?,?) "
+                "ON CONFLICT(query) DO UPDATE SET query=excluded.query,"
+                "searched_at=excluded.searched_at",
+                (query, self._clock()),
+            )
+            self._sql.execute(
+                "DELETE FROM search_history WHERE query NOT IN "
+                "(SELECT query FROM search_history ORDER BY searched_at DESC, rowid DESC LIMIT ?)",
+                (MAX_SEARCH_HISTORY,),
+            )
+
+    def recent_searches(self, limit: int = MAX_SEARCH_HISTORY) -> list[str]:
+        rows = self._all(
+            "SELECT query FROM search_history ORDER BY searched_at DESC, rowid DESC LIMIT ?",
+            (limit,),
+        )
+        return [r[0] for r in rows]
+
+    def clear_search_history(self) -> None:
+        self._run("DELETE FROM search_history")
 
     # ------------------------------------------------------------------ model catalog
     def replace_models(self, provider: str, models: Iterable[dict[str, Any]]) -> None:

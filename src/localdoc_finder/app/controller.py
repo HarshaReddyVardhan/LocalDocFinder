@@ -101,7 +101,10 @@ def result_row(result: SearchResult, stat: Callable[[str], os.stat_result] = os.
 
 
 def result_rows(
-    results: list[SearchResult], stat: Callable[[str], os.stat_result] = os.stat
+    results: list[SearchResult],
+    stat: Callable[[str], os.stat_result] = os.stat,
+    *,
+    divide_weak: bool = True,
 ) -> list[ResultRow]:
     """One row per result, the first weak one headed "Less relevant" (results come strong first).
 
@@ -109,7 +112,7 @@ def result_rows(
     with results.
     """
     rows = [result_row(result, stat) for result in results]
-    first_weak = next((i for i, row in enumerate(rows) if row.weak), None)
+    first_weak = next((i for i, row in enumerate(rows) if row.weak), None) if divide_weak else None
     if first_weak:  # not when every result is weak: there is nothing to set them apart from
         rows[first_weak] = replace(rows[first_weak], divider_above=True)
     return rows
@@ -196,10 +199,24 @@ class SearchService:
         """
         return self._skill.ctx.query_on_cpu() if self._skill is not None else False
 
+    def _with_indexed_at(self, results: list[SearchResult]) -> list[SearchResult]:
+        """Stamp each hit with when it was indexed (one batched lookup) for "Date indexed" sort."""
+        stamps = self.skill.ctx.state.manifest_indexed_at(r.path for r in results)
+        return [replace(r, indexed_at=stamps.get(os.path.normcase(r.path), 0.0)) for r in results]
+
+    def recent_queries(self) -> list[str]:
+        return self.skill.ctx.state.recent_searches()
+
+    def record_query(self, query: str) -> None:
+        self.skill.ctx.state.record_search(query)
+
+    def clear_history(self) -> None:
+        self.skill.ctx.state.clear_search_history()
+
     def search(self, query: str, project: str | None) -> SearchOutcome:
         started = time.perf_counter()
         try:
-            results = self.skill.search(query, current_project=project)
+            results = self._with_indexed_at(self.skill.search(query, current_project=project))
             message = ""
         except Exception as exc:  # search disabled, model server down, empty index ...
             results, message = [], f"{type(exc).__name__}: {exc}"

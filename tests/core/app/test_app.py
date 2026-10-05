@@ -254,6 +254,20 @@ class TestSearchService:
         assert builds == [1]
         assert service.on_battery() is False
 
+    def test_hits_carry_when_they_were_indexed(self, skill_ctx: SkillContext, env: Env) -> None:
+        (env.root / "payments.py").write_text("def retry_payments():\n    return 1\n", "utf-8")
+        env.indexer.index_paths([str(env.root / "payments.py")])
+        (hit,) = SearchService(lambda: skill_ctx).search("retry payments", None).results
+        assert hit.indexed_at > 0
+
+    def test_queries_are_remembered_in_the_local_state(self, skill_ctx: SkillContext) -> None:
+        service = SearchService(lambda: skill_ctx)
+        service.record_query("first")
+        service.record_query("second")
+        assert service.recent_queries() == ["second", "first"]
+        service.clear_history()
+        assert service.recent_queries() == []
+
     def test_errors_become_a_message(self, skill_ctx: SkillContext) -> None:
         skill_ctx.power._settings = skill_ctx.settings.power.model_copy(
             update={"search_on_battery": False}
@@ -273,6 +287,16 @@ class FakeService:
         self.battery = False
         self.resets = 0
         self.released = 0
+        self.history: list[str] = []
+
+    def recent_queries(self) -> list[str]:
+        return list(self.history)
+
+    def record_query(self, query: str) -> None:
+        self.history = [query, *(q for q in self.history if q != query)]
+
+    def clear_history(self) -> None:
+        self.history = []
 
     def reset(self) -> None:
         self.resets += 1

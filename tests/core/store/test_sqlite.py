@@ -375,3 +375,36 @@ def test_manifest_list_filters_and_marks_failures(tmp_path: Path) -> None:
         failed = db.manifest_list(failed_only=True)
         assert [(f.path, f.failed) for f in failed] == [("D:/Work/Broken.pdf", True)]
         assert len(db.manifest_list(limit=1)) == 1
+
+
+# ---------------------------------------------------------------------- search history
+def test_search_history_lists_newest_first_and_a_repeat_moves_up(
+    db: StateDb, clock: FakeClock
+) -> None:
+    for query in ("retry policy", "invoice", "Retry  Policy"):
+        db.record_search(query)
+        clock.now += 1
+    assert db.recent_searches() == ["Retry Policy", "invoice"]  # case-insensitive, spaces folded
+
+
+def test_search_history_ignores_blank_keeps_the_newest_and_clears(
+    db: StateDb, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sq, "MAX_SEARCH_HISTORY", 3)
+    db.record_search("   ")
+    for n in range(5):
+        db.record_search(f"query {n}")
+        clock.now += 1
+    assert db.recent_searches() == ["query 4", "query 3", "query 2"]
+    db.clear_search_history()
+    assert db.recent_searches() == []
+
+
+def test_manifest_indexed_at_is_batched_and_case_insensitive(db: StateDb, clock: FakeClock) -> None:
+    db.manifest_set(r"D:\p\A.py", 1, 1, "h")
+    clock.now = 2000.0
+    db.manifest_set(r"D:\p\b.py", 1, 1, "h")
+    paths = [r"d:\p\a.py", r"D:\p\b.py", r"D:\p\missing.py"]
+    assert db.manifest_indexed_at(paths) == {r"d:\p\a.py": 1000.0, r"d:\p\b.py": 2000.0}
+    many = [rf"D:\p\f{n}.py" for n in range(sq._SQL_PARAM_BATCH + 10)]
+    assert db.manifest_indexed_at(many) == {}  # more paths than one query may carry

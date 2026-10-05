@@ -77,6 +77,7 @@ class SearchResult:
     score: float
     ext: str = ""
     mtime: int = 0
+    indexed_at: float = 0.0  # when the file was last indexed; 0 when unknown
     extra_hits: int = 0
     text: str = ""
     relevance: int = 0  # 0-100

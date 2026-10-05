@@ -11,6 +11,7 @@ and settings live in the Settings window.
 """
 
 import enum
+import logging
 import re
 import threading
 import time
@@ -91,6 +92,7 @@ from localdoc_finder.app.controller import (
 from localdoc_finder.app.match_controller import MatchController
 from localdoc_finder.app.match_panel import MatchPanel
 from localdoc_finder.app.mode_bar import ModeBar
+from localdoc_finder.app.refine_bar import RefineBar
 from localdoc_finder.app.result_delegate import ROW_ROLE, ResultDelegate
 from localdoc_finder.app.theme import (
     Scheme,
@@ -104,10 +106,13 @@ from localdoc_finder.app.theme import (
 from localdoc_finder.core.documents import DocumentError
 from localdoc_finder.core.features import FEATURES
 from localdoc_finder.core.rag import CODE_KINDS, Source
+from localdoc_finder.core.result_view import SortOrder, refine
 from localdoc_finder.core.settings import SettingsError
 from localdoc_finder.core.skills.base import panel_skills
 from localdoc_finder.core.skills.chat import SessionSummary
 from localdoc_finder.core.skills.search import SearchResult
+
+logger = logging.getLogger(__name__)
 
 SHADOW = 18  # transparent margin around the card that the soft shadow is painted into
 SHADOW_RINGS = 9  # rings of fading shadow; more is smoother and costs nothing noticeable
@@ -164,6 +169,7 @@ class SkillMode:
 
 AnyMode = Mode | SkillMode
 CITE_SCHEME = "cite"
+CLEAR_HISTORY = ""  # what the recent-searches menu answers for "Clear history" (never a query)
 MANAGE_CLOUD = "manage-cloud"  # what the model menu answers for its "Manage…" entry
 _CITATION = re.compile(r"(?<!\\)\[(\d+)\](?!\()")  # not escaped, and not a link's own text
 
@@ -363,12 +369,14 @@ class SearchWindow(QWidget):
         self._last_text = ""
         self.cloud_confirm: Callable[[CloudPreview], CloudAnswer] = confirm_cloud_dialog
         self.choose_session: Callable[[list[SessionSummary]], int | None] = self._session_menu
+        self.choose_search: Callable[[list[str]], str | None] = self._search_menu
         self._launcher = launcher
         self._thumbs_dir = thumbs_dir
         self._generation = 0
         self._dialogs = 0  # dialogs currently open on top of the popup
         self._stream_job: _StreamJob | None = None
-        self._results: list[SearchResult] = []
+        self._results: list[SearchResult] = []  # what the list shows (filtered, sorted)
+        self._found: list[SearchResult] = []  # everything the last search returned
         self._sources: list[Source] = []
         self._project: str | None = None
         self._mode: AnyMode = Mode.SEARCH
@@ -453,7 +461,7 @@ class SearchWindow(QWidget):
 
         split = QSplitter()
         split.setHandleWidth(10)
-        split.addWidget(self.list)
+        split.addWidget(self._build_results_pane())
         split.addWidget(self.answer)
         split.setSizes([320, 680])  # outside Search the answer matters most
         self.panel: MatchPanel | None = None
@@ -481,6 +489,19 @@ class SearchWindow(QWidget):
         outer.setContentsMargins(SHADOW, SHADOW, SHADOW, SHADOW)
         outer.addWidget(card)
         self.apply_scheme(self._scheme)
+
+    def _build_results_pane(self) -> QWidget:
+        """The result list under a filter/sort strip that shows only once there are results."""
+        self.refine_bar = RefineBar()
+        self.refine_bar.setVisible(False)
+        self.refine_bar.changed.connect(self._show_refined)
+        self.results_pane = QWidget()
+        pane = QVBoxLayout(self.results_pane)
+        pane.setContentsMargins(0, 0, 0, 0)
+        pane.setSpacing(6)
+        pane.addWidget(self.refine_bar)
+        pane.addWidget(self.list, 1)
+        return self.results_pane
 
     def _add_search_icon(self) -> None:
         self._search_action = self.input.addAction(
@@ -569,10 +590,15 @@ class SearchWindow(QWidget):
         self.history_button.setToolTip("Reopen an earlier conversation")
         self.history_button.setVisible(False)
         self.history_button.clicked.connect(self.show_history)
+        self.recent_button = QPushButton("Recent ▾")
+        self.recent_button.setToolTip("Your earlier searches (kept on this PC only)")
+        self.recent_button.setVisible(False)
+        self.recent_button.clicked.connect(self.show_recent)
         grip = QSizeGrip(self)
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
         bottom.addWidget(self.status, 1)
+        bottom.addWidget(self.recent_button)
         bottom.addWidget(self.history_button)
         bottom.addWidget(self.model_button)
         bottom.addWidget(self.cloud_button)
@@ -713,10 +739,11 @@ class SearchWindow(QWidget):
         self.input.setPlaceholderText(placeholder)
         self.body.setCurrentIndex(self._body_index())
         self._check_cloud_async()
-        self.list.setVisible(searching)  # elsewhere it lists sources, once there are some
+        self.results_pane.setVisible(searching)  # elsewhere it lists sources, once there are some
         self.answer.setVisible(not searching)
         self.answer.setPlaceholderText(ANSWER_PLACEHOLDERS.get(mode.value, ""))
         self.history_button.setVisible(mode is Mode.CHAT)
+        self.recent_button.setVisible(searching)
         self.answer.clear()
         self._answer_text = ""
         self._fit_height()
@@ -740,7 +767,7 @@ class SearchWindow(QWidget):
 
     def _fit_height(self) -> None:
         """Search shows only the bar until there is something to list; other modes need room."""
-        expanded = self._mode is not Mode.SEARCH or bool(self._results)
+        expanded = self._mode is not Mode.SEARCH or bool(self._found)
         self.body.setVisible(expanded)
         for layout in (self._card.layout(), self.layout()):  # inner first: the outer reads it
             if layout is not None:
@@ -883,7 +910,55 @@ class SearchWindow(QWidget):
             return
         if self.isActiveWindow() or self._dialogs or QApplication.activeModalWidget() is not None:
             return
+        if QApplication.activePopupWidget() is not None:  # one of our drop-downs is open
+            return
         self.hide()  # the chat session (if any) stays; idle timeout unloads it later
+
+    # ------------------------------------------------------------------ search history
+    def show_recent(self) -> None:
+        """Pick an earlier search from a menu and run it again."""
+        try:
+            queries = self._service.recent_queries()
+        except Exception as exc:  # cosmetic; a broken history must not break searching
+            logger.warning("search history unavailable: %s", exc)
+            self.status.setText("search history is unavailable")
+            return
+        if not queries:
+            self.status.setText("no earlier searches yet")
+            return
+        chosen = self._in_dialog(lambda: self.choose_search(queries))
+        if chosen == CLEAR_HISTORY:
+            self._service.clear_history()
+            self.status.setText("search history cleared")
+        elif chosen is not None:
+            self.rerun(chosen)
+
+    def rerun(self, query: str) -> None:
+        """Put an earlier query in the bar; typing it fires the usual debounced search."""
+        self.input.setText(query)
+        self.input.setFocus()
+        self._remember(query)
+
+    def _remember(self, query: str) -> None:
+        query = query.strip()
+        if not query:
+            return
+        try:
+            self._service.record_query(query)
+        except Exception as exc:  # cosmetic; see show_recent
+            logger.warning("could not save the search: %s", exc)
+
+    def _search_menu(self, queries: list[str]) -> str | None:
+        menu = QMenu(self)
+        for query in queries:
+            action = menu.addAction(query)
+            action.setData(query)
+        menu.addSeparator()
+        clear = menu.addAction("Clear history")
+        picked = menu.exec(self.recent_button.mapToGlobal(self.recent_button.rect().topLeft()))
+        if picked is clear:
+            return CLEAR_HISTORY
+        return str(picked.data()) if picked is not None else None
 
     # ------------------------------------------------------------------ chat history
     def show_history(self) -> None:
@@ -1159,8 +1234,9 @@ class SearchWindow(QWidget):
         query = self.input.text().strip()
         self._generation += 1
         if not query:
-            self._results = []
+            self._found = self._results = []
             self.list.clear()
+            self.refine_bar.setVisible(False)
             self._fit_height()
             return
         job = _SearchJob(self._generation, query, self._project, self._service, self._signals)
@@ -1172,14 +1248,10 @@ class SearchWindow(QWidget):
         self.show_results(outcome)
 
     def show_results(self, outcome: SearchOutcome) -> None:
-        self._results = outcome.results
-        self.list.clear()
-        for row in result_rows(outcome.results):
-            item = QListWidgetItem(f"{row.name}\n{row.path}")  # the delegate draws from ROW_ROLE
-            item.setData(ROW_ROLE, row)
-            self.list.addItem(item)
-        if outcome.results:
-            self.list.setCurrentRow(0)
+        self._found = outcome.results
+        self.refine_bar.set_results(self._found)
+        self.refine_bar.setVisible(bool(self._found))
+        self._fill_list()
         self._fit_height()
         if outcome.message:
             self.status.setText(outcome.message)
@@ -1187,6 +1259,28 @@ class SearchWindow(QWidget):
             self.status.setText(f"{len(outcome.results)} results in {outcome.milliseconds:.0f} ms")
         else:
             self.status.setText("No results.")
+
+    def _fill_list(self) -> None:
+        """Show ``_found`` as the refine bar says. In memory only: no new search."""
+        self._results = refine(self._found, self.refine_bar.ext, self.refine_bar.order)
+        # "Less relevant" headings only make sense while the search's own order is shown
+        divide = self.refine_bar.order is SortOrder.RELEVANCE
+        self.list.setUpdatesEnabled(False)  # one repaint for the whole refill
+        self.list.clear()
+        for row in result_rows(self._results, divide_weak=divide):
+            item = QListWidgetItem(f"{row.name}\n{row.path}")  # the delegate draws from ROW_ROLE
+            item.setData(ROW_ROLE, row)
+            self.list.addItem(item)
+        self.list.setUpdatesEnabled(True)
+        if self._results:
+            self.list.setCurrentRow(0)
+
+    def _show_refined(self) -> None:
+        """The user picked another file type or sort order."""
+        self._fill_list()
+        shown, total = len(self._results), len(self._found)
+        self.status.setText(f"{shown} of {total} results" if shown != total else f"{total} results")
+        self.input.setFocus()
 
     def _relayout_rows(self, _row: int) -> None:
         """The selected row grows to show its snippet, so row heights must be recomputed."""
@@ -1348,6 +1442,7 @@ class SearchWindow(QWidget):
             else:
                 self.submit()
             return True
+        self._remember(self.input.text())  # a search the user acted on is worth keeping
         if ctrl:
             self.reveal_selected()
         elif shift:
