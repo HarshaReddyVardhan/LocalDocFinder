@@ -18,6 +18,7 @@ from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QSystemTrayIcon
 
 from localdoc_finder.app.assistant import AssistantService
+from localdoc_finder.app.cloud_switcher import CloudSwitcher
 from localdoc_finder.app.controller import Launcher, SearchService
 from localdoc_finder.app.hotkey import HotkeyFilter
 from localdoc_finder.app.match_controller import MatchController
@@ -443,6 +444,26 @@ def warn_hotkey_unavailable(tray: QSystemTrayIcon, spec: str) -> None:
     )
 
 
+class SettingsOpener:
+    """Shows the Settings window, building it on first use (idle cost stays near zero)."""
+
+    def __init__(self, build: Callable[[], SettingsWindow]) -> None:
+        self._build = build
+        self._window: SettingsWindow | None = None
+
+    def _get(self) -> SettingsWindow:
+        if self._window is None:
+            self._window = self._build()
+        return self._window
+
+    def open(self, _checked: bool = False) -> None:  # a menu action passes ``checked``
+        self._get().open()
+
+    def open_cloud(self) -> None:
+        window = self._get()
+        window.open(window.cloud)
+
+
 def settings_applier(
     app: QApplication, context: ContextFactory, window: SearchWindow, settings_path: Path
 ) -> Callable[[], None]:
@@ -467,6 +488,11 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
         window = build_window(settings, state, context)
 
         settings_changed = settings_applier(app, context, window, settings_path)
+        window.cloud_switcher = CloudSwitcher(
+            make_settings_controller(
+                settings_path, state, None, settings_changed, context.consent.revoke_session
+            )
+        )
 
         hotkey = HotkeyFilter(window.summon)
         app.installNativeEventFilter(hotkey)
@@ -474,28 +500,23 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
 
         tray = QSystemTrayIcon(tray_icon(), app)
         menu = QMenu()
-        settings_window: list[SettingsWindow] = []  # built on first use: idle cost stays near zero
         indexing_control = Lazy(lambda: make_indexing_control(settings, state))
-
-        def open_settings() -> None:
-            if not settings_window:
-                settings_window.append(
-                    build_settings_window(
-                        settings,
-                        state,
-                        context,
-                        hotkey_applier(hotkey, tray),
-                        updater,
-                        on_changed=settings_changed,
-                        indexing=indexing_control(),
-                        forget_consent=context.consent.revoke_session,
-                    )
-                )
-            settings_window[0].open()
-
-        window.settings_requested.connect(open_settings)  # the gear in the popup's header
+        settings_opener = SettingsOpener(
+            lambda: build_settings_window(
+                settings,
+                state,
+                context,
+                hotkey_applier(hotkey, tray),
+                updater,
+                on_changed=settings_changed,
+                indexing=indexing_control(),
+                forget_consent=context.consent.revoke_session,
+            )
+        )
+        window.settings_requested.connect(settings_opener.open)  # the gear in the popup's header
+        window.cloud_settings_requested.connect(settings_opener.open_cloud)
         menu.addAction("Search", window.summon)
-        menu.addAction("Settings…", open_settings)
+        menu.addAction("Settings…", settings_opener.open)
         add_indexing_actions(menu, indexing_control, lambda text: announce(tray, text))
         menu.addAction(
             "Run setup again…",

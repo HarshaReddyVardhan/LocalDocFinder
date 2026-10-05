@@ -92,10 +92,13 @@ class SettingsWindow(QWidget):
     def _show_status(self, text: str) -> None:
         self.status.setText(text)
 
-    def open(self) -> None:
-        """Show the window with fresh data (settings may have changed since it last opened)."""
-        for page in self._pages:
-            page.refresh()
+    def open(self, page: SettingsTab | None = None) -> None:
+        """Show the window with fresh data (settings may have changed since it last opened),
+        on ``page`` if one is given."""
+        for tab in self._pages:
+            tab.refresh()
+        if page is not None:
+            self.tabs.setCurrentIndex(self._pages.index(page))
         self.show()
         self.raise_()
         self.activateWindow()

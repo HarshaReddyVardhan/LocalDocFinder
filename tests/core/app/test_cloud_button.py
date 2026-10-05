@@ -9,6 +9,7 @@ from tests.core.app.test_modes import FakeAssistant
 
 from localdoc_finder.app.assistant import ChatState, CloudPreview, Delta, Event, Failed, Finished
 from localdoc_finder.app.cloud_dialog import CloudAnswer
+from localdoc_finder.app.cloud_switcher import CloudChoice
 from localdoc_finder.app.controller import Launcher
 from localdoc_finder.app.window import Mode, SearchWindow
 
@@ -32,6 +33,9 @@ class CloudAssistant(FakeAssistant):
 
     def cloud_available(self) -> bool:
         return self.available
+
+    def cloud_destination(self) -> str | None:
+        return "OpenRouter / vendor/chat" if self.available else None
 
     def needs_cloud_consent(self) -> bool:
         self.calls.append(("needs_consent", None))
@@ -358,3 +362,154 @@ def test_a_newer_question_cancels_the_pending_routed_preview(
     window._on_consent_checked(window._generation - 1, True)
     wait_for(qapp, lambda: False, timeout=0.2)
     assert shown == []
+
+
+# ------------------------------------------------------------------ the model switcher
+class FakeSwitcher:
+    def __init__(self, choices: list[CloudChoice]) -> None:
+        self._choices = choices
+        self.chosen: list[CloudChoice] = []
+        self.error: Exception | None = None
+
+    def choices(self) -> list[CloudChoice]:
+        if self.error:
+            raise self.error
+        return self._choices
+
+    def choose(self, choice: CloudChoice) -> None:
+        if self.error:
+            raise self.error
+        self.chosen.append(choice)
+
+
+A = CloudChoice("openrouter", "OpenRouter", "vendor/chat", current=True)
+B = CloudChoice("gemini", "Google Gemini", "gemini-2.5-flash")
+
+
+@pytest.fixture
+def switcher(
+    parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]],
+) -> FakeSwitcher:
+    fake = FakeSwitcher([A, B])
+    parts[0].cloud_switcher = fake  # type: ignore[assignment]
+    return fake
+
+
+def test_the_model_button_shows_with_the_cloud_button_and_names_the_destination(
+    qapp: QApplication,
+    parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]],
+    switcher: FakeSwitcher,
+) -> None:
+    window, _, _ = parts
+    window.show()
+    assert not window.model_button.isVisible()  # search mode
+    window.set_mode(Mode.ASK)
+    wait_for(qapp, window.model_button.isVisible)
+    assert window.model_button.isVisible()
+    assert "OpenRouter / vendor/chat" in window.cloud_button.toolTip()
+    window.set_mode(Mode.SEARCH)
+    assert not window.model_button.isVisible()
+
+
+def test_without_a_switcher_there_is_no_model_button(
+    qapp: QApplication, parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]]
+) -> None:
+    window, _, _ = parts
+    window.show()
+    window.set_mode(Mode.ASK)
+    wait_for(qapp, window.cloud_button.isVisible)
+    assert window.cloud_button.isVisible()
+    assert not window.model_button.isVisible()
+    window.show_model_menu()  # harmless
+
+
+def test_picking_a_model_switches_to_it(
+    qapp: QApplication,
+    parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]],
+    switcher: FakeSwitcher,
+) -> None:
+    window, _, _ = parts
+    offered: list[list[CloudChoice]] = []
+
+    def pick(choices: list[CloudChoice]) -> CloudChoice:
+        offered.append(choices)
+        return B
+
+    window.choose_model = pick
+    window.show_model_menu()
+    assert offered == [[A, B]]
+    assert switcher.chosen == [B]
+    assert window.status.text() == "cloud model: Google Gemini / gemini-2.5-flash"
+
+
+def test_closing_the_menu_changes_nothing(
+    parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]], switcher: FakeSwitcher
+) -> None:
+    window, _, _ = parts
+    window.choose_model = lambda _choices: None
+    window.show_model_menu()
+    assert switcher.chosen == []
+
+
+def test_manage_opens_settings_on_the_cloud_tab(
+    parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]], switcher: FakeSwitcher
+) -> None:
+    from localdoc_finder.app.window import MANAGE_CLOUD
+
+    window, _, _ = parts
+    requested: list[int] = []
+    window.cloud_settings_requested.connect(lambda: requested.append(1))
+    window.choose_model = lambda _choices: MANAGE_CLOUD
+    window.show_model_menu()
+    assert requested == [1]
+    assert switcher.chosen == []
+
+
+def test_settings_errors_are_shown_not_raised(
+    parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]], switcher: FakeSwitcher
+) -> None:
+    from localdoc_finder.core.settings import SettingsError
+
+    window, _, _ = parts
+    switcher.error = SettingsError("settings.toml is broken")
+    window.show_model_menu()
+    assert "settings.toml is broken" in window.status.text()
+    switcher.error = None
+    window.choose_model = lambda _choices: B
+    switcher.error = SettingsError("no provider named 'gemini'")
+    window.choose_model = lambda _choices: B
+    switcher._choices = [A, B]
+    window.show_model_menu()
+    assert "⚠" in window.status.text()
+
+
+def test_the_real_menu_lists_the_choices_checked_and_manage(
+    qapp: QApplication, parts: tuple[SearchWindow, CloudAssistant, list[CloudPreview]]
+) -> None:
+    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QMenu
+
+    window, _, _ = parts
+    seen: list[tuple[str, bool]] = []
+
+    def press(*keys: Qt.Key) -> None:
+        menu = QApplication.activePopupWidget()
+        assert isinstance(menu, QMenu)
+        seen.extend((a.text(), a.isChecked()) for a in menu.actions() if not a.isSeparator())
+        for key in keys:
+            QTest.keyClick(menu, key)
+
+    QTimer.singleShot(200, lambda: press(Qt.Key.Key_Down, Qt.Key.Key_Down, Qt.Key.Key_Return))
+    assert window._model_menu([A, B]) == B
+    assert seen == [
+        ("OpenRouter / vendor/chat", True),
+        ("Google Gemini / gemini-2.5-flash", False),
+        ("Manage…", False),
+    ]
+    QTimer.singleShot(200, lambda: press(Qt.Key.Key_Escape))
+    assert window._model_menu([A, B]) is None
+    QTimer.singleShot(
+        200, lambda: press(Qt.Key.Key_Down, Qt.Key.Key_Down, Qt.Key.Key_Down, Qt.Key.Key_Return)
+    )
+    assert window._model_menu([A, B]) == "manage-cloud"

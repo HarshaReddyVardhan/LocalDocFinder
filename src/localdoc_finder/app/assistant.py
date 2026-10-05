@@ -144,6 +144,11 @@ class AssistantService:
         """True when a cloud provider with a stored key and a chat model is configured."""
         return self._cloud() is not None
 
+    def cloud_destination(self) -> str | None:
+        """``Provider / model`` that "Answer better" would use, or ``None`` without a cloud."""
+        cloud = self._cloud()
+        return str(cloud.router.destination(ROLE_CHAT)) if cloud is not None else None
+
     def needs_cloud_consent(self) -> bool:
         """Whether a normal Ask or Chat request would go to the cloud (because of the user's
         routing) without the user having agreed yet. May reach Ollama: not for the UI thread."""

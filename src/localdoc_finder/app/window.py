@@ -79,6 +79,7 @@ from localdoc_finder.app.assistant import (
     Finished,
 )
 from localdoc_finder.app.cloud_dialog import CloudAnswer, confirm_cloud_dialog
+from localdoc_finder.app.cloud_switcher import CloudChoice, CloudSwitcher
 from localdoc_finder.app.controller import (
     Launcher,
     SearchOutcome,
@@ -103,6 +104,7 @@ from localdoc_finder.app.theme import (
 from localdoc_finder.core.documents import DocumentError
 from localdoc_finder.core.features import FEATURES
 from localdoc_finder.core.rag import CODE_KINDS, Source
+from localdoc_finder.core.settings import SettingsError
 from localdoc_finder.core.skills.base import panel_skills
 from localdoc_finder.core.skills.chat import SessionSummary
 from localdoc_finder.core.skills.search import SearchResult
@@ -162,6 +164,7 @@ class SkillMode:
 
 AnyMode = Mode | SkillMode
 CITE_SCHEME = "cite"
+MANAGE_CLOUD = "manage-cloud"  # what the model menu answers for its "Manage…" entry
 _CITATION = re.compile(r"(?<!\\)\[(\d+)\](?!\()")  # not escaped, and not a link's own text
 
 
@@ -200,7 +203,8 @@ class _Signals(QObject):
     done = Signal(int, object)  # generation, SearchOutcome
     streamed = Signal(int, object)  # generation, assistant Event
     status = Signal(str)
-    cloud_checked = Signal(int, bool)  # mode-change token, is a cloud provider configured
+    # mode-change token, is a cloud provider configured, and where it would send ("" if none)
+    cloud_checked = Signal(int, bool, str)
     preview_ready = Signal(object, str)  # CloudPreview or None, error text
     consent_checked = Signal(int, bool)  # generation, would this request go to the cloud unasked
 
@@ -275,11 +279,14 @@ class _CloudProbeJob(QRunnable):
         self._token, self._assistant, self._signals = token, assistant, signals
 
     def run(self) -> None:
+        destination = ""
         try:
             available = self._assistant.cloud_available()
+            if available:
+                destination = self._assistant.cloud_destination() or ""
         except Exception:  # no index yet, say: the button is optional
             available = False
-        self._signals.cloud_checked.emit(self._token, available)
+        self._signals.cloud_checked.emit(self._token, available, destination)
 
 
 class _ConsentJob(QRunnable):
@@ -328,6 +335,7 @@ class _CallJob(QRunnable):
 
 class SearchWindow(QWidget):
     settings_requested = Signal()  # the gear in the header: the app owns the Settings window
+    cloud_settings_requested = Signal()  # "Manage…" in the model menu: Settings on its Cloud tab
 
     def __init__(
         self,
@@ -533,6 +541,10 @@ class SearchWindow(QWidget):
         self._cloud_ready = False  # a provider with a key is configured (set by the probe)
         # mode, question, forced ("Answer better") or routed, generation of the request
         self._pending_cloud: tuple[AnyMode, str, bool, int] | None = None
+        self.cloud_switcher: CloudSwitcher | None = None  # set by the app: it owns the settings
+        self.choose_model: Callable[[list[CloudChoice]], CloudChoice | str | None] = (
+            self._model_menu
+        )
 
     def open_settings(self) -> None:
         """Hide the popup (it stays on top) and ask the app for the Settings window."""
@@ -549,6 +561,10 @@ class SearchWindow(QWidget):
         self.cloud_button = QPushButton("Answer better ☁")
         self.cloud_button.setVisible(False)
         self.cloud_button.clicked.connect(self.answer_better)
+        self.model_button = QPushButton("Model ▾")
+        self.model_button.setToolTip("Choose the cloud model")
+        self.model_button.setVisible(False)
+        self.model_button.clicked.connect(self.show_model_menu)
         self.history_button = QPushButton("History ▾")
         self.history_button.setToolTip("Reopen an earlier conversation")
         self.history_button.setVisible(False)
@@ -558,6 +574,7 @@ class SearchWindow(QWidget):
         bottom.setSpacing(8)
         bottom.addWidget(self.status, 1)
         bottom.addWidget(self.history_button)
+        bottom.addWidget(self.model_button)
         bottom.addWidget(self.cloud_button)
         bottom.addWidget(self.hints)
         bottom.addWidget(grip, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
@@ -746,16 +763,22 @@ class SearchWindow(QWidget):
         Found out in the background: the answer may need the whole skill context built first.
         """
         self.cloud_button.setVisible(False)
+        self.model_button.setVisible(False)
         self._cloud_ready = False
         self._mode_token += 1
         if self._assistant is None or self._mode not in (Mode.ASK, Mode.CHAT):
             return
         self._pool.start(_CloudProbeJob(self._mode_token, self._assistant, self._signals))
 
-    def _on_cloud_checked(self, token: int, available: bool) -> None:
+    def _on_cloud_checked(self, token: int, available: bool, destination: str) -> None:
         if token == self._mode_token:  # not a stale answer for a mode we already left
             self._cloud_ready = available and self._mode in (Mode.ASK, Mode.CHAT)
             self.cloud_button.setVisible(self._cloud_ready)
+            self.model_button.setVisible(self._cloud_ready and self.cloud_switcher is not None)
+            tip = "Ask the cloud model instead; you see what is sent first"
+            self.cloud_button.setToolTip(
+                f"{tip}\nDestination: {destination}" if destination else tip
+            )
 
     def _body_index(self) -> int:
         if self._mode is Mode.MATCH:
@@ -878,6 +901,45 @@ class SearchWindow(QWidget):
         chosen = self._in_dialog(lambda: self.choose_session(sessions))
         if chosen is not None:
             self.reopen_session(chosen)
+
+    def show_model_menu(self) -> None:
+        """Pick the cloud model from a menu: each provider with a key, its model and favourites."""
+        switcher = self.cloud_switcher
+        if switcher is None:
+            return
+        try:
+            choices = switcher.choices()
+        except (SettingsError, RuntimeError) as exc:
+            self.status.setText(f"⚠ {exc}")
+            return
+        chosen = self._in_dialog(lambda: self.choose_model(choices))
+        if chosen == MANAGE_CLOUD:
+            self.dismiss()
+            self.cloud_settings_requested.emit()
+        elif isinstance(chosen, CloudChoice):
+            try:
+                switcher.choose(chosen)
+            except (SettingsError, RuntimeError) as exc:
+                self.status.setText(f"⚠ {exc}")
+                return
+            self.status.setText(f"cloud model: {chosen.text}")
+            self._check_cloud_async()  # the tooltip names the new destination
+
+    def _model_menu(self, choices: list[CloudChoice]) -> CloudChoice | str | None:
+        menu = QMenu(self)
+        for choice in choices:
+            action = menu.addAction(choice.text)
+            action.setCheckable(True)
+            action.setChecked(choice.current)
+            action.setData(choice)
+        if choices:
+            menu.addSeparator()
+        manage = menu.addAction("Manage…")
+        picked = menu.exec(self.model_button.mapToGlobal(self.model_button.rect().topLeft()))
+        if picked is manage:
+            return MANAGE_CLOUD
+        data = picked.data() if picked is not None else None
+        return data if isinstance(data, CloudChoice) else None
 
     def _session_menu(self, sessions: list[SessionSummary]) -> int | None:
         menu = QMenu(self)

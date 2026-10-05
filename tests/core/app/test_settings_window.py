@@ -749,3 +749,29 @@ def test_secondary_text_fades_toward_the_background(qapp: QApplication) -> None:
     palette = palette_for(Scheme.LIGHT)
     assert secondary_text(palette, 1).name() == "#1b1b1f"
     assert secondary_text(palette, 0).name() == "#ffffff"
+
+
+# ------------------------------------------------------------------ opening on the Cloud tab
+def test_opening_on_a_given_tab_shows_it(window: SettingsWindow) -> None:
+    window.open(window.cloud)
+    assert window.tabs.currentIndex() == window._pages.index(window.cloud)
+    assert window.tabs.tabText(window.tabs.currentIndex()).replace("&&", "&") == "Cloud & Privacy"
+    window.open()  # without a page it stays where it was
+    assert window.tabs.currentIndex() == window._pages.index(window.cloud)
+
+
+def test_the_settings_opener_builds_the_window_once_and_can_open_the_cloud_tab(
+    window: SettingsWindow,
+) -> None:
+    built: list[int] = []
+
+    def build() -> SettingsWindow:
+        built.append(1)
+        return window
+
+    opener = app_main.SettingsOpener(build)
+    assert built == []  # nothing is built until it is needed
+    opener.open(True)  # a menu action passes ``checked``
+    opener.open_cloud()
+    assert built == [1]
+    assert window.tabs.currentIndex() == window._pages.index(window.cloud)

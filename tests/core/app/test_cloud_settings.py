@@ -10,6 +10,7 @@ from tests.core.conftest import Env
 from tests.core.providers.test_openai_compat import KEY, FakeClient, api_error
 
 from localdoc_finder.app.cloud_provider_dialog import CloudProviderDialog
+from localdoc_finder.app.cloud_switcher import CloudChoice, CloudSwitcher
 from localdoc_finder.app.cloud_tab import CloudTab
 from localdoc_finder.app.settings_controller import CloudModel, SettingsController
 from localdoc_finder.core.providers.openai_compat import OpenAICompatibleProvider
@@ -518,6 +519,88 @@ class TestRoutingControls:
         tab.routing.forget.click()
         assert forgotten == [1]
         assert messages == ["will ask before sending"]
+
+
+# ------------------------------------------------------------------ the popup switcher
+@pytest.fixture
+def switcher(controller: SettingsController) -> CloudSwitcher:
+    return CloudSwitcher(controller)
+
+
+def test_no_provider_means_no_choices(switcher: CloudSwitcher) -> None:
+    assert switcher.choices() == []
+
+
+def test_a_provider_offers_its_chat_model_and_its_favorites(
+    controller: SettingsController,
+    switcher: CloudSwitcher,
+) -> None:
+    controller.add_provider("openrouter", "k")
+    controller.set_cloud_model("openrouter", "chat", "vendor/big")
+    controller.toggle_favorite("openrouter", "vendor/plain")
+    controller.toggle_favorite("openrouter", "vendor/big")  # already the chat model: listed once
+    assert switcher.choices() == [
+        CloudChoice("openrouter", "OpenRouter", "vendor/big", current=True),
+        CloudChoice("openrouter", "OpenRouter", "vendor/plain", current=False),
+    ]
+    assert switcher.choices()[0].text == "OpenRouter / vendor/big"
+
+
+def test_the_active_provider_comes_first_and_only_its_chat_model_is_current(
+    controller: SettingsController,
+    switcher: CloudSwitcher,
+) -> None:
+    controller.add_provider("openrouter", "k1")
+    controller.add_provider("openai", "k2")
+    controller.set_cloud_model("openrouter", "chat", "vendor/big")
+    controller.set_cloud_model("openai", "chat", "gpt-4.1")
+    controller.set_active_provider("openai")
+    choices = switcher.choices()
+    assert [(c.provider, c.current) for c in choices] == [("openai", True), ("openrouter", False)]
+
+
+def test_a_provider_without_a_key_or_a_model_is_left_out(
+    controller: SettingsController,
+    switcher: CloudSwitcher,
+    store: MemoryKeyStore,
+) -> None:
+    controller.add_provider("openrouter", "k1")
+    controller.add_provider("openai", "k2")
+    controller.set_cloud_model("openrouter", "chat", "vendor/big")
+    controller.set_cloud_model("openai", "chat", "gpt-4.1")
+    store.delete("openai")  # no key: a request to it could not be sent
+    controller.add_provider("gemini", "k3")  # a key, but no model chosen yet
+    assert [c.provider for c in switcher.choices()] == ["openrouter"]
+
+
+def test_picking_sets_the_chat_model_and_the_active_provider(
+    controller: SettingsController,
+    switcher: CloudSwitcher,
+) -> None:
+    controller.add_provider("openrouter", "k1")
+    controller.add_provider("openai", "k2")
+    controller.set_cloud_model("openai", "chat", "gpt-4.1")
+    controller.toggle_favorite("openai", "gpt-4o")
+    switcher.choose(CloudChoice("openai", "OpenAI", "gpt-4o"))
+    cloud = controller.settings().cloud
+    assert cloud.active == "openai"
+    assert cloud.providers["openai"].models["chat"] == "gpt-4o"
+    # gpt-4o is now the chat model (and also a favorite: listed once); the old one is gone
+    assert switcher.choices() == [CloudChoice("openai", "OpenAI", "gpt-4o", current=True)]
+
+
+def test_picking_invalidates_the_context(
+    env: Env,
+    store: MemoryKeyStore,
+) -> None:
+    changes: list[int] = []
+    controller = SettingsController(
+        env.data_dir / "settings.toml", env.state, store, on_changed=lambda: changes.append(1)
+    )
+    controller.add_provider("openrouter", "k")
+    changes.clear()
+    CloudSwitcher(controller).choose(CloudChoice("openrouter", "OpenRouter", "vendor/big"))
+    assert changes  # the app rebuilds its context from the new settings
 
 
 # ------------------------------------------------------------------ the add dialog

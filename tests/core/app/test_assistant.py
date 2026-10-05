@@ -289,6 +289,14 @@ class TestRoutedConsent:
         env.indexer.index_paths([write(env, "payments.md", NOTES)])
         env.store.maintain()
 
+    def test_the_destination_names_provider_and_model(
+        self, skill_ctx: SkillContext, chat: Chat, routed: CloudRig
+    ) -> None:
+        service = AssistantService(lambda: skill_ctx)
+        assert service.cloud_destination() == "OpenRouter / vendor/chat"
+        skill_ctx.extras.pop("cloud")
+        assert service.cloud_destination() is None
+
     def test_a_cloud_routed_request_needs_consent_until_it_is_given(
         self, env: Env, skill_ctx: SkillContext, routed: CloudRig
     ) -> None:
