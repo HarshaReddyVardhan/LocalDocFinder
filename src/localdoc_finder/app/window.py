@@ -97,6 +97,7 @@ from localdoc_finder.app.theme import (
     popup_style,
     scheme_in_use,
     search_icon,
+    settings_icon,
     style_check_boxes,
 )
 from localdoc_finder.core.documents import DocumentError
@@ -401,6 +402,8 @@ class SearchWindow(QWidget):
         if hasattr(self, "input"):
             self.input.removeAction(self._search_action)
             self._add_search_icon()
+        if hasattr(self, "settings_button"):
+            self.settings_button.setIcon(settings_icon(scheme))
         self.update()
 
     def _build_ui(self) -> None:
@@ -468,7 +471,10 @@ class SearchWindow(QWidget):
         self.mode_bar = ModeBar()
         self.mode_bar.chosen.connect(self._choose_mode)
         self.tab_hint = self._build_tab_hint()
-        settings = self._header_button("⚙", "settingsButton", "Settings", self.open_settings)
+        self.settings_button = self._header_button(
+            "", "settingsButton", "Settings", self.open_settings
+        )
+        self.settings_button.setIcon(settings_icon(self._scheme))
         close = self._header_button("✕", "close", "Close (Esc)", self.dismiss)
         header = QHBoxLayout()
         header.setSpacing(6)
@@ -476,7 +482,7 @@ class SearchWindow(QWidget):
         header.addStretch(1)  # empty header space is where the card is dragged from
         header.addWidget(self.tab_hint)
         header.addSpacing(6)
-        header.addWidget(settings)
+        header.addWidget(self.settings_button)
         header.addWidget(close)
         return header
 

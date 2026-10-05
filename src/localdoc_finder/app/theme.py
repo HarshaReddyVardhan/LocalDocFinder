@@ -6,12 +6,22 @@ the app pins the Fusion style and its own palette. The user picks ``system`` (fo
 """
 
 import enum
+import math
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPalette, QPen, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QGuiApplication,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPalette,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import QApplication, QCheckBox, QRadioButton, QStyleFactory, QWidget
 
 THEME_CHOICES = ("system", "light", "dark")
@@ -156,7 +166,7 @@ QPushButton#modePill:disabled {{ background:transparent; color:{faint}; }}
 QPushButton#close, QPushButton#settingsButton {{ background:transparent;
     border:1px solid transparent; border-radius:8px; color:{muted}; font-size:13px;
     padding:0; min-width:28px; min-height:28px; }}
-QPushButton#settingsButton {{ font-family:"Segoe UI Symbol"; font-size:16px; }}
+QPushButton#settingsButton {{ icon-size:16px; }}
 QPushButton#settingsButton:hover {{ background:{button_hover}; color:{fg}; }}
 QPushButton#settingsButton:pressed {{ background:{button_down}; }}
 QPushButton#close:hover {{ background:{danger}; color:#ffffff; }}
@@ -244,6 +254,41 @@ def search_icon(scheme: Scheme, size: int = 18) -> QIcon:
     end = size - 2.5
     start = 2.5 + size * 0.55 * 0.85
     painter.drawLine(QPointF(start, start), QPointF(end, end))
+    painter.end()
+    return QIcon(pixmap)
+
+
+def settings_icon(scheme: Scheme, size: int = 18) -> QIcon:
+    """A gear drawn at the screen's resolution, crisper than the "Segoe UI Symbol" glyph."""
+    screen = QGuiApplication.primaryScreen()
+    ratio = screen.devicePixelRatio() if screen is not None else 1.0
+    pixmap = QPixmap(round(size * ratio), round(size * ratio))
+    pixmap.setDevicePixelRatio(ratio)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(_POPUP_COLOURS[scheme]["muted"]))
+    centre = QPointF(size / 2, size / 2)
+    outer, inner, hub = size * 0.48, size * 0.34, size * 0.18
+    tooth_count, tooth_half_angle = 8, math.radians(18)
+    path = QPainterPath()
+    for tooth in range(tooth_count):
+        mid = tooth * (2 * math.pi / tooth_count)
+        for angle, radius in (
+            (mid - tooth_half_angle, inner),
+            (mid - tooth_half_angle * 0.4, outer),
+            (mid + tooth_half_angle * 0.4, outer),
+            (mid + tooth_half_angle, inner),
+        ):
+            point = QPointF(
+                centre.x() + radius * math.cos(angle), centre.y() + radius * math.sin(angle)
+            )
+            path.lineTo(point) if tooth or angle != mid - tooth_half_angle else path.moveTo(point)
+    path.closeSubpath()
+    painter.drawPath(path)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+    painter.drawEllipse(centre, hub, hub)
     painter.end()
     return QIcon(pixmap)
 
