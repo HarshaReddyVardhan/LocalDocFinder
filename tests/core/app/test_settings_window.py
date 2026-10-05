@@ -9,9 +9,10 @@ from tests.core.app.test_models_panel import GPU, wait_for
 from tests.core.conftest import Chat, Env
 
 from localdoc_finder.app import main as app_main
+from localdoc_finder.app.cloud_tab import CloudTab
 from localdoc_finder.app.models_controller import ModelsController
 from localdoc_finder.app.settings_controller import NO_UPDATES, SettingsController, app_version
-from localdoc_finder.app.settings_tabs import AboutTab, CloudTab, GeneralTab, IndexingTab
+from localdoc_finder.app.settings_tabs import AboutTab, GeneralTab, IndexingTab
 from localdoc_finder.app.settings_window import MIN_WINDOW_SIZE, SettingsWindow
 from localdoc_finder.app.theme import (
     Scheme,

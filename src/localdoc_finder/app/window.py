@@ -967,7 +967,9 @@ class SearchWindow(QWidget):
             self.status.setText(error)
             return
         if preview is None:
-            self.status.setText("no cloud provider is configured (see: ldf keys set)")
+            self.status.setText(
+                "no cloud provider is configured (add one in Settings → Cloud & Privacy)"
+            )
             return
         assert isinstance(preview, CloudPreview)
         if not self._in_dialog(lambda: self.cloud_confirm(preview)):

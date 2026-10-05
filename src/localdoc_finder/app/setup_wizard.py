@@ -20,9 +20,10 @@ from PySide6.QtWidgets import (
     QWizardPage,
 )
 
+from localdoc_finder.app.cloud_tab import CloudTab
 from localdoc_finder.app.scope_editor import ScopeEditor
 from localdoc_finder.app.settings_controller import SettingsController
-from localdoc_finder.app.settings_tabs import CloudTab, GeneralTab, UpdatesTab
+from localdoc_finder.app.settings_tabs import GeneralTab, UpdatesTab
 from localdoc_finder.app.setup_controller import SetupController
 from localdoc_finder.app.theme import scheme_in_use, style_check_boxes
 from localdoc_finder.core.features import FEATURE_TITLES, FEATURES, enabled_features

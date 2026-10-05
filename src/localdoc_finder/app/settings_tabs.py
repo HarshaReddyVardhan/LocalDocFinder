@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -34,7 +33,6 @@ from localdoc_finder.core.settings_schema import OptionSpec, editable_options
 from localdoc_finder.core.updates import UpdateKind, UpdateOutcome
 
 KEY_PROMPT_TITLE = "API key"
-DEFAULT_BUDGET_USD = 10.0
 THEME_LABELS = {"system": "Follow Windows", "light": "Light", "dark": "Dark"}
 ADVANCED_HINT = (
     "Every other option. Changes are checked and saved at once; indexing options apply from "
@@ -239,91 +237,6 @@ class ModelsTab(SettingsTab):
             note = "  (slow on this machine)" if judge(result) is Verdict.SLOW else ""
             lines.append(f"{result.model}: {result.rate:.1f} {result.unit}{note}")
         return "\n".join(lines)
-
-
-class CloudTab(SettingsTab):
-    def __init__(
-        self,
-        controller: SettingsController,
-        ask_key: Callable[[str], str | None] = ask_secret,
-    ) -> None:
-        super().__init__(controller)
-        self._ask_key = ask_key
-        self.redact = QCheckBox("Hide my name, email and phone from cloud models")
-        self.mask_local = QCheckBox("Also mask ID numbers for local models")
-        self.limit = QCheckBox("Limit monthly cloud spend")
-        self.budget = QDoubleSpinBox()
-        self.budget.setPrefix("$ ")
-        self.budget.setRange(1.0, 100000.0)
-        self.keys = QVBoxLayout()
-        self.key_labels: list[QLabel] = []
-        self.key_buttons: list[QPushButton] = []
-        budget_row = QHBoxLayout()
-        budget_row.addWidget(self.limit)
-        budget_row.addWidget(self.budget)
-        budget_row.addStretch(1)
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Cloud providers (add them with `ldf cloud add`)"))
-        layout.addLayout(self.keys)
-        layout.addWidget(QLabel("Privacy"))
-        layout.addWidget(self.redact)
-        layout.addWidget(self.mask_local)
-        layout.addLayout(budget_row)
-        layout.addStretch(1)
-
-        self.refresh()
-        self.redact.clicked.connect(lambda on: self._save(self._controller.set_redact_personal, on))
-        self.mask_local.clicked.connect(
-            lambda on: self._save(self._controller.set_mask_ids_locally, on)
-        )
-        self.limit.clicked.connect(lambda _on: self._save_budget())
-        self.budget.editingFinished.connect(self._save_budget)
-
-    def refresh(self) -> None:
-        settings = self._controller.settings()
-        self.redact.setChecked(settings.privacy.redact_personal)
-        self.mask_local.setChecked(settings.privacy.mask_ids_locally)
-        limit = settings.cloud.monthly_budget_usd
-        self.limit.setChecked(limit is not None)
-        self.budget.setValue(limit if limit is not None else DEFAULT_BUDGET_USD)
-        self.budget.setEnabled(limit is not None)
-        self._fill_keys()
-
-    def _fill_keys(self) -> None:
-        while self.keys.count():
-            item = self.keys.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.deleteLater()
-        self.key_labels, self.key_buttons = [], []
-        statuses = self._controller.key_statuses()
-        if not statuses:
-            self.keys.addWidget(QLabel("No cloud provider is configured; everything stays local."))
-        for status in statuses:
-            row = QWidget()
-            line = QHBoxLayout(row)
-            line.setContentsMargins(0, 0, 0, 0)
-            label = QLabel(f"{status.label}: {'key stored' if status.has_key else 'no key'}")
-            line.addWidget(label, 1)
-            button = QPushButton("Set key…")
-            self.key_labels.append(label)
-            self.key_buttons.append(button)
-            button.clicked.connect(lambda _c=False, name=status.provider: self._set_key(name))
-            line.addWidget(button)
-            self.keys.addWidget(row)
-
-    def _set_key(self, provider: str) -> None:
-        key = self._ask_key(provider)
-        if key and self._guard(lambda: self._controller.set_key(provider, key), "key saved"):
-            self._fill_keys()
-
-    def _save(self, setter: Callable[[bool], None], value: bool) -> None:
-        self._guard(lambda: setter(value), "saved")
-
-    def _save_budget(self) -> None:
-        self.budget.setEnabled(self.limit.isChecked())
-        value = self.budget.value() if self.limit.isChecked() else None
-        self._guard(lambda: self._controller.set_monthly_budget(value), "budget saved")
 
 
 class _CheckSignals(QObject):

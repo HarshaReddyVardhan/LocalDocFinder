@@ -15,9 +15,17 @@ from localdoc_finder.core.lifecycle import (
     stop_everything,
 )
 from localdoc_finder.core.models.benchmark import BenchResult, load_results
+from localdoc_finder.core.models.catalog import ROLES
 from localdoc_finder.core.protection import SystemProtection
+from localdoc_finder.core.providers.openai_compat import OpenAICompatibleProvider
+from localdoc_finder.core.providers.presets import CUSTOM, PRESETS
 from localdoc_finder.core.secrets import KeyStore
-from localdoc_finder.core.settings import Settings, SettingsError, load_settings
+from localdoc_finder.core.settings import (
+    CloudProviderSettings,
+    Settings,
+    SettingsError,
+    load_settings,
+)
 from localdoc_finder.core.settings_io import set_setting, set_settings
 from localdoc_finder.core.settings_schema import OptionSpec
 from localdoc_finder.core.store.sqlite import StateDb
@@ -25,6 +33,9 @@ from localdoc_finder.core.updates import UpdateKind, UpdateOutcome, Updater
 
 PACKAGE_NAME = "localdoc-finder"
 NO_UPDATES = "Updates are not available in this build."
+_TOKENS_PER_K = 1000
+_CENTS_THRESHOLD_USD = 0.1  # below this a price is shown to three decimals
+ProviderFactory = Callable[[str, CloudProviderSettings, str], OpenAICompatibleProvider]
 
 
 @dataclass(frozen=True)
@@ -32,6 +43,33 @@ class KeyStatus:
     provider: str
     label: str
     has_key: bool
+    active: bool = False
+    preset: str = CUSTOM
+
+
+def _usd(amount: float) -> str:
+    return f"${amount:.2f}" if amount >= _CENTS_THRESHOLD_USD else f"${amount:.3f}"
+
+
+@dataclass(frozen=True)
+class CloudModel:
+    """One model a provider offers: its id, context length and USD price per million tokens."""
+
+    id: str
+    context: int | None = None
+    price: tuple[float, float] | None = None  # (input, output)
+
+    @property
+    def label(self) -> str:
+        """``id · 128k ctx · $0.15 / $0.60 per 1M``, with the parts that are known."""
+        parts = [self.id]
+        if self.context:
+            parts.append(f"{self.context // _TOKENS_PER_K}k ctx")
+        if self.price == (0.0, 0.0):
+            parts.append("free")
+        elif self.price is not None:
+            parts.append(f"{_usd(self.price[0])} / {_usd(self.price[1])} per 1M")
+        return " · ".join(parts)
 
 
 def app_version() -> str:
@@ -53,7 +91,9 @@ class SettingsController:
         stop_others: Callable[[], object] = stop_everything,
         schedule_deletion: Callable[[Path], None] = schedule_data_deletion,
         on_changed: Callable[[], None] = lambda: None,
+        make_provider: ProviderFactory = OpenAICompatibleProvider,
     ) -> None:
+        self._make_provider = make_provider
         self._on_changed = on_changed
         self._path = settings_path
         self._state = state
@@ -145,10 +185,127 @@ class SettingsController:
 
     # ------------------------------------------------------------------ cloud and privacy
     def key_statuses(self) -> list[KeyStatus]:
-        providers = self.settings().cloud.providers
+        cloud = self.settings().cloud
         return [
-            KeyStatus(name, cfg.label or name, self._keys.get(name) is not None)
-            for name, cfg in providers.items()
+            KeyStatus(
+                name,
+                cfg.label or name,
+                self._keys.get(name) is not None,
+                active=cloud.active == name,
+                preset=cfg.preset,
+            )
+            for name, cfg in cloud.providers.items()
+        ]
+
+    def add_provider(
+        self, preset: str, key: str, base_url: str | None = None, label: str | None = None
+    ) -> str:
+        """Save a provider from a preset plus its key; returns its name. The first provider added
+        becomes the active one. Adding a preset that is already there updates it (new key)."""
+        key = key.strip()
+        if not key:
+            raise SettingsError("enter the API key")
+        address = self._address(preset, base_url)
+        cloud = self.settings().cloud
+        name = preset if preset != CUSTOM else _free_name(CUSTOM, cloud.providers)
+        shown = (label or "").strip() or (PRESETS[preset].label if preset != CUSTOM else "")
+        base = ["cloud", "providers", name]
+        changes: list[tuple[list[str], object]] = [
+            ([*base, "base_url"], address),
+            ([*base, "preset"], preset),
+            ([*base, "label"], shown or None),
+        ]
+        if cloud.active not in cloud.providers:
+            changes.append((["cloud", "active"], name))
+        set_settings(self._path, changes)
+        self._keys.set(name, key)
+        self._on_changed()
+        return name
+
+    def remove_provider(self, name: str) -> None:
+        """Forget a provider: its key and its settings. The active one falls back to none."""
+        cloud = self.settings().cloud
+        if name not in cloud.providers:
+            raise SettingsError(f"no provider named {name!r}")
+        self._keys.delete(name)
+        changes: list[tuple[list[str], object]] = [(["cloud", "providers", name], None)]
+        if cloud.active == name:
+            changes.append((["cloud", "active"], None))
+        set_settings(self._path, changes)
+        self._on_changed()
+
+    def set_active_provider(self, name: str) -> None:
+        self._known(name)
+        set_setting(self._path, ["cloud", "active"], name)
+        self._on_changed()
+
+    def set_cloud_model(self, name: str, role: str, model: str | None) -> None:
+        """Choose the model a provider uses for ``role``; empty clears it (Match: same as chat)."""
+        self._known(name)
+        if role not in ROLES:
+            raise SettingsError(f"unknown role {role!r}")
+        set_setting(self._path, ["cloud", "providers", name, "models", role], model or None)
+        self._on_changed()
+
+    def set_model_price(self, name: str, model: str, inp: float, out: float) -> None:
+        """USD per million input and output tokens, for models whose listing gives no price."""
+        self._known(name)
+        if inp < 0 or out < 0:
+            raise SettingsError("a price cannot be negative")
+        set_setting(self._path, ["cloud", "providers", name, "pricing", model], [inp, out])
+        self._on_changed()
+
+    def toggle_favorite(self, name: str, model: str) -> bool:
+        """Star or unstar ``model`` for the pickers; returns whether it is now a favorite."""
+        provider = self._known(name)
+        favorites = [m for m in provider.favorites if m != model]
+        starred = len(favorites) == len(provider.favorites)
+        if starred:
+            favorites.append(model)
+        set_setting(self._path, ["cloud", "providers", name, "favorites"], favorites or None)
+        self._on_changed()
+        return starred
+
+    def list_cloud_models(self, name: str) -> list[CloudModel]:
+        """The chat models a saved provider offers. Reaches the network: call off the UI thread.
+        Errors arrive as ``ProviderError`` with the key already scrubbed out."""
+        provider = self._known(name)
+        key = self._keys.get(name)
+        if not key:
+            raise SettingsError(f"no API key stored for {provider.label or name}")
+        return self._discover(name, provider, key)
+
+    def probe_provider(
+        self, preset: str, key: str, base_url: str | None = None
+    ) -> list[CloudModel]:
+        """List models with a key that is not saved yet (the add dialog's Test). Network."""
+        key = key.strip()
+        if not key:
+            raise SettingsError("enter the API key")
+        settings = CloudProviderSettings(base_url=self._address(preset, base_url), preset=preset)
+        return self._discover(preset, settings, key)
+
+    @staticmethod
+    def _address(preset: str, base_url: str | None) -> str:
+        chosen = PRESETS.get(preset)
+        if chosen is None:
+            raise SettingsError(f"unknown provider {preset!r}")
+        address = chosen.base_url or (base_url or "").strip()
+        if not address:
+            raise SettingsError("enter the provider's base URL")
+        return address
+
+    def _known(self, name: str) -> CloudProviderSettings:
+        provider = self.settings().cloud.providers.get(name)
+        if provider is None:
+            raise SettingsError(f"no provider named {name!r}")
+        return provider
+
+    def _discover(self, name: str, cfg: CloudProviderSettings, key: str) -> list[CloudModel]:
+        provider = self._make_provider(name, cfg, key)
+        return [
+            CloudModel(info.name, info.context_length, provider.price(info.name))
+            for info in provider.list_models()
         ]
 
     def set_key(self, provider: str, key: str) -> None:
@@ -205,3 +362,11 @@ class SettingsController:
         for provider in self.settings().cloud.providers:
             self._keys.delete(provider)
         self._schedule_deletion(data_dir)
+
+
+def _free_name(stem: str, taken: Iterable[str]) -> str:
+    used = set(taken)
+    candidate, number = stem, 2
+    while candidate in used:
+        candidate, number = f"{stem}-{number}", number + 1
+    return candidate

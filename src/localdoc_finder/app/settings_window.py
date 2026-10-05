@@ -3,6 +3,7 @@
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QFrame, QLabel, QScrollArea, QTabWidget, QVBoxLayout, QWidget
 
+from localdoc_finder.app.cloud_tab import CloudTab
 from localdoc_finder.app.models_controller import ModelsController
 from localdoc_finder.app.models_panel import ModelsPanel
 from localdoc_finder.app.settings_controller import SettingsController
@@ -10,7 +11,6 @@ from localdoc_finder.app.settings_features import FeaturesTab
 from localdoc_finder.app.settings_tabs import (
     AboutTab,
     AdvancedTab,
-    CloudTab,
     GeneralTab,
     IndexingTab,
     ModelsTab,
