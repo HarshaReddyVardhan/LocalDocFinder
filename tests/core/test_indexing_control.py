@@ -72,3 +72,12 @@ def test_status_counts_and_summaries(state: StateDb, tmp_path: Path) -> None:
     assert "finishing" in IndexingStatus(1, 1, True, True).summary
     assert IndexingStatus(5, 0, True, False).summary.startswith("Indexing: indexing")
     assert IndexingStatus(0, 0, False, False).fraction == 1.0
+
+
+def test_tray_summary_is_short(state: StateDb, tmp_path: Path) -> None:
+    assert (
+        IndexingStatus(10, 1, False, False).tray_summary == "Indexing: waiting to index (10 files)"
+    )
+    assert IndexingStatus(10, 0, False, False).tray_summary == "Indexing: idle (10 files)"
+    assert IndexingStatus(10, 0, True, False).tray_summary == "Indexing: indexing (10 files)"
+    assert IndexingStatus(10, 0, True, True).tray_summary == "Indexing: paused (10 files)"

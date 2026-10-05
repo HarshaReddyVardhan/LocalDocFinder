@@ -612,13 +612,14 @@ def test_an_invalid_settings_file_keeps_the_working_context_settings(
 
 # ------------------------------------------------------------------ indexing tab and tray entry
 class FakeIndexing:
-    def __init__(self) -> None:
+    def __init__(self, waiting: int = 5) -> None:
         self.running = False
         self.paused = False
+        self.waiting = waiting
         self.log: list[str] = []
 
     def status(self) -> IndexingStatus:
-        return IndexingStatus(10, 5, self.running, self.paused)
+        return IndexingStatus(10, self.waiting, self.running, self.paused)
 
     def start(self) -> StartResult:
         self.log.append("start")
@@ -651,6 +652,15 @@ def test_indexing_tab_starts_and_pauses_and_shows_progress(
     assert "paused" in tab.status.text()
 
 
+def test_indexing_tab_start_button_is_disabled_once_nothing_is_waiting(
+    qapp: QApplication, controller: SettingsController
+) -> None:
+    fake = FakeIndexing(waiting=0)
+    tab = IndexingTab(controller, fake)  # type: ignore[arg-type]
+    tab.refresh()
+    assert not tab.start.isEnabled()
+
+
 def test_settings_window_shows_the_indexing_tab_only_with_a_control(
     qapp: QApplication, controller: SettingsController, models: ModelsController
 ) -> None:
@@ -668,7 +678,7 @@ def test_tray_menu_toggles_start_and_pause(qapp: QApplication) -> None:
     status_line, toggle = menu.actions()
     menu.aboutToShow.emit()
     assert toggle.text() == "Start indexing"
-    assert "10 files indexed" in status_line.text()
+    assert "10 files" in status_line.text()
     toggle.trigger()
     menu.aboutToShow.emit()
     assert toggle.text() == "Pause indexing"

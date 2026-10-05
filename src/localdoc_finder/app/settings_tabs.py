@@ -194,7 +194,7 @@ class IndexingTab(SettingsTab):
         status = self._indexing.status()
         self.status.setText(status.summary)
         self.bar.setValue(int(status.fraction * 100))
-        self.start.setEnabled(not status.running or status.paused)
+        self.start.setEnabled(status.paused or (not status.running and status.waiting > 0))
         self.pause.setEnabled(status.running and not status.paused)
 
     def _act(self, action: Callable[[], str]) -> None:

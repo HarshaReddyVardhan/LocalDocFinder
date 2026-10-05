@@ -44,6 +44,19 @@ class IndexingStatus:
         return f"Indexing: {state}. {self.indexed} files indexed, {self.waiting} waiting."
 
     @property
+    def tray_summary(self) -> str:
+        """A short status line for the tray menu, which sizes itself to its widest entry."""
+        if self.paused:
+            state = "paused"
+        elif self.running:
+            state = "indexing"
+        elif self.waiting:
+            state = "waiting to index"
+        else:
+            state = "idle"
+        return f"Indexing: {state} ({self.indexed} files)"
+
+    @property
     def fraction(self) -> float:
         total = self.indexed + self.waiting
         return self.indexed / total if total else 1.0

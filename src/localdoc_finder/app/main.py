@@ -228,7 +228,7 @@ def add_indexing_actions(
 
     def refresh() -> None:
         status = get_control().status()
-        status_line.setText(status.summary)
+        status_line.setText(status.tray_summary)
         toggle.setText(
             "Pause indexing" if status.running and not status.paused else "Start indexing"
         )
