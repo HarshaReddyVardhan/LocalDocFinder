@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -26,6 +27,7 @@ from localdoc_finder.app.models_panel import ModelsPanel
 from localdoc_finder.app.scope_editor import ScopeEditor, pick_folder
 from localdoc_finder.app.settings_controller import SettingsController, app_version
 from localdoc_finder.app.theme import THEME_CHOICES
+from localdoc_finder.app.whats_new import NO_NOTES
 from localdoc_finder.core.indexing_control import IndexingControl
 from localdoc_finder.core.models.benchmark import BenchKind, Verdict, judge
 from localdoc_finder.core.settings import SettingsError
@@ -272,10 +274,14 @@ class UpdatesTab(SettingsTab):
         self.restart.setVisible(False)
         self.result = QLabel("")
         self.result.setWordWrap(True)
+        self.notes = QTextBrowser()  # the release notes of a downloaded update
+        self.notes.setOpenExternalLinks(True)
+        self.notes.setVisible(False)
         layout = QVBoxLayout(self)
         layout.addWidget(self.auto_check)
         layout.addWidget(self.check_now)
         layout.addWidget(self.result)
+        layout.addWidget(self.notes)
         layout.addWidget(self.restart)
         layout.addStretch(1)
         self.refresh()
@@ -297,7 +303,11 @@ class UpdatesTab(SettingsTab):
     def _show_outcome(self, outcome: UpdateOutcome) -> None:
         self.check_now.setEnabled(True)
         self.result.setText(outcome.message)
-        self.restart.setVisible(outcome.kind is UpdateKind.READY)
+        ready = outcome.kind is UpdateKind.READY
+        self.restart.setVisible(ready)
+        self.notes.setVisible(ready)
+        if ready:
+            self.notes.setMarkdown(outcome.notes or NO_NOTES)
 
 
 def confirm_rebuild_dialog() -> bool:

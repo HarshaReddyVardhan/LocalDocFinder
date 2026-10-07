@@ -36,6 +36,7 @@ class UpdateOutcome:
     kind: UpdateKind
     message: str
     version: str | None = None
+    notes: str = ""  # Markdown "what's new" of the downloaded release; empty when there are none
 
 
 class ReleaseLike(Protocol):
@@ -158,9 +159,11 @@ class Updater:
 
     @staticmethod
     def _ready(info: UpdateInfoLike) -> UpdateOutcome:
-        version = str(info.TargetFullRelease.Version)
+        release = info.TargetFullRelease
+        version = str(release.Version)
+        notes = str(getattr(release, "NotesMarkdown", "") or "").strip()
         return UpdateOutcome(
-            UpdateKind.READY, f"Version {version} is ready. Restart to update.", version
+            UpdateKind.READY, f"Version {version} is ready. Restart to update.", version, notes
         )
 
     def _finish(self, outcome: UpdateOutcome) -> UpdateOutcome:

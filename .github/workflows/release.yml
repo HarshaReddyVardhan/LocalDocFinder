@@ -13,6 +13,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the release notes are built from the commits since the last tag
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true

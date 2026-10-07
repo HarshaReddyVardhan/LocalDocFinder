@@ -73,10 +73,14 @@ if ($RepoUrl) {
     & $vpk @downloadArgs
     if ($LASTEXITCODE -ne 0) { Write-Host "No earlier release to base a delta on (first release?)." }
 }
+# The notes become the GitHub release body and the app's "What's new" dialog.
+$notesFile = Join-Path $root "build\release-notes.md"
+New-Item -ItemType Directory -Force -Path (Split-Path $notesFile) | Out-Null
+Run $python @("scripts\release_notes.py", $Version, $notesFile)
 Run $vpk @("pack", "--packId", "LocalDocFinder", "--packVersion", $Version,
     "--packDir", "dist\LocalDocFinder", "--mainExe", "LocalDocFinder.exe",
     "--packTitle", "LocalDoc Finder", "--runtime", "win-x64", "--icon", "packaging\localdoc_finder.ico",
-    "--outputDir", "Releases")
+    "--outputDir", "Releases", "--releaseNotes", $notesFile)
 
 Step "5/5 Publish"
 if ($Upload) {

@@ -29,6 +29,7 @@ from localdoc_finder.app.setup_controller import SetupController
 from localdoc_finder.app.setup_wizard import SetupWizard
 from localdoc_finder.app.theme import apply_theme
 from localdoc_finder.app.update_scheduler import UpdateScheduler
+from localdoc_finder.app.whats_new import show_whats_new
 from localdoc_finder.app.window import SearchWindow
 from localdoc_finder.core import runtime
 from localdoc_finder.core.autostart import Autostart
@@ -281,6 +282,20 @@ def announce_update(tray: QSystemTrayIcon, restart_action: QAction, version: str
         QSystemTrayIcon.MessageIcon.Information,
         8000,
     )
+
+
+def on_update_ready(
+    tray: QSystemTrayIcon,
+    restart_action: QAction,
+    updater: Updater,
+    version: str,
+    show_notes: Callable[[str, str], bool] = show_whats_new,
+) -> None:
+    """Announce a downloaded update and show what changed; restart only if the user agrees."""
+    announce_update(tray, restart_action, version)
+    notes = updater.outcome.notes if updater.outcome else ""
+    if show_notes(version, notes):
+        updater.restart_to_update()
 
 
 class OllamaStartup(QObject):
@@ -544,7 +559,9 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
             return EXIT_OK
         OllamaStartup(settings.ollama_host, tray).start()
         scheduler = UpdateScheduler(updater, auto_check_enabled(settings.settings_path()))
-        scheduler.ready.connect(lambda version: announce_update(tray, restart_action, version))
+        scheduler.ready.connect(
+            lambda version: on_update_ready(tray, restart_action, updater, version)
+        )
         scheduler.start()
         if is_frozen():
             start_watcher()  # a fresh install has had no logon yet; a no-op if one is running

@@ -202,3 +202,20 @@ class TestOneCheckAtATime:
         # and the lock was released: the next check works
         manager.fail = None
         assert Updater(REPO, factory=lambda _url: manager).check().kind is UpdateKind.READY
+
+
+def test_ready_outcome_carries_the_release_notes() -> None:
+    manager = FakeManager("1.1.0")
+
+    def with_notes() -> object:
+        return SimpleNamespace(
+            TargetFullRelease=SimpleNamespace(Version="1.1.0", NotesMarkdown="  ## New\n- Thing\n")
+        )
+
+    manager.check_for_updates = with_notes  # type: ignore[method-assign]  # fake returns notes
+    outcome = make(manager).check()
+    assert outcome.notes == "## New\n- Thing"
+
+
+def test_a_release_without_notes_has_empty_notes() -> None:
+    assert make(FakeManager("1.1.0")).check().notes == ""

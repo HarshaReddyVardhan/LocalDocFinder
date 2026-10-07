@@ -293,7 +293,7 @@ To test on a clean machine, use Windows Sandbox with `scripts/sandbox/LocalDocFi
 
 To publish from your own machine instead: `scripts\build.ps1 -RepoUrl https://github.com/HarshaReddyVardhan/LocalDocFinder -Upload` (after `gh auth login`, or with `GITHUB_TOKEN` set).
 
-Installed apps check the release feed at start and once a day, download the delta, and offer a restart. Builds are not code-signed yet, so Windows SmartScreen warns on first run.
+Installed apps check the release feed at start and once a day, download the delta, and offer a restart. Release notes are generated from the commit subjects since the previous tag (`scripts/release_notes.py`, packed with `--releaseNotes`); they become the GitHub Release body and the app's "What's new" dialog, so write `feat:`/`fix:` subjects for users (see `.claude/rules/release-process.md`). Builds are not code-signed yet, so Windows SmartScreen warns on first run.
 
 > Release 0.1.0 shipped under the earlier name, Vector Embed, with a different package ID. Those installs do not update automatically; installing the current release over them keeps the index, settings and API keys.
 

@@ -134,3 +134,45 @@ def test_a_crashing_check_still_clears_the_busy_flag(qapp: QApplication) -> None
     assert not scheduler._busy  # without this, no update check would ever run again
     scheduler.tick()
     assert scheduler._busy  # and the next hourly tick can start one
+
+
+def test_ready_update_shows_the_notes_and_restarts_only_on_yes(
+    qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(QSystemTrayIcon, "showMessage", lambda *_a: None)
+    updater = Updater("https://github.com/x/y", factory=lambda _url: ReleaseWithNotes("1.1.0"))
+    updater.check()
+    restarts: list[int] = []
+    monkeypatch.setattr(updater, "restart_to_update", lambda: restarts.append(1))
+    menu = QMenu()
+    action = menu.addAction("Restart to update")
+    shown: list[tuple[str, str]] = []
+
+    def answer(answer_yes: bool) -> object:
+        def show(version: str, notes: str) -> bool:
+            shown.append((version, notes))
+            return answer_yes
+
+        return show
+
+    tray = QSystemTrayIcon()
+    app_main.on_update_ready(tray, action, updater, "1.1.0", answer(False))
+    assert shown == [("1.1.0", "- Faster search")]
+    assert restarts == []
+    app_main.on_update_ready(tray, action, updater, "1.1.0", answer(True))  # type: ignore[arg-type]
+    assert restarts == [1]
+
+
+class ReleaseWithNotes(FakeManager):
+    def check_for_updates(self) -> object | None:
+        release = SimpleNamespace(Version=self.latest, NotesMarkdown="- Faster search")
+        return SimpleNamespace(TargetFullRelease=release)
+
+
+def test_whats_new_dialog_renders_the_notes(qapp: QApplication) -> None:
+    from localdoc_finder.app.whats_new import NO_NOTES, WhatsNewDialog
+
+    dialog = WhatsNewDialog("1.1.0", "## New\n- Faster search")
+    assert "Faster search" in dialog.notes.toPlainText()
+    assert "1.1.0" in dialog.windowTitle()
+    assert NO_NOTES in WhatsNewDialog("1.1.0", "  ").notes.toPlainText()

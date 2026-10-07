@@ -15,6 +15,7 @@ The installer work (setup wizard, minimal popup, Setup.exe with auto-update) is 
 ## Rules (read before writing code)
 - @.claude/rules/python-standards.md — tooling, layout, typing, testing, config, logging, git
 - @.claude/rules/design-principles.md — SOLID, KISS/DRY/YAGNI, error handling, project-specific invariants
+- @.claude/rules/release-process.md — tags, generated release notes, the in-app "What's new" dialog
 
 ## Commands
 ```powershell
