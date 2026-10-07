@@ -9,6 +9,7 @@ from tests.core.app.test_models_panel import GPU, wait_for
 from tests.core.conftest import Chat, Env
 
 from localdoc_finder.app import main as app_main
+from localdoc_finder.app import settings_tabs
 from localdoc_finder.app.cloud_tab import CloudTab
 from localdoc_finder.app.models_controller import ModelsController
 from localdoc_finder.app.settings_controller import NO_UPDATES, SettingsController, app_version
@@ -651,6 +652,10 @@ class FakeIndexing:
         self.paused = True
         return "pausing"
 
+    def rebuild(self) -> StartResult:
+        self.log.append("rebuild")
+        return StartResult(True, "rebuilding")
+
 
 def test_indexing_tab_starts_and_pauses_and_shows_progress(
     qapp: QApplication, controller: SettingsController
@@ -670,6 +675,19 @@ def test_indexing_tab_starts_and_pauses_and_shows_progress(
     assert fake.log == ["start", "pause"]
     assert messages == ["started", "pausing"]
     assert "paused" in tab.status.text()
+
+
+def test_indexing_tab_rebuild_asks_first(
+    qapp: QApplication, controller: SettingsController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeIndexing()
+    tab = IndexingTab(controller, fake)  # type: ignore[arg-type]
+    answers = iter([False, True])
+    monkeypatch.setattr(settings_tabs, "confirm_rebuild_dialog", lambda: next(answers))
+    tab.rebuild.click()
+    assert fake.log == []  # declined: nothing deleted
+    tab.rebuild.click()
+    assert fake.log == ["rebuild"]
 
 
 def test_indexing_tab_start_button_is_disabled_once_nothing_is_waiting(

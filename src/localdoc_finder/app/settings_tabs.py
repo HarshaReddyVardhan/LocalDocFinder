@@ -170,11 +170,13 @@ class IndexingTab(SettingsTab):
         self.bar.setRange(0, 100)
         self.start = QPushButton("Start indexing now")
         self.pause = QPushButton("Pause indexing")
+        self.rebuild = QPushButton("Rebuild index from scratch…")
         note = QLabel(INDEXING_NOTE)
         note.setWordWrap(True)
         buttons = QHBoxLayout()
         buttons.addWidget(self.start)
         buttons.addWidget(self.pause)
+        buttons.addWidget(self.rebuild)
         buttons.addStretch(1)
         layout = QVBoxLayout(self)
         layout.addWidget(self.status)
@@ -187,6 +189,7 @@ class IndexingTab(SettingsTab):
         self._timer.timeout.connect(self.refresh)
         self.start.clicked.connect(lambda: self._act(lambda: self._indexing.start().message))
         self.pause.clicked.connect(lambda: self._act(self._indexing.pause))
+        self.rebuild.clicked.connect(self._rebuild)
 
     def refresh(self) -> None:
         status = self._indexing.status()
@@ -194,6 +197,10 @@ class IndexingTab(SettingsTab):
         self.bar.setValue(int(status.fraction * 100))
         self.start.setEnabled(status.paused or (not status.running and status.waiting > 0))
         self.pause.setEnabled(status.running and not status.paused)
+
+    def _rebuild(self) -> None:
+        if confirm_rebuild_dialog():
+            self._act(lambda: self._indexing.rebuild().message)
 
     def _act(self, action: Callable[[], str]) -> None:
         self.message.emit(action())
@@ -291,6 +298,18 @@ class UpdatesTab(SettingsTab):
         self.check_now.setEnabled(True)
         self.result.setText(outcome.message)
         self.restart.setVisible(outcome.kind is UpdateKind.READY)
+
+
+def confirm_rebuild_dialog() -> bool:
+    answer = QMessageBox.question(
+        None,
+        "Rebuild index",
+        "Delete the search index and index every file again from scratch?\n\n"
+        "Your files are not touched. Search finds fewer results until indexing has caught up.",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    return answer == QMessageBox.StandardButton.Yes
 
 
 def confirm_delete_dialog() -> bool:

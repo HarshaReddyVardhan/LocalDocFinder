@@ -81,3 +81,32 @@ def test_tray_summary_is_short(state: StateDb, tmp_path: Path) -> None:
     assert IndexingStatus(10, 0, False, False).tray_summary == "Indexing: idle (10 files)"
     assert IndexingStatus(10, 0, True, False).tray_summary == "Indexing: indexing (10 files)"
     assert IndexingStatus(10, 0, True, True).tray_summary == "Indexing: paused (10 files)"
+
+
+def test_rebuild_clears_the_index_and_starts_a_full_scan(state: StateDb, tmp_path: Path) -> None:
+    launcher = FakeLauncher()
+    box = control(state, tmp_path, launcher)
+    state.enqueue("x.txt")
+    box.pause()
+    result = box.rebuild()
+    assert result.started
+    assert state.queue_size() == 0
+    assert not box.is_paused()
+    assert launcher.calls == [(True, True)]
+
+
+def test_rebuild_on_battery_clears_but_waits_for_power(state: StateDb, tmp_path: Path) -> None:
+    launcher = FakeLauncher()
+    result = control(state, tmp_path, launcher, on_ac=False).rebuild()
+    assert "plugged in" in result.message
+    assert launcher.calls == []
+
+
+def test_rebuild_deletes_nothing_when_the_worker_will_not_stop(
+    state: StateDb, tmp_path: Path
+) -> None:
+    state.enqueue("keep.txt")
+    with single_instance("worker", tmp_path):
+        result = control(state, tmp_path, FakeLauncher()).rebuild(wait_seconds=0.1)
+    assert not result.started
+    assert state.queue_size() == 1

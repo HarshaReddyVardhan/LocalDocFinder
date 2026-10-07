@@ -464,3 +464,52 @@ class TestSchemaVersion:
             LanceStore(tmp_path, state, "m1", dim=DIM)
         with pytest.raises(lc.IndexSchemaError):
             LanceStore(tmp_path, state, "m1")  # read-only (search)
+
+
+def test_reset_index_deletes_everything_and_requeues_files(tmp_path: Path, state: StateDb) -> None:
+    first = LanceStore(tmp_path, state, "m1", dim=DIM)
+    first.replace_rows(["a.txt"], [chunk("a.txt", "alpha", [1.0, 0.0, 0.0, 0.0])])
+    state.enqueue("b.txt")
+    lc.reset_index(tmp_path, state)
+    assert state.manifest_count() == 0
+    assert state.queue_size() == 0
+    assert state.get_meta("last_reconcile") == "0"
+    reopened = LanceStore(tmp_path, state, "m1", dim=DIM)
+    assert reopened.count() == 0  # fresh tables, ready to be filled again
+
+
+def test_an_unreadable_table_is_rebuilt_instead_of_crashing(tmp_path: Path, state: StateDb) -> None:
+    first = LanceStore(tmp_path, state, "m1", dim=DIM)
+    first.replace_rows(["a.txt"], [chunk("a.txt", "alpha", [1.0, 0.0, 0.0, 0.0])])
+    for data_file in (tmp_path / "lance" / "chunks.lance" / "data").glob("*.lance"):
+        data_file.write_bytes(b"garbage")  # a crash mid-write
+    reopened = LanceStore(tmp_path, state, "m1", dim=DIM)
+    assert reopened.count() == 0
+    assert state.get_meta("last_reconcile") == "0"
+
+
+def test_a_read_on_a_stale_handle_is_retried_with_a_fresh_one(
+    store: LanceStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store.replace_rows(["a.txt"], [chunk("a.txt", "alpha", [1.0, 0.0, 0.0, 0.0])])
+    monkeypatch.setattr(lc, "_READ_RETRY_SECONDS", 0)
+    calls = {"n": 0}
+
+    def flaky(table: Any) -> int:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("Not found: old version was cleaned up")
+        return int(table.count_rows())
+
+    assert store._read(lc.CHUNKS, flaky, -1) == 1
+
+
+def test_a_read_that_keeps_failing_returns_the_default(
+    store: LanceStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(lc, "_READ_RETRY_SECONDS", 0)
+
+    def broken(_table: Any) -> int:
+        raise RuntimeError("gone")
+
+    assert store._read(lc.CHUNKS, broken, -1) == -1

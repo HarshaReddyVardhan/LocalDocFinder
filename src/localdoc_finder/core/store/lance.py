@@ -5,6 +5,8 @@ recorded in the state DB; a change wipes both tables and the manifest (a clean r
 """
 
 import logging
+import shutil
+import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import timedelta
 from functools import partial
@@ -58,10 +60,13 @@ DOCUMENT_COLUMNS = [
 _KEEP_VERSIONS = timedelta(hours=1)  # older table versions are deleted at optimize
 _REINDEX_GROWTH = 2  # rebuild the vector index when the table has grown this many times
 _BATCH = 200
+_READ_ATTEMPTS = 3
+_READ_RETRY_SECONDS = 0.3
 _VECTOR_INDEX_MIN_ROWS = 100_000
 _T = TypeVar("_T")
 
 Row = dict[str, Any]
+LanceDb: TypeAlias = Any  # a lancedb connection
 LanceTable: TypeAlias = Any  # lancedb ships no usable type information
 
 
@@ -152,6 +157,41 @@ LANCE_SCHEMA_VERSION = 1 + len(LANCE_MIGRATIONS)
 SCHEMA_VERSION_KEY = "lance_schema_version"
 
 
+def reset_index(data_dir: Path, state: StateDb, db: LanceDb | None = None) -> None:
+    """Delete the whole index and queue every file again (the user's "rebuild from scratch").
+
+    Only the vectors and the list of indexed files go; settings, chat history, pinned items and
+    the user's own files are untouched. The worker must not be running.
+    """
+    import lancedb
+
+    root = Path(data_dir) / LANCE_DIRNAME
+    connection = db if db is not None else lancedb.connect(str(root))
+    try:
+        listing = (
+            connection.list_tables()
+            if hasattr(connection, "list_tables")
+            else connection.table_names()
+        )
+        names = list(getattr(listing, "tables", listing))
+    except Exception:  # a damaged folder: fall through to deleting it
+        logger.warning("lance: cannot list tables while resetting", exc_info=True)
+        names = []
+    for name in names:
+        try:
+            connection.drop_table(name)
+        except Exception:  # a damaged table may not drop cleanly: remove its files instead
+            logger.warning("lance: drop_table(%s) failed; deleting its folder", name, exc_info=True)
+    for leftover in root.glob("*.lance"):  # anything the drop could not remove
+        shutil.rmtree(leftover, ignore_errors=True)
+    state.manifest_clear()
+    state.clear_queue()
+    state.set_meta("last_reconcile", "0")  # the next run scans every folder again
+    state.delete_meta(SCHEMA_VERSION_KEY)
+    for name in (CHUNKS, DOCUMENTS):
+        state.delete_meta(f"vector_index_rows_{name}")
+
+
 class LanceStore:
     """Chunk and document tables bound to one embedding model.
 
@@ -175,7 +215,8 @@ class LanceStore:
         self._allow_wipe = allow_wipe
         self._state = state
         self._min_rows = vector_index_min_rows
-        self.db: Any = lancedb.connect(str(Path(data_dir) / LANCE_DIRNAME))
+        self._root = Path(data_dir) / LANCE_DIRNAME
+        self.db: Any = lancedb.connect(str(self._root))
         self._tables: dict[str, LanceTable] = {}
         if dim is None:
             self._open_existing()
@@ -238,11 +279,10 @@ class LanceStore:
                 f"(dim {wanted[1]}) is configured; switch with: ldf models --embedder "
                 f"{wanted[0]} --yes (this re-indexes every file)"
             )
+        if not wiped and names and not self._tables_open_cleanly(names):
+            wiped = True  # a crash left a table unreadable; the index is derived data, so rebuild
         if wiped:
-            for name in names:
-                self.db.drop_table(name)
-            self._state.manifest_clear()
-            self._state.set_meta("last_reconcile", "0")  # every file must be indexed again
+            self.wipe()
             names = []
         schemas = {CHUNKS: chunk_schema(self.dim), DOCUMENTS: document_schema(self.dim)}
         for name, schema in schemas.items():
@@ -258,6 +298,24 @@ class LanceStore:
         self._state.set_meta("model_id", self.model_id)
         self._state.set_meta("dim", str(self.dim))
         return wiped
+
+    def _tables_open_cleanly(self, names: Sequence[str]) -> bool:
+        """Whether every table can be opened and read; a half-written one (power loss, a killed
+        process) is reported rather than left to crash the first search."""
+        for name in names:
+            try:
+                self.db.open_table(name).search().limit(1).to_list()  # reads real data
+            except Exception:  # lancedb raises RuntimeError/OSError/ValueError depending on damage
+                logger.error(
+                    "lance: table %s is unreadable; rebuilding the index", name, exc_info=True
+                )
+                return False
+        return True
+
+    def wipe(self) -> None:
+        """Drop both tables and forget what was indexed, so every file is indexed again."""
+        reset_index(self._root.parent, self._state, self.db)
+        self._tables.clear()
 
     def _fts_column(self, name: str) -> str:
         """The column BM25 searches: ``search_text`` on chunks (``text`` on an index from before
@@ -328,8 +386,29 @@ class LanceStore:
         return self.table(DOCUMENTS)
 
     def count(self, name: str = CHUNKS) -> int:
-        table = self.table(name)
-        return int(table.count_rows()) if table is not None else 0
+        return self._read(name, lambda table: int(table.count_rows()), 0)
+
+    def _read(self, name: str, action: Callable[[Any], _T], default: _T) -> _T:
+        """Run a read on a table, re-opening it and retrying when it changed underneath us.
+
+        The worker (another process) compacts, cleans old versions and may rebuild the index
+        while the app searches; a handle opened before that points at files that are gone. The
+        retry opens a fresh handle; a persistent failure returns ``default`` instead of crashing
+        the caller.
+        """
+        for attempt in range(_READ_ATTEMPTS):
+            table = self.table(name)
+            if table is None:
+                return default
+            try:
+                return action(table)
+            except Exception:
+                self._tables.pop(name, None)  # the cached handle is stale
+                if attempt == _READ_ATTEMPTS - 1:
+                    logger.warning("lance: reading %s failed", name, exc_info=True)
+                    return default
+                time.sleep(_READ_RETRY_SECONDS * (attempt + 1))
+        return default
 
     # ------------------------------------------------------------------ chunks
     def vectors_for_hashes(self, hashes: Iterable[str]) -> dict[str, np.ndarray]:
@@ -341,16 +420,20 @@ class LanceStore:
         for part in _batches(sorted(set(hashes))):
             listed = ",".join(sql_quote(h) for h in part)
             where = f"chunk_hash IN ({listed}) AND model_id = {sql_quote(self.model_id)}"
-            rows = (
-                table.search()
-                .where(where)
-                .select(["chunk_hash", CHUNK_VECTOR])
-                .limit(len(part) * 4)
-                .to_list()
+            limit = len(part) * 4
+            rows: list[Row] = self._read(
+                CHUNKS, partial(self._rows_by_where, where=where, limit=limit), []
             )
             for row in rows:
                 found.setdefault(row["chunk_hash"], np.asarray(row[CHUNK_VECTOR], dtype=np.float32))
         return found
+
+    @staticmethod
+    def _rows_by_where(table: LanceTable, *, where: str, limit: int) -> list[Row]:
+        rows: list[Row] = (
+            table.search().where(where).select(["chunk_hash", CHUNK_VECTOR]).limit(limit).to_list()
+        )
+        return rows
 
     def delete_paths(self, paths: Iterable[str]) -> None:
         """Remove every chunk and document row belonging to ``paths``."""
@@ -406,14 +489,14 @@ class LanceStore:
 
     # ------------------------------------------------------------------ queries
     def scan(self, name: str, columns: list[str], where: str = "", limit: int = 1000) -> list[Row]:
-        table = self.table(name)
-        if table is None:
-            return []
-        query = table.search()
-        if where:
-            query = query.where(where)
-        rows: list[Row] = query.select(columns).limit(limit).to_list()
-        return rows
+        def run(table: LanceTable) -> list[Row]:
+            query = table.search()
+            if where:
+                query = query.where(where)
+            rows: list[Row] = query.select(columns).limit(limit).to_list()
+            return rows
+
+        return self._read(name, run, [])
 
     def has_column(self, name: str, column: str) -> bool:
         table = self.table(name)
@@ -435,8 +518,7 @@ class LanceStore:
         ``min_content_chars`` leaves out chunks with less readable text than that (ignored on an
         index from before the column existed).
         """
-        table = self.table(name)
-        if table is None:
+        if self.table(name) is None:
             return []
         if not self.vectors_current():
             logger.info("lance: vectors are from another embedder; skipping the vector search")
@@ -445,29 +527,31 @@ class LanceStore:
             floor = f"content_chars >= {int(min_content_chars)}"
             where = f"({where}) AND {floor}" if where else floor
         column = CHUNK_VECTOR if name == CHUNKS else DOC_VECTOR
-        query = table.search(vector, vector_column_name=column).metric("cosine")
-        if where:
-            query = query.where(where, prefilter=True)
-        rows: list[Row] = query.select([*columns, "_distance"]).limit(limit).to_list()
-        return rows
+
+        def run(handle: LanceTable) -> list[Row]:
+            query = handle.search(vector, vector_column_name=column).metric("cosine")
+            if where:
+                query = query.where(where, prefilter=True)
+            rows: list[Row] = query.select([*columns, "_distance"]).limit(limit).to_list()
+            return rows
+
+        return self._read(name, run, [])
 
     def fts_search(
         self, name: str, text: str, columns: list[str], where: str = "", limit: int = 50
     ) -> list[Row]:
         """BM25 keyword search, each row with its ``_score``; ``[]`` if the FTS index is
         unavailable."""
-        table = self.table(name)
-        if table is None:
-            return []
-        try:
-            query = table.search(text, query_type="fts", fts_columns=self._fts_column(name))
+        fts_column = self._fts_column(name)
+
+        def run(table: LanceTable) -> list[Row]:
+            query = table.search(text, query_type="fts", fts_columns=fts_column)
             if where:
                 query = query.where(where, prefilter=True)
             rows: list[Row] = query.select([*columns, "_score"]).limit(limit).to_list()
-        except Exception:
-            logger.debug("lance: FTS search failed on %s", name, exc_info=True)
-            return []
-        return rows
+            return rows
+
+        return self._read(name, run, [])
 
     # ------------------------------------------------------------------ maintenance
     @staticmethod

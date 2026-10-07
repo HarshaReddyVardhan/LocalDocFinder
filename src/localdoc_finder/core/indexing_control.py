@@ -7,17 +7,21 @@ stopped is redone.
 """
 
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from localdoc_finder.core.process import single_instance
+from localdoc_finder.core.process import clear_stop_request, request_stop, single_instance
+from localdoc_finder.core.store.lance import reset_index
 from localdoc_finder.core.store.sqlite import INDEXING_PAUSED_KEY, StateDb
 
 logger = logging.getLogger(__name__)
 
 WORKER_LOCK = "worker"  # the lock localdoc_finder.worker holds while it runs
+REBUILD_STOP_WAIT_SECONDS = 20.0
+_POLL_SECONDS = 0.5
 
 
 class Launcher(Protocol):
@@ -117,3 +121,29 @@ class IndexingControl:
         self._launcher.start(True, now=True)
         logger.info("indexing started by the user")
         return StartResult(True, "Indexing started. It continues where it left off.")
+
+    def rebuild(self, wait_seconds: float = REBUILD_STOP_WAIT_SECONDS) -> StartResult:
+        """Delete the index and index every file again from scratch.
+
+        A running worker is asked to stop first (it saves its batch); if it does not stop in
+        time nothing is deleted. The files on disk are never touched.
+        """
+        if self.is_running():
+            request_stop(self._data_dir)
+            deadline = time.monotonic() + wait_seconds
+            try:
+                while self.is_running() and time.monotonic() < deadline:
+                    time.sleep(_POLL_SECONDS)
+            finally:
+                clear_stop_request(self._data_dir)
+            if self.is_running():
+                return StartResult(False, "Indexing did not stop in time; try again in a moment.")
+        reset_index(self._data_dir, self._state)
+        logger.info("index deleted by the user; rebuilding from scratch")
+        self._state.delete_meta(INDEXING_PAUSED_KEY)
+        if self._require_ac and not self._on_ac():
+            return StartResult(
+                True, "Index cleared. Indexing starts again once the PC is plugged in."
+            )
+        self._launcher.start(True, now=True)
+        return StartResult(True, "Index cleared. Re-indexing every file from scratch.")

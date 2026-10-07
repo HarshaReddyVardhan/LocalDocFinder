@@ -320,6 +320,9 @@ class StateDb:
     def manifest_clear(self) -> None:
         self._run("DELETE FROM manifest")
 
+    def clear_queue(self) -> None:
+        self._run("DELETE FROM queue")
+
     def manifest_under(self, prefix: str) -> list[str]:
         """Manifest paths inside a directory (case-insensitive, as Windows paths are)."""
         prefix = prefix.rstrip("\\/") + os.sep
