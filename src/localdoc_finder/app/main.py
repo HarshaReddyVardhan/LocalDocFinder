@@ -537,6 +537,7 @@ def run_app(app: QApplication, settings: Settings, args: argparse.Namespace) -> 
         if not registered:
             warn_hotkey_unavailable(tray, settings.search.hotkey)
         if args.setup or setup_needed(state):
+            announce(tray, "Setup is open. It downloads the search models, so keep it running.")
             run_setup_wizard(settings, state, updater=updater, on_changed=settings_changed)
         if not terms_accepted(state):  # declined or closed: nothing may index or update
             leave_without_terms(hotkey, tray)

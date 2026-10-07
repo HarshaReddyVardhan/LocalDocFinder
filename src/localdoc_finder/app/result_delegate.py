@@ -36,6 +36,8 @@ ICON_SIZE = 32
 PADDING = 8
 LINE_GAP = 2
 GAP = 10
+REVEAL_SIZE = 20  # the "show in folder" button at the end of the path line
+REVEAL_TIP = "Show in folder (Ctrl+Enter)"
 META_MAX_WIDTH = 170
 PATH_STRENGTH = 0.55  # how much of the text colour the path and file details keep
 SNIPPET_STRENGTH = 0.75
@@ -119,6 +121,21 @@ class ResultDelegate(QStyledItemDelegate):
         icon = QIcon(pixmap)
         self._thumbs.put(row.path, icon)
         return icon
+
+    @staticmethod
+    def _reveal_icon() -> QIcon:
+        return QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
+
+    @staticmethod
+    def reveal_box(item_rect: QRect, row: ResultRow, font: QFont) -> QRect:
+        """The folder button: the right end of the path line. Clicks are hit-tested by the view."""
+        bold = QFont(font)
+        bold.setBold(True)
+        divider = QFontMetrics(font).height() + 2 * LINE_GAP if row.divider_above else 0
+        area = item_rect.adjusted(PADDING, PADDING + divider, -PADDING, -PADDING)
+        line_top = area.top() + QFontMetrics(bold).height() + LINE_GAP
+        top = line_top + (QFontMetrics(font).height() - REVEAL_SIZE) // 2
+        return QRect(area.right() - REVEAL_SIZE, top, REVEAL_SIZE, REVEAL_SIZE)
 
     # ------------------------------------------------------------------ layout
     @staticmethod
@@ -241,7 +258,13 @@ class ResultDelegate(QStyledItemDelegate):
                 meta_box, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, row.meta
             )
 
-        second = QRect(left, first.bottom() + LINE_GAP, area.right() - left, metrics.height())
+        second = QRect(
+            left,
+            first.bottom() + LINE_GAP,
+            area.right() - left - REVEAL_SIZE - GAP,
+            metrics.height(),
+        )
+        self._reveal_icon().paint(painter, self.reveal_box(option.rect, row, option.font))
         painter.setPen(secondary_text(option.palette, PATH_STRENGTH))
         place = f"{row.project}  {row.path}" if row.project else row.path
         painter.drawText(

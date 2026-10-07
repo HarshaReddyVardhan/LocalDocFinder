@@ -40,6 +40,7 @@ from PySide6.QtGui import (
     QDragEnterEvent,
     QDropEvent,
     QGuiApplication,
+    QHelpEvent,
     QHideEvent,
     QKeySequence,
     QLinearGradient,
@@ -66,6 +67,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QTextBrowser,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -83,6 +85,7 @@ from localdoc_finder.app.cloud_dialog import CloudAnswer, confirm_cloud_dialog
 from localdoc_finder.app.cloud_switcher import CloudChoice, CloudSwitcher
 from localdoc_finder.app.controller import (
     Launcher,
+    ResultRow,
     SearchOutcome,
     SearchService,
     foreground_title,
@@ -93,7 +96,7 @@ from localdoc_finder.app.match_controller import MatchController
 from localdoc_finder.app.match_panel import MatchPanel
 from localdoc_finder.app.mode_bar import ModeBar
 from localdoc_finder.app.refine_bar import RefineBar
-from localdoc_finder.app.result_delegate import ROW_ROLE, ResultDelegate
+from localdoc_finder.app.result_delegate import REVEAL_TIP, ROW_ROLE, ResultDelegate
 from localdoc_finder.app.theme import (
     Scheme,
     card_colours,
@@ -407,6 +410,7 @@ class SearchWindow(QWidget):
         self.list.currentRowChanged.connect(self._relayout_rows)
         self.list.itemActivated.connect(lambda _item: self.activate_selected())
         self.input.installEventFilter(self)
+        self._watch_list_mouse()
         QShortcut(QKeySequence("Esc"), self).activated.connect(self.dismiss)
         self._apply_mode()
 
@@ -1410,7 +1414,43 @@ class SearchWindow(QWidget):
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
         if obj is self.input and event.type() == QEvent.Type.KeyPress:
             return self._handle_key(event)
+        if obj is self.list.viewport() and isinstance(event, QMouseEvent):
+            return self._handle_list_mouse(event)
+        if obj is self.list.viewport() and event.type() == QEvent.Type.ToolTip:
+            return self._show_reveal_tip(event)  # type: ignore[arg-type]
         return super().eventFilter(obj, event)
+
+    def _watch_list_mouse(self) -> None:
+        self.list.setMouseTracking(True)  # the folder button shows a hand cursor on hover
+        self.list.viewport().installEventFilter(self)
+
+    def _reveal_row_at(self, pos: QPoint) -> int:
+        """The row whose "show in folder" button is under ``pos``, or -1."""
+        item = self.list.itemAt(pos)
+        row = item.data(ROW_ROLE) if item is not None else None
+        if item is None or self._mode is not Mode.SEARCH or not isinstance(row, ResultRow):
+            return -1
+        box = ResultDelegate.reveal_box(self.list.visualItemRect(item), row, self.list.font())
+        return self.list.row(item) if box.contains(pos) else -1
+
+    def _handle_list_mouse(self, event: QMouseEvent) -> bool:
+        over = self._reveal_row_at(event.position().toPoint()) >= 0
+        viewport = self.list.viewport()
+        viewport.setCursor(
+            Qt.CursorShape.PointingHandCursor if over else Qt.CursorShape.ArrowCursor
+        )
+        if event.type() == QEvent.Type.MouseButtonPress and over:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.list.setCurrentRow(self._reveal_row_at(event.position().toPoint()))
+                self.reveal_selected()
+            return True
+        return False
+
+    def _show_reveal_tip(self, event: QHelpEvent) -> bool:
+        if self._reveal_row_at(event.pos()) < 0:
+            return False
+        QToolTip.showText(event.globalPos(), REVEAL_TIP, self.list)
+        return True
 
     def _handle_key(self, event: object) -> bool:
         key = event.key()  # type: ignore[attr-defined]

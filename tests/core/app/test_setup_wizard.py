@@ -718,3 +718,15 @@ def test_models_page_without_models_says_everything_is_downloaded(
     page = wizard.models
     load_models_page(qapp, page)
     assert "No models are installed yet" in page.installed_note.text()
+
+
+def test_wizard_takes_the_front_when_shown_and_lets_go_after(
+    qapp: QApplication, harness: Harness
+) -> None:
+    wizard = wizard_for(harness)
+    wizard.show()
+    wait_for(qapp, lambda: False, timeout=0.1)  # lets the queued bring-to-front run
+    assert wizard.isVisible()
+    wizard._release_front()
+    assert wizard.isVisible()
+    assert wizard.buttonText(QWizard.WizardButton.CommitButton) == "Download"

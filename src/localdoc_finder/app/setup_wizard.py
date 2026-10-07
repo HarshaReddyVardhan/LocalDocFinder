@@ -4,9 +4,14 @@ The wizard only collects choices and shows progress; ``SetupFlow`` (via ``SetupC
 does the work, so ``ldf setup`` and the wizard behave the same.
 """
 
+import ctypes
+import sys
 from collections.abc import Callable, Collection
 
+from PySide6.QtCore import QTimer
+from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QLabel,
@@ -48,6 +53,9 @@ from localdoc_finder.core.terms import TERMS_TEXT, TERMS_TITLE
 
 WIZARD_TITLE = "Set up LocalDoc Finder"
 WIZARD_SIZE = (680, 520)
+FRONT_HOLD_MS = 3000
+HWND_TOPMOST, HWND_NOTOPMOST = -1, -2
+SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW = 0x0002, 0x0001, 0x0040
 PROGRESS_SCALE = 100
 _DOWNLOAD_STAGES = {Stage.OLLAMA, Stage.PLAN, Stage.DISK, Stage.PULL}  # before the speed test
 
@@ -509,6 +517,7 @@ class SetupWizard(QWizard):
         controller.failed.connect(self._on_failed)
         controller.downgrade_offered.connect(self._on_downgrade)
         self.download.retry.clicked.connect(self._start)
+
         self.speed.retry.clicked.connect(self._start)
         self.setButtonText(QWizard.WizardButton.CommitButton, "Download")
         self.currentIdChanged.connect(self._on_page)
@@ -554,3 +563,29 @@ class SetupWizard(QWizard):
 
     def _on_downgrade(self, offer: SlowOffer) -> None:
         self._controller.answer_downgrade(self._ask_downgrade(offer))
+
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
+        super().showEvent(event)
+        QTimer.singleShot(0, self._bring_to_front)
+        QTimer.singleShot(FRONT_HOLD_MS, self._release_front)
+
+    def _bring_to_front(self) -> None:
+        """Right after install the app may not take focus, so Windows can leave the wizard behind
+        other windows with nothing to show it is running: sit on top until it has been seen."""
+        self._set_topmost(True)
+        self.raise_()
+        self.activateWindow()
+        QApplication.alert(self, 0)  # flashes the taskbar button until the user looks
+
+    def _release_front(self) -> None:
+        if self.isVisible():
+            self._set_topmost(False)
+
+    def _set_topmost(self, on: bool) -> None:
+        """Win32 topmost without Qt's window flag, which rebuilds the wizard's buttons."""
+        if sys.platform != "win32":
+            return
+        insert_after = HWND_TOPMOST if on else HWND_NOTOPMOST
+        ctypes.windll.user32.SetWindowPos(  # type: ignore[attr-defined,unused-ignore]
+            int(self.winId()), insert_after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+        )

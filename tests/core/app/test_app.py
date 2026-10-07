@@ -13,7 +13,7 @@ from tests.core.conftest import Env
 from localdoc_finder.app import controller, hotkey
 from localdoc_finder.app import main as app_main
 from localdoc_finder.app.controller import Launcher, SearchOutcome, SearchService
-from localdoc_finder.app.result_delegate import ROW_ROLE
+from localdoc_finder.app.result_delegate import ROW_ROLE, ResultDelegate
 from localdoc_finder.app.window import EXPANDED_HEIGHT, Mode, SearchWindow
 from localdoc_finder.core.skills.base import SkillContext
 from localdoc_finder.core.skills.search import SearchResult
@@ -346,6 +346,23 @@ class TestWindow:
         row = win.list.item(0).data(ROW_ROLE)
         assert (row.name, row.path) == ("a.py", r"D:\p\a.py")
         assert win.status.text() == "2 results in 12 ms"
+
+    def test_the_folder_button_reveals_the_row_it_is_on(
+        self, window: tuple[SearchWindow, FakeService, list[object]]
+    ) -> None:
+        win, service, calls = window
+        win.show()
+        win.show_results(SearchOutcome(service.results, 1.0))
+        item = win.list.item(1)
+        rect = win.list.visualItemRect(item)
+        box = ResultDelegate.reveal_box(rect, item.data(ROW_ROLE), win.list.font())
+        assert rect.contains(box)
+        assert win._reveal_row_at(box.center()) == 1
+        assert win._reveal_row_at(rect.center()) == -1  # the rest of the row is not the button
+        win.list.setCurrentRow(1)
+        win.reveal_selected()
+        assert calls[-1][1][:2] == ["explorer", "/select,"]  # type: ignore[index]
+        assert calls[-1][1][2].endswith("b.py")  # type: ignore[index]
 
     def test_popup_is_just_the_search_bar_until_there_are_results(
         self, window: tuple[SearchWindow, FakeService, list[object]]
