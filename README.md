@@ -76,6 +76,12 @@ Prefer the command line? This downloads and runs the latest installer:
 irm https://raw.githubusercontent.com/HarshaReddyVardhan/LocalDocFinder/main/scripts/install.ps1 | iex
 ```
 
+Alternative, if the command above fails (for example, the script is blocked on your PC):
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $f = "$env:TEMP\LocalDocFinder-Setup.exe"; Invoke-WebRequest -Uri ((irm "https://api.github.com/repos/HarshaReddyVardhan/LocalDocFinder/releases/latest").assets | Where-Object { $_.name -like "*.exe" } | Select-Object -ExpandProperty browser_download_url -First 1) -OutFile $f -UseBasicParsing; Unblock-File $f; Start-Process $f
+```
+
 > **Windows SmartScreen:** the installer is not code-signed yet, so Windows may warn you the first time. Choose **More info → Run anyway**.
 
 ## Using it
